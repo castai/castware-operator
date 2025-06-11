@@ -27,9 +27,6 @@ import (
 type CastwareSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
-
-	// Foo is an example field of Castware. Edit castware_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
 }
 
 // CastwareStatus defines the observed state of Castware.
