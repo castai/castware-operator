@@ -41,7 +41,8 @@ func (r *CastwareReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // SetupWithManager sets up the controller with the Manager.
 func (r *CastwareReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&castwarev1alpha1.Castware{}).
+		For(&castwarev1alpha1.Cluster{}).
+		For(&castwarev1alpha1.Component{}).
 		Named("castware").
 		Complete(r)
 }

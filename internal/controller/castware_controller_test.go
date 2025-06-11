@@ -24,13 +24,13 @@ var _ = Describe("Castware Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		castware := &castwarev1alpha1.Castware{}
+		castware := &castwarev1alpha1.Cluster{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind Castware")
 			err := k8sClient.Get(ctx, typeNamespacedName, castware)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &castwarev1alpha1.Castware{
+				resource := &castwarev1alpha1.Cluster{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
@@ -43,7 +43,7 @@ var _ = Describe("Castware Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &castwarev1alpha1.Castware{}
+			resource := &castwarev1alpha1.Cluster{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
