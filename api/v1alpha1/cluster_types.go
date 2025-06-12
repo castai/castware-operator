@@ -44,7 +44,7 @@ type ClusterSpec struct {
 	// Cluster contains metadata that is populated after the agent registers.
 	// All fields here are optional; if missing, the operator will fill them in at runtime.
 	// +optional
-	Cluster *ClusterInfoSpec `json:"cluster,omitempty"`
+	Cluster *ClusterMetadataSpec `json:"cluster,omitempty"`
 }
 
 // APISpec groups HTTP/gRPC endpoints for Mothership and related services.
@@ -72,9 +72,9 @@ type APISpec struct {
 	KvisorGrpcURL string `json:"kvisorGrpcUrl,omitempty"`
 }
 
-// Cluster holds basic cluster metadata. All fields are optional because they
+// ClusterMetadataSpec holds basic cluster metadata. All fields are optional because they
 // will be filled in by the operator only after the agent “checks in.”
-type ClusterInfoSpec struct {
+type ClusterMetadataSpec struct {
 	// ClusterID is the unique UUID of this cluster in the Cast AI database.
 	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89ABab][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`
 	// +optional
