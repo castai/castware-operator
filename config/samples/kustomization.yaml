@@ -1,4 +1,6 @@
 ## Append samples of your project ##
 resources:
 - castware_v1alpha1_castware.yaml
+- castware.cast.ai_v1alpha1_component.yaml
+- castware.cast.ai_v1alpha1_cluster.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

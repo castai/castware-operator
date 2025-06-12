@@ -1,19 +1,5 @@
-/*
-Copyright 2025.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
 package v1alpha1
 
 import (
@@ -32,8 +18,8 @@ type ClusterSpec struct {
 
 	// APIKeySecret is the name of the Kubernetes Secret containing the Mothership API key.
 	// The operator does not work without it.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:default:="castware-api-key"
+	//+kubebuilder:validation:Required
+	//+kubebuilder:default:="castware-api-key"
 	APIKeySecret string `json:"apiKeySecret"`
 
 	// API holds all the Mothership API endpoints.
@@ -54,7 +40,7 @@ type APISpec struct {
 	// apiUrl is the “base” HTTP URL of the Mothership API.
 	// +kubebuilder:validation:Format=uri
 	// +kubebuilder:validation:Required
-	APIURL string `json:"apiUrl"`
+	APIURL string `json:"apiUrl,omitempty"`
 
 	// apiGrpcUrl is the gRPC endpoint for the Mothership API (optional).
 	// +kubebuilder:validation:Format=uri

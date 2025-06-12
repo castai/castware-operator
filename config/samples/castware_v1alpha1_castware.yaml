@@ -17,7 +17,3 @@ metadata:
   name: castware-sample
 spec:
 # TODO(user): Add fields here
-
-
-operator-sdk create webhook --version=v1alpha1 --group castware.cast.ai --kind=Cluster --defaulting --programmatic-validation
-operator-sdk create webhook --version=v1alpha1 --group castware.cast.ai --kind=Component --defaulting --programmatic-validation

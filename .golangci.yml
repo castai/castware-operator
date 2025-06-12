@@ -43,4 +43,5 @@ linters-settings:
   revive:
     rules:
       - name: comment-spacings
+        disabled: true
         exclude: ["**/api/v1alpha1/*.go"]

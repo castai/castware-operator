@@ -5,9 +5,10 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
-  - castware.cast.ai
+  - castware.cast.ai.cast.ai
   resources:
-  - castwares
+  - clusters
+  - components
   verbs:
   - create
   - delete
@@ -17,15 +18,17 @@ rules:
   - update
   - watch
 - apiGroups:
-  - castware.cast.ai
+  - castware.cast.ai.cast.ai
   resources:
-  - castwares/finalizers
+  - clusters/finalizers
+  - components/finalizers
   verbs:
   - update
 - apiGroups:
-  - castware.cast.ai
+  - castware.cast.ai.cast.ai
   resources:
-  - castwares/status
+  - clusters/status
+  - components/status
   verbs:
   - get
   - patch

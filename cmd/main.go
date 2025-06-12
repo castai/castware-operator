@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -114,7 +115,18 @@ func main() {
 		})
 	}
 
+	var port int
+	if portEnv := os.Getenv("WEBHOOK_PORT"); portEnv != "" {
+		var err error
+		if port, err = strconv.Atoi(portEnv); err != nil {
+			setupLog.Error(err, "Failed to parse WEBHOOK_PORT environment variable")
+			return
+		}
+	}
+
 	webhookServer := webhook.NewServer(webhook.Options{
+		Port:    port,
+		CertDir: os.Getenv("WEBHOOK_CERT_DIR"),
 		TLSOpts: webhookTLSOpts,
 	})
 
@@ -187,13 +199,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.CastwareReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Castware")
-		os.Exit(1)
-	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		if err = webhookcastwarev1alpha1.SetupClusterWebhookWithManager(mgr); err != nil {
@@ -207,6 +212,20 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Component")
 			os.Exit(1)
 		}
+	}
+	if err = (&controller.ComponentReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Component")
+		os.Exit(1)
+	}
+	if err = (&controller.ClusterReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Cluster")
+		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
 
