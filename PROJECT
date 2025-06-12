@@ -15,7 +15,7 @@ resources:
     crdVersion: v1
     namespaced: true
   domain: cast.ai
-  group: castware.cast.ai
+  group: castware
   kind: Cluster
   path: github.com/castai/castware-operator/api/v1alpha1
   version: v1alpha1
@@ -27,7 +27,7 @@ resources:
     crdVersion: v1
     namespaced: true
   domain: cast.ai
-  group: castware.cast.ai
+  group: castware
   kind: Component
   path: github.com/castai/castware-operator/api/v1alpha1
   version: v1alpha1
