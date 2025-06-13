@@ -14,10 +14,35 @@ resources:
 - api:
     crdVersion: v1
     namespaced: true
-  controller: true
   domain: cast.ai
   group: castware
-  kind: Castware
+  kind: Cluster
   path: github.com/castai/castware-operator/api/v1alpha1
+  version: v1alpha1
+  webhooks:
+    defaulting: true
+    validation: true
+    webhookVersion: v1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: cast.ai
+  group: castware
+  kind: Component
+  path: github.com/castai/castware-operator/api/v1alpha1
+  version: v1alpha1
+  webhooks:
+    defaulting: true
+    validation: true
+    webhookVersion: v1
+- controller: true
+  domain: cast.ai
+  group: castware.cast.ai
+  kind: Component
+  version: v1alpha1
+- controller: true
+  domain: cast.ai
+  group: castware.cast.ai
+  kind: Cluster
   version: v1alpha1
 version: "3"

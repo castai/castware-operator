@@ -1,5 +1,5 @@
 apiVersion: castware.cast.ai/v1alpha1
-kind: Castware
+kind: Cluster
 metadata:
   labels:
     app.kubernetes.io/name: castware-operator
@@ -7,3 +7,13 @@ metadata:
   name: castware-sample
 spec:
   # TODO(user): Add fields here
+---
+apiVersion: castware.cast.ai/v1alpha1
+kind: Component
+metadata:
+  labels:
+    app.kubernetes.io/name: castware-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: castware-sample
+spec:
+# TODO(user): Add fields here
