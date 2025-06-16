@@ -2,12 +2,13 @@ package controller
 
 import (
 	"context"
-	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 )
 
 // ClusterReconciler reconciles a Cluster object
