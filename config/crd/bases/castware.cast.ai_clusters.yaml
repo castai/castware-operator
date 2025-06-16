@@ -96,10 +96,6 @@ spec:
                 type: object
               provider:
                 description: Provider is the cloud provider where Castware is installed.
-                enum:
-                - aws
-                - gke
-                - aks
                 type: string
             required:
             - api

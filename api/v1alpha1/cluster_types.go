@@ -12,8 +12,7 @@ import (
 // ClusterSpec defines the desired state of Cluster
 type ClusterSpec struct {
 	// Provider is the cloud provider where Castware is installed.
-	// +kubebuilder:validation:Enum=aws;gke;aks
-	// +optional
+	//+optional
 	Provider string `json:"provider"`
 
 	// APIKeySecret is the name of the Kubernetes Secret containing the Mothership API key.
