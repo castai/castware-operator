@@ -6,4 +6,6 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: castware-sample
 spec:
+  api:
+    apiUrl: https://api--niccolos-macbook-pro.local.cast.ai
   # TODO(user): Add fields here
