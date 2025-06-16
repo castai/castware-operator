@@ -64,15 +64,15 @@ jobs:
           username: _json_key
           password: ${{ secrets.ARTIFACT_BUILDER_JSON_KEY }}
 
-      - name: Build and push main
-        if: github.event_name != 'release'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          platforms: linux/arm64,linux/amd64
-          tags: |
-            us-docker.pkg.dev/castai-hub/library/castware-operator:${{ github.sha }}
+      # - name: Build and push main
+      #   if: github.event_name != 'release'
+      #   uses: docker/build-push-action@v6
+      #   with:
+      #     context: .
+      #     push: true
+      #     platforms: linux/arm64,linux/amd64
+      #     tags: |
+      #       us-docker.pkg.dev/castai-hub/library/castware-operator:${{ github.sha }}
 
       - name: Build and push release
         if: github.event_name == 'release'
