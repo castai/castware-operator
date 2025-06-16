@@ -49,7 +49,7 @@ jobs:
           CGO_ENABLED: 0
 
       - name: Test
-        run: go test -race ./...
+        run: make test
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
@@ -68,8 +68,6 @@ jobs:
         if: github.event_name != 'release'
         uses: docker/build-push-action@v6
         with:
-          ssh: |
-            default=${{ env.SSH_AUTH_SOCK }}
           context: .
           push: true
           platforms: linux/arm64,linux/amd64
@@ -81,8 +79,6 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          ssh: |
-            default=${{ env.SSH_AUTH_SOCK }}
           push: true
           platforms: linux/arm64,linux/amd64
           tags: |
@@ -100,6 +96,30 @@ jobs:
         with:
           api-key: ${{ secrets.FOSSA_API_KEY }}
           container: us-docker.pkg.dev/castai-hub/library/castware-operator:${{ env.RELEASE_TAG }}
+  e2e:
+    name: E2E test
+    runs-on: ubuntu-24.04
+    if: ${{ github.event_name == 'pull_request' }}
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: 1.24.4
+
+      - name: Create k8s Kind Cluster
+        uses: helm/kind-action@v1.5.0
+        with:
+          cluster_name: castware-operator-e2e
+          node_image: kindest/node:v1.27.3
+          kubectl_version: v1.27.3
+
+      - name: Run E2E tests
+        run: make test-e2e
+
 
   release_module:
     name: Release GO Module
