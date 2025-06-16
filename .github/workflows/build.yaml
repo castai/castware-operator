@@ -1,0 +1,130 @@
+name: Build
+on:
+  push:
+    branches:
+      - main
+  release:
+    types:
+      - published
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: 1.24.4
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-build-${{ hashFiles('**/go.sum') }}
+          restore-keys: ${{ runner.os }}-build-
+
+      - name: Get release tag
+        if: github.event_name == 'release'
+        run: echo "RELEASE_TAG=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
+
+      - name: Build Go binary amd64
+        run: go build -ldflags "-s -w -X main.GitCommit=$GITHUB_SHA -X main.GitRef=$GITHUB_REF -X main.Version=${RELEASE_TAG:-commit-$GITHUB_SHA}" -o bin/castware-operator-amd64 cmd/main.go
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: 0
+
+      - name: Build Go binary arm64
+        run: go build -ldflags "-s -w -X main.GitCommit=$GITHUB_SHA -X main.GitRef=$GITHUB_REF -X main.Version=${RELEASE_TAG:-commit-$GITHUB_SHA}" -o bin/castware-operator-arm64 cmd/main.go
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: 0
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to Google Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: us-docker.pkg.dev
+          username: _json_key
+          password: ${{ secrets.ARTIFACT_BUILDER_JSON_KEY }}
+
+      - name: Build and push main
+        if: github.event_name != 'release'
+        uses: docker/build-push-action@v6
+        with:
+          ssh: |
+            default=${{ env.SSH_AUTH_SOCK }}
+          context: .
+          push: true
+          platforms: linux/arm64,linux/amd64
+          tags: |
+            us-docker.pkg.dev/castai-hub/library/castware-operator:${{ github.sha }}
+
+      - name: Build and push release
+        if: github.event_name == 'release'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          ssh: |
+            default=${{ env.SSH_AUTH_SOCK }}
+          push: true
+          platforms: linux/arm64,linux/amd64
+          tags: |
+           us-docker.pkg.dev/castai-hub/library/castware-operator:${{ env.RELEASE_TAG }}
+           us-docker.pkg.dev/castai-hub/library/castware-operator:latest
+
+      - name: Docker pull for fossa main
+        if: github.event_name == 'release'
+        run: docker pull us-docker.pkg.dev/castai-hub/library/castware-operator:${{ env.RELEASE_TAG }}
+
+      - name: FOSSA scan docker image
+        if: github.event_name == 'release'
+        continue-on-error: true
+        uses: fossas/fossa-action@v1
+        with:
+          api-key: ${{ secrets.FOSSA_API_KEY }}
+          container: us-docker.pkg.dev/castai-hub/library/castware-operator:${{ env.RELEASE_TAG }}
+
+  release_module:
+    name: Release GO Module
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'release'
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          path: src/
+
+      - name: Get release tag
+        run: echo "RELEASE_TAG=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
+
+      - name: Authenticate with Google Cloud Artifact Registry
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: '${{ secrets.GCP_MODULES_RELEASER_JSON_KEY }}'
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: package-go-module
+
+      - name: Upload Library to Artifact Registry
+        run: |
+          gcloud artifacts go upload --repository=go-modules --location=us-central1 --version ${{ env.RELEASE_TAG }} --module-path=github.com/castai/castware-operator --source=./src
