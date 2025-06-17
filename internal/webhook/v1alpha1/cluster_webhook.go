@@ -3,6 +3,8 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"github.com/castai/castware-operator/internal/castai/auth"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -19,8 +21,9 @@ var clusterlog = logf.Log.WithName("cluster-resource")
 
 // SetupClusterWebhookWithManager registers the webhook for Cluster in the manager.
 func SetupClusterWebhookWithManager(mgr ctrl.Manager) error {
+
 	return ctrl.NewWebhookManagedBy(mgr).For(&castwarev1alpha1.Cluster{}).
-		WithValidator(&ClusterCustomValidator{}).
+		WithValidator(&ClusterCustomValidator{client: mgr.GetClient()}).
 		WithDefaulter(&ClusterCustomDefaulter{}).
 		Complete()
 }
@@ -65,10 +68,20 @@ func (d *ClusterCustomDefaulter) Default(ctx context.Context, obj runtime.Object
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
 type ClusterCustomValidator struct {
-	// TODO(user): Add more fields as needed for validation
+	client client.Client
 }
 
 var _ webhook.CustomValidator = &ClusterCustomValidator{}
+
+func (v *ClusterCustomValidator) validateApiKey(ctx context.Context, cluster *castwarev1alpha1.Cluster) error {
+	auth := auth.NewAuth(cluster.Namespace, cluster.Name)
+
+	err := auth.LoadApiKey(ctx, v.client)
+	if err != nil {
+		return fmt.Errorf("unable to load api key: %w", err)
+	}
+	return nil
+}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type Cluster.
 func (v *ClusterCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
@@ -76,10 +89,13 @@ func (v *ClusterCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 	if !ok {
 		return nil, fmt.Errorf("expected a Cluster object but got %T", obj)
 	}
-	clusterlog.Info("Validation for Cluster upon creation", "name", cluster.GetName())
 
-	// TODO(user): fill in your validation logic upon object creation.
+	err := v.validateApiKey(ctx, cluster)
+	if err != nil {
+		return nil, err
+	}
 
+	clusterlog.Info("New cluster validated", "name", cluster.GetName())
 	return nil, nil
 }
 
@@ -89,9 +105,17 @@ func (v *ClusterCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	if !ok {
 		return nil, fmt.Errorf("expected a Cluster object for the newObj but got %T", newObj)
 	}
+	oldCluster, ok := oldObj.(*castwarev1alpha1.Cluster)
+	if !ok {
+		return nil, fmt.Errorf("expected a Cluster object for the newObj but got %T", newObj)
+	}
 	clusterlog.Info("Validation for Cluster upon update", "name", cluster.GetName())
-
-	// TODO(user): fill in your validation logic upon object update.
+	if oldCluster.Spec.APIKeySecret != cluster.Spec.APIKeySecret {
+		err := v.validateApiKey(ctx, cluster)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	return nil, nil
 }
