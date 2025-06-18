@@ -49,6 +49,21 @@ func (mr *MockAuthMockRecorder) ApiKey() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ApiKey", reflect.TypeOf((*MockAuth)(nil).ApiKey))
 }
 
+// GetApiKey mocks base method.
+func (m *MockAuth) GetApiKey(arg0 context.Context, arg1 client.Reader) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetApiKey", arg0, arg1)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetApiKey indicates an expected call of GetApiKey.
+func (mr *MockAuthMockRecorder) GetApiKey(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApiKey", reflect.TypeOf((*MockAuth)(nil).GetApiKey), arg0, arg1)
+}
+
 // LoadApiKey mocks base method.
 func (m *MockAuth) LoadApiKey(arg0 context.Context, arg1 client.Reader) error {
 	m.ctrl.T.Helper()
