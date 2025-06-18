@@ -90,6 +90,9 @@ func (v *ClusterCustomValidator) validateApiKey(ctx context.Context, cluster *ca
 	if err != nil {
 		return err
 	}
+
+	// TODO: WIRE-1334 - make an api call to check that the token is valid
+
 	return nil
 }
 

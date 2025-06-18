@@ -40,6 +40,9 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
+
+	// TODO: when implementing reconciler add a watcher to monitor api key secret changes and refresh cache
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&castwarev1alpha1.Cluster{}).
 		Named("cluster").
