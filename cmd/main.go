@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/castai/castware-operator/internal/config"
+
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -31,6 +33,13 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
+)
+
+// These should be set via `go build` during a release.
+var (
+	GitCommit = "undefined"
+	GitRef    = "no-ref"
+	Version   = "local"
 )
 
 func init() {
@@ -72,6 +81,12 @@ func main() {
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	version := config.CastwareOperatorVersion{
+		GitCommit: GitCommit,
+		GitRef:    GitRef,
+		Version:   Version,
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
@@ -201,18 +216,16 @@ func main() {
 
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookcastwarev1alpha1.SetupClusterWebhookWithManager(mgr); err != nil {
+		if err = webhookcastwarev1alpha1.SetupClusterWebhookWithManager(mgr, &version); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Cluster")
 			os.Exit(1)
 		}
-	}
-	// nolint:goconst
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		if err = webhookcastwarev1alpha1.SetupComponentWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Component")
 			os.Exit(1)
 		}
 	}
+
 	if err = (&controller.ComponentReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

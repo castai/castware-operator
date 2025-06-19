@@ -24,14 +24,14 @@ import (
 var clusterlog = logf.Log.WithName("cluster-resource")
 
 // SetupClusterWebhookWithManager registers the webhook for Cluster in the manager.
-func SetupClusterWebhookWithManager(mgr ctrl.Manager) error {
+func SetupClusterWebhookWithManager(mgr ctrl.Manager, version *config.CastwareOperatorVersion) error {
 	cfg, err := config.GetFromEnvironment()
 	if err != nil {
 		return fmt.Errorf("unable to load config from environment: %w", err)
 	}
 
 	return ctrl.NewWebhookManagedBy(mgr).For(&castwarev1alpha1.Cluster{}).
-		WithValidator(&ClusterCustomValidator{client: mgr.GetClient(), config: cfg}).
+		WithValidator(&ClusterCustomValidator{client: mgr.GetClient(), config: cfg, version: version}).
 		WithDefaulter(&ClusterCustomDefaulter{}).
 		Complete()
 }
@@ -76,8 +76,9 @@ func (d *ClusterCustomDefaulter) Default(ctx context.Context, obj runtime.Object
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
 type ClusterCustomValidator struct {
-	client client.Client
-	config *config.Config
+	client  client.Client
+	config  *config.Config
+	version *config.CastwareOperatorVersion
 }
 
 var _ webhook.CustomValidator = &ClusterCustomValidator{}
@@ -90,14 +91,12 @@ func (v *ClusterCustomValidator) validateApiKey(ctx context.Context, cluster *ca
 		return fmt.Errorf("unable to load api key: %w", err)
 	}
 
-	restClient := castai.NewRestyClient(v.config, cluster.Spec.API.APIURL, auth, "v0.1")
+	restClient := castai.NewRestyClient(v.config, cluster.Spec.API.APIURL, auth, v.version.Version)
 
 	_, err = castai.NewClient(logrus.New(), restClient).Me(ctx)
 	if err != nil {
 		return err
 	}
-
-	// TODO: WIRE-1334 - make an api call to check that the token is valid
 
 	return nil
 }
