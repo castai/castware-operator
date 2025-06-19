@@ -3,13 +3,14 @@ package castai
 import (
 	"context"
 	"encoding/json"
+	"testing"
+	"time"
+
 	mock_auth "github.com/castai/castware-operator/internal/castai/auth/mock"
 	"github.com/golang/mock/gomock"
 	"github.com/jarcoal/httpmock"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
-	"testing"
-	"time"
 )
 
 func TestClientMe(t *testing.T) {

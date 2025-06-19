@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"time"
+
 	"github.com/castai/castware-operator/internal/castai/auth"
 	"github.com/go-resty/resty/v2"
 	"github.com/sirupsen/logrus"
-	"net/http"
-	"time"
 )
 
 const (
