@@ -3,10 +3,10 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/castai/castware-operator/internal/castai"
 	"github.com/castai/castware-operator/internal/castai/auth"
+	"github.com/castai/castware-operator/internal/config"
 	"github.com/sirupsen/logrus"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -25,9 +25,13 @@ var clusterlog = logf.Log.WithName("cluster-resource")
 
 // SetupClusterWebhookWithManager registers the webhook for Cluster in the manager.
 func SetupClusterWebhookWithManager(mgr ctrl.Manager) error {
+	cfg, err := config.GetFromEnvironment()
+	if err != nil {
+		return fmt.Errorf("unable to load config from environment: %w", err)
+	}
 
 	return ctrl.NewWebhookManagedBy(mgr).For(&castwarev1alpha1.Cluster{}).
-		WithValidator(&ClusterCustomValidator{client: mgr.GetClient()}).
+		WithValidator(&ClusterCustomValidator{client: mgr.GetClient(), config: cfg}).
 		WithDefaulter(&ClusterCustomDefaulter{}).
 		Complete()
 }
@@ -73,6 +77,7 @@ func (d *ClusterCustomDefaulter) Default(ctx context.Context, obj runtime.Object
 // as this struct is used only for temporary operations and does not need to be deeply copied.
 type ClusterCustomValidator struct {
 	client client.Client
+	config *config.Config
 }
 
 var _ webhook.CustomValidator = &ClusterCustomValidator{}
@@ -85,7 +90,7 @@ func (v *ClusterCustomValidator) validateApiKey(ctx context.Context, cluster *ca
 		return fmt.Errorf("unable to load api key: %w", err)
 	}
 
-	restClient := castai.NewRestyClient(cluster.Spec.API.APIURL, logrus.InfoLevel, "v0.1", auth, time.Second*5)
+	restClient := castai.NewRestyClient(v.config, cluster.Spec.API.APIURL, auth, "v0.1")
 
 	_, err = castai.NewClient(logrus.New(), restClient).Me(ctx)
 	if err != nil {

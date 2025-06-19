@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
-	"time"
 
 	mock_auth "github.com/castai/castware-operator/internal/castai/auth/mock"
+	"github.com/castai/castware-operator/internal/config"
 	"github.com/golang/mock/gomock"
 	"github.com/jarcoal/httpmock"
 	"github.com/sirupsen/logrus"
@@ -14,13 +14,15 @@ import (
 )
 
 func TestClientMe(t *testing.T) {
+	cfg := &config.Config{LogLevel: config.LogLevel(logrus.DebugLevel)}
 
 	t.Run("should call api when api key is available", func(t *testing.T) {
 		r := require.New(t)
 		ctx := context.Background()
 		ctrl := gomock.NewController(t)
 		mockAuth := mock_auth.NewMockAuth(ctrl)
-		restyClient := NewRestyClient("https://api.castai.test", logrus.TraceLevel, "0", mockAuth, time.Second*5)
+
+		restyClient := NewRestyClient(cfg, "https://api.castai.test", mockAuth, "0")
 		httpmock.ActivateNonDefault(restyClient.GetClient())
 		t.Cleanup(func() {
 			httpmock.Deactivate()
@@ -44,7 +46,7 @@ func TestClientMe(t *testing.T) {
 		ctx := context.Background()
 		ctrl := gomock.NewController(t)
 		mockAuth := mock_auth.NewMockAuth(ctrl)
-		restyClient := NewRestyClient("https://api.castai.test", logrus.TraceLevel, "0", mockAuth, time.Second*5)
+		restyClient := NewRestyClient(cfg, "https://api.castai.test", mockAuth, "0")
 		httpmock.ActivateNonDefault(restyClient.GetClient())
 		t.Cleanup(func() {
 			httpmock.Deactivate()
@@ -68,7 +70,7 @@ func TestClientMe(t *testing.T) {
 		ctx := context.Background()
 		ctrl := gomock.NewController(t)
 		mockAuth := mock_auth.NewMockAuth(ctrl)
-		restyClient := NewRestyClient("https://api.castai.test", logrus.TraceLevel, "0", mockAuth, time.Second*5)
+		restyClient := NewRestyClient(cfg, "https://api.castai.test", mockAuth, "0")
 		httpmock.ActivateNonDefault(restyClient.GetClient())
 		t.Cleanup(func() {
 			httpmock.Deactivate()

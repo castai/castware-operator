@@ -7,9 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/castai/castware-operator/internal/castai/auth"
+	"github.com/castai/castware-operator/internal/config"
 	"github.com/go-resty/resty/v2"
 	"github.com/sirupsen/logrus"
 )
@@ -37,10 +37,10 @@ func NewClient(log *logrus.Logger, rest *resty.Client) CastAIClient {
 	}
 }
 
-func NewRestyClient(apiURL string, level logrus.Level, version string, auth auth.Auth, defaultTimeout time.Duration) *resty.Client {
+func NewRestyClient(config *config.Config, apiURL string, auth auth.Auth, version string) *resty.Client {
 
 	client := resty.NewWithClient(&http.Client{
-		Timeout: defaultTimeout,
+		Timeout: config.RequestTimeout,
 	})
 
 	client.SetBaseURL(apiURL)
@@ -53,7 +53,7 @@ func NewRestyClient(apiURL string, level logrus.Level, version string, auth auth
 		return nil
 	})
 	client.Header.Set(headerUserAgent, "castai-castware-operator/"+version)
-	if level == logrus.TraceLevel {
+	if config.LogLevel.Level() == logrus.TraceLevel {
 		client.SetDebug(true)
 	}
 
