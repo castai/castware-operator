@@ -19,18 +19,33 @@ type Auth interface {
 type auth struct {
 	clusterCR string
 	namespace string
+	cluster   *castwarev1alpha1.Cluster
 	apiKey    string
 	lock      sync.RWMutex
 }
 
+func NewAuthFromCR(cluster *castwarev1alpha1.Cluster) Auth {
+	return &auth{clusterCR: cluster.Name, namespace: cluster.Namespace, cluster: cluster}
+}
 func NewAuth(namespace, clusterCR string) Auth {
 	return &auth{clusterCR: clusterCR, namespace: namespace}
 }
 
-// GetApiKey returns the api key extracted from the secret specified in cluster CR
-func (a *auth) GetApiKey(ctx context.Context, r client.Reader) (string, error) {
+func (a *auth) getCluster(ctx context.Context, r client.Reader) (*castwarev1alpha1.Cluster, error) {
+	if a.cluster != nil {
+		return a.cluster, nil
+	}
 	cluster := &castwarev1alpha1.Cluster{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: a.clusterCR}, cluster)
+	if err != nil {
+		return nil, err
+	}
+	return cluster, nil
+}
+
+// GetApiKey returns the api key extracted from the secret specified in cluster CR
+func (a *auth) GetApiKey(ctx context.Context, r client.Reader) (string, error) {
+	cluster, err := a.getCluster(ctx, r)
 	if err != nil {
 		return "", err
 	}

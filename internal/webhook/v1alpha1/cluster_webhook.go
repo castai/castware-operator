@@ -3,6 +3,8 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/castai/castware-operator/internal/castai"
 	"github.com/castai/castware-operator/internal/castai/auth"
@@ -54,13 +56,27 @@ var _ webhook.CustomDefaulter = &ClusterCustomDefaulter{}
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind Cluster.
 func (d *ClusterCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
 	cluster, ok := obj.(*castwarev1alpha1.Cluster)
-
 	if !ok {
-		return fmt.Errorf("expected an Cluster object but got %T", obj)
+		return fmt.Errorf("expected a Cluster object but got %T", obj)
 	}
-	clusterlog.Info("Defaulting for Cluster", "name", cluster.GetName())
+	apiURL, err := url.Parse(cluster.Spec.API.APIURL)
+	if err != nil {
+		return fmt.Errorf("invalid api url: %w", err)
+	}
+	baseUrl := strings.Split(apiURL.Host, ".")
+	if len(baseUrl) < 2 {
+		return fmt.Errorf("invalid api url: %s", cluster.Spec.API.APIURL)
+	}
+	baseUrl = baseUrl[1:]
 
-	// TODO(user): fill in your defaulting logic.
+	if cluster.Spec.API.GrpcURL == "" {
+		cluster.Spec.API.GrpcURL = strings.Join(append([]string{"grpc"}, baseUrl...), ".")
+		clusterlog.Info("setting GrpcURL from ApiURL", "url", cluster.Spec.API.GrpcURL)
+	}
+	if cluster.Spec.API.KvisorGrpcURL == "" {
+		cluster.Spec.API.KvisorGrpcURL = strings.Join(append([]string{"kvisor"}, baseUrl...), ".")
+		clusterlog.Info("setting KvisorGrpcURL from ApiURL", "url", cluster.Spec.API.KvisorGrpcURL)
+	}
 
 	return nil
 }
@@ -84,7 +100,7 @@ type ClusterCustomValidator struct {
 var _ webhook.CustomValidator = &ClusterCustomValidator{}
 
 func (v *ClusterCustomValidator) validateApiKey(ctx context.Context, cluster *castwarev1alpha1.Cluster) error {
-	auth := auth.NewAuth(cluster.Namespace, cluster.Name)
+	auth := auth.NewAuthFromCR(cluster)
 
 	err := auth.LoadApiKey(ctx, v.client)
 	if err != nil {
@@ -106,6 +122,10 @@ func (v *ClusterCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 	cluster, ok := obj.(*castwarev1alpha1.Cluster)
 	if !ok {
 		return nil, fmt.Errorf("expected a Cluster object but got %T", obj)
+	}
+
+	if cluster.Spec.Provider == "" {
+		return nil, fmt.Errorf("provider must be specified")
 	}
 
 	err := v.validateApiKey(ctx, cluster)
@@ -133,6 +153,13 @@ func (v *ClusterCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	if oldCluster.Spec.Provider != cluster.Spec.Provider {
+		if cluster.Spec.Provider == "" {
+			return nil, fmt.Errorf("provider must be specified")
+		}
+		return admission.Warnings{"provider value was updated"}, nil
 	}
 
 	return nil, nil

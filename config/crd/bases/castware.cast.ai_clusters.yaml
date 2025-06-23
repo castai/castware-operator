@@ -47,7 +47,6 @@ spec:
                   apiGrpcUrl:
                     description: apiGrpcUrl is the gRPC endpoint for the Mothership
                       API (optional).
-                    format: uri
                     type: string
                   apiUrl:
                     description: apiUrl is the “base” HTTP URL of the Mothership API.
@@ -56,12 +55,10 @@ spec:
                   grpcUrl:
                     description: grpcUrl is a generic gRPC endpoint for any Mothership
                       service (optional).
-                    format: uri
                     type: string
                   kvisorGrpcUrl:
                     description: kvisorGrpcUrl is the gRPC endpoint for the Kvisor
                       service (optional).
-                    format: uri
                     type: string
                 required:
                 - apiUrl

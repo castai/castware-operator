@@ -60,14 +60,28 @@ func NewRestyClient(config *config.Config, apiURL string, auth auth.Auth, versio
 	return client
 }
 
+// toError converts an unsuccessful response to an error
+func (c *Client) toError(resp *resty.Response) error {
+	if resp.IsSuccess() {
+		return nil
+	}
+	apiError := ApiError{}
+	err := json.Unmarshal(resp.Body(), &apiError)
+	if err != nil {
+		return fmt.Errorf("error calling api %s: %d - %w", resp.Request.URL, resp.StatusCode(), err)
+	}
+	return fmt.Errorf("error calling api %s: %d - %s", resp.Request.URL, resp.StatusCode(), apiError.Message)
+}
+
 // Me gets profile for current user.
 func (c *Client) Me(ctx context.Context) (*User, error) {
 	resp, err := c.rest.R().SetContext(ctx).Get("/v1/me")
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode() != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode())
+	err = c.toError(resp)
+	if err != nil {
+		return nil, err
 	}
 	user := &User{}
 	err = json.Unmarshal(resp.Body(), user)
