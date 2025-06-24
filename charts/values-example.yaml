@@ -1,0 +1,76 @@
+# Example values file for castware-operator
+# This demonstrates how to configure the operator with resources
+
+# Image configuration
+image:
+  repository: cast.ai/castware-operator
+  tag: "0.0.1"
+  pullPolicy: IfNotPresent
+
+# Enable CRD installation
+installCRDs: true
+
+# Enable webhooks with cert-manager
+webhook:
+  enabled: true
+  certManager:
+    enabled: true
+
+# Leader election configuration
+leaderElection:
+  enabled: true
+  resourceLock: "leases"
+  resourceName: "castware-operator-leader-election"
+
+# Create a default cluster
+defaultCluster:
+  enabled: true
+  name: "castware"
+  api:
+    apiUrl: "https://api.cast.ai"
+    # Optional: apiGrpcUrl, grpcUrl, kvisorGrpcUrl
+  apiKeySecret: "castware-api-key"
+  provider: "gke"
+
+# Create default components
+defaultComponents:
+  enabled: true
+  components:
+    - name: "castai-agent"
+      component: "castai-agent"
+      cluster: "castware"
+      enabled: true
+      version: "latest"
+      values:
+        replicaCount: 2
+        image:
+          tag: "v1.3.0"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        additionalEnv:
+          PPROF_PORT: "6060"
+
+# Resource configuration
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Pod security context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+      - ALL
+
+# Pod security context
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  runAsUser: 1000
