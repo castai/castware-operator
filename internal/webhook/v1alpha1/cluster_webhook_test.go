@@ -2,11 +2,12 @@ package v1alpha1
 
 import (
 	"context"
+	"testing"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
-	"testing"
 
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 )
@@ -59,7 +60,7 @@ func TestValidateUpdate(t *testing.T) {
 		warnings, err := sut.ValidateUpdate(ctx, oldObj, newObj)
 		r.NoError(err)
 		r.Len(warnings, 1)
-		r.Equal("provider value was updated", string(warnings[0]))
+		r.Equal("provider value was updated", warnings[0])
 	})
 }
 
