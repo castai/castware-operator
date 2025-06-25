@@ -47,7 +47,7 @@ func TestValidateUpdate(t *testing.T) {
 		_, err := sut.ValidateUpdate(ctx, oldObj, newObj)
 		r.Error(err)
 	})
-	t.Run("should return warning when provider is updated", func(t *testing.T) {
+	t.Run("should return error when provider is updated", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx := context.Background()
@@ -57,10 +57,58 @@ func TestValidateUpdate(t *testing.T) {
 		newObj := &castwarev1alpha1.Cluster{}
 		newObj.Spec.Provider = "test2"
 
-		warnings, err := sut.ValidateUpdate(ctx, oldObj, newObj)
-		r.NoError(err)
-		r.Len(warnings, 1)
-		r.Equal("provider value was updated", warnings[0])
+		_, err := sut.ValidateUpdate(ctx, oldObj, newObj)
+		r.Error(err)
+	})
+	t.Run("should return error when cluster spec is deleted", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		sut := &ClusterCustomValidator{}
+
+		oldObj := &castwarev1alpha1.Cluster{}
+		oldObj.Spec.Cluster = &castwarev1alpha1.ClusterMetadataSpec{
+			ClusterID:   "id1",
+			ClusterName: "name1",
+			ProjectID:   "proj1",
+			Location:    "loc1",
+		}
+
+		newObj := &castwarev1alpha1.Cluster{}
+		newObj.Spec.Provider = oldObj.Spec.Provider
+		// newObj.Spec.Cluster == nil
+
+		_, err := sut.ValidateUpdate(ctx, oldObj, newObj)
+		r.Error(err)
+	})
+	t.Run("should return error when any cluster spec field is modified", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		sut := &ClusterCustomValidator{}
+
+		oldSpec := &castwarev1alpha1.ClusterMetadataSpec{
+			ClusterID:   "id1",
+			ClusterName: "name1",
+			ProjectID:   "proj1",
+			Location:    "loc1",
+		}
+
+		oldObj := &castwarev1alpha1.Cluster{}
+		oldObj.Spec.Provider = "prov"
+		oldObj.Spec.Cluster = oldSpec
+
+		newObj := &castwarev1alpha1.Cluster{}
+		newObj.Spec.Provider = "prov"
+		newObj.Spec.Cluster = &castwarev1alpha1.ClusterMetadataSpec{
+			ClusterID:   "DIFFERENT", // modified
+			ClusterName: oldSpec.ClusterName,
+			ProjectID:   oldSpec.ProjectID,
+			Location:    oldSpec.Location,
+		}
+
+		_, err := sut.ValidateUpdate(ctx, oldObj, newObj)
+		r.Error(err)
 	})
 }
 

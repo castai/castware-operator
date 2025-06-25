@@ -147,13 +147,6 @@ func (v *ClusterCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	if !ok {
 		return nil, fmt.Errorf("expected a Cluster object for the newObj but got %T", newObj)
 	}
-	clusterlog.Info("Validation for Cluster upon update", "name", cluster.GetName())
-	if oldCluster.Spec.APIKeySecret != cluster.Spec.APIKeySecret {
-		err := v.validateApiKey(ctx, cluster)
-		if err != nil {
-			return nil, err
-		}
-	}
 
 	if oldCluster.Spec.Provider != cluster.Spec.Provider {
 		return nil, fmt.Errorf("provider cannot be modified")
@@ -171,6 +164,13 @@ func (v *ClusterCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	}
 	if oldCluster.Spec.Cluster != nil && cluster.Spec.Cluster == nil {
 		return nil, fmt.Errorf("cluster spec cannot be deleted")
+	}
+
+	if oldCluster.Spec.APIKeySecret != cluster.Spec.APIKeySecret {
+		err := v.validateApiKey(ctx, cluster)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return nil, nil
