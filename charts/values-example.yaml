@@ -1,7 +1,6 @@
 # Example values file for castware-operator
-# This demonstrates how to configure the operator with resources
+# This demonstrates how to configure the operator with default CRs and resources
 
-# Image configuration
 image:
   repository: cast.ai/castware-operator
   tag: "0.0.1"
@@ -21,6 +20,15 @@ leaderElection:
   enabled: true
   resourceLock: "leases"
   resourceName: "castware-operator-leader-election"
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
 
 # Create a default cluster
 defaultCluster:
@@ -52,25 +60,3 @@ defaultComponents:
         additionalEnv:
           PPROF_PORT: "6060"
 
-# Resource configuration
-resources:
-  limits:
-    cpu: 100m
-    memory: 128Mi
-  requests:
-    cpu: 100m
-    memory: 128Mi
-
-# Pod security context
-securityContext:
-  runAsNonRoot: true
-  runAsUser: 1000
-  capabilities:
-    drop:
-      - ALL
-
-# Pod security context
-podSecurityContext:
-  fsGroup: 1000
-  runAsNonRoot: true
-  runAsUser: 1000
