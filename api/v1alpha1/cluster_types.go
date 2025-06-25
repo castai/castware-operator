@@ -42,17 +42,14 @@ type APISpec struct {
 	APIURL string `json:"apiUrl,omitempty"`
 
 	// apiGrpcUrl is the gRPC endpoint for the Mothership API (optional).
-	// +kubebuilder:validation:Format=uri
 	// +optional
 	APIGrpcURL string `json:"apiGrpcUrl,omitempty"`
 
 	// grpcUrl is a generic gRPC endpoint for any Mothership service (optional).
-	// +kubebuilder:validation:Format=uri
 	// +optional
 	GrpcURL string `json:"grpcUrl,omitempty"`
 
 	// kvisorGrpcUrl is the gRPC endpoint for the Kvisor service (optional).
-	// +kubebuilder:validation:Format=uri
 	// +optional
 	KvisorGrpcURL string `json:"kvisorGrpcUrl,omitempty"`
 }

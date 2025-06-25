@@ -1,12 +1,144 @@
 package v1alpha1
 
 import (
+	"context"
+	"testing"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
-	// TODO (user): Add any additional imports if needed
 )
+
+func TestValidateCreate(t *testing.T) {
+
+	t.Run("should return error when object is not castwarev1alpha1.Cluster", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		sut := &ClusterCustomValidator{}
+
+		_, err := sut.ValidateCreate(ctx, &appsv1.Deployment{})
+		r.Error(err)
+	})
+	t.Run("should return error when provider is not specified", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		sut := &ClusterCustomValidator{}
+
+		_, err := sut.ValidateCreate(ctx, &castwarev1alpha1.Cluster{})
+		r.Error(err)
+	})
+}
+func TestValidateUpdate(t *testing.T) {
+
+	t.Run("should return error when provider is not specified", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		sut := &ClusterCustomValidator{}
+		oldObj := &castwarev1alpha1.Cluster{}
+		oldObj.Spec.Provider = "test"
+		newObj := &castwarev1alpha1.Cluster{}
+
+		_, err := sut.ValidateUpdate(ctx, oldObj, newObj)
+		r.Error(err)
+	})
+	t.Run("should return error when provider is updated", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		sut := &ClusterCustomValidator{}
+		oldObj := &castwarev1alpha1.Cluster{}
+		oldObj.Spec.Provider = "test"
+		newObj := &castwarev1alpha1.Cluster{}
+		newObj.Spec.Provider = "test2"
+
+		_, err := sut.ValidateUpdate(ctx, oldObj, newObj)
+		r.Error(err)
+	})
+	t.Run("should return error when cluster spec is deleted", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		sut := &ClusterCustomValidator{}
+
+		oldObj := &castwarev1alpha1.Cluster{}
+		oldObj.Spec.Cluster = &castwarev1alpha1.ClusterMetadataSpec{
+			ClusterID:   "id1",
+			ClusterName: "name1",
+			ProjectID:   "proj1",
+			Location:    "loc1",
+		}
+
+		newObj := &castwarev1alpha1.Cluster{}
+		newObj.Spec.Provider = oldObj.Spec.Provider
+		// newObj.Spec.Cluster == nil
+
+		_, err := sut.ValidateUpdate(ctx, oldObj, newObj)
+		r.Error(err)
+	})
+	t.Run("should return error when any cluster spec field is modified", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		sut := &ClusterCustomValidator{}
+
+		oldSpec := &castwarev1alpha1.ClusterMetadataSpec{
+			ClusterID:   "id1",
+			ClusterName: "name1",
+			ProjectID:   "proj1",
+			Location:    "loc1",
+		}
+
+		oldObj := &castwarev1alpha1.Cluster{}
+		oldObj.Spec.Provider = "prov"
+		oldObj.Spec.Cluster = oldSpec
+
+		newObj := &castwarev1alpha1.Cluster{}
+		newObj.Spec.Provider = "prov"
+		newObj.Spec.Cluster = &castwarev1alpha1.ClusterMetadataSpec{
+			ClusterID:   "DIFFERENT", // modified
+			ClusterName: oldSpec.ClusterName,
+			ProjectID:   oldSpec.ProjectID,
+			Location:    oldSpec.Location,
+		}
+
+		_, err := sut.ValidateUpdate(ctx, oldObj, newObj)
+		r.Error(err)
+	})
+}
+
+func TestDefault(t *testing.T) {
+
+	t.Run("should set GrpcURL if empty", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		sut := &ClusterCustomDefaulter{}
+		obj := &castwarev1alpha1.Cluster{}
+		obj.Spec.API.APIURL = "https://api.cast.ai"
+
+		err := sut.Default(ctx, obj)
+		r.NoError(err)
+		r.Equal("grpc.cast.ai", obj.Spec.API.GrpcURL)
+	})
+	t.Run("should set KvisorGrpcURL if empty", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		sut := &ClusterCustomDefaulter{}
+		obj := &castwarev1alpha1.Cluster{}
+		obj.Spec.API.APIURL = "https://api.cast.ai"
+
+		err := sut.Default(ctx, obj)
+		r.NoError(err)
+		r.Equal("kvisor.cast.ai", obj.Spec.API.KvisorGrpcURL)
+	})
+}
 
 var _ = Describe("Cluster Webhook", func() {
 	var (
