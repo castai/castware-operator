@@ -156,10 +156,21 @@ func (v *ClusterCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	}
 
 	if oldCluster.Spec.Provider != cluster.Spec.Provider {
-		if cluster.Spec.Provider == "" {
-			return nil, fmt.Errorf("provider must be specified")
+		return nil, fmt.Errorf("provider cannot be modified")
+	}
+
+	if oldCluster.Spec.Cluster != nil && cluster.Spec.Cluster != nil {
+		oldClusterSpec := oldCluster.Spec.Cluster
+		newClusterSpec := cluster.Spec.Cluster
+		if oldClusterSpec.ClusterID != newClusterSpec.ClusterID ||
+			oldClusterSpec.ClusterName != newClusterSpec.ClusterName ||
+			oldClusterSpec.ProjectID != newClusterSpec.ProjectID ||
+			oldClusterSpec.Location != newClusterSpec.Location {
+			return nil, fmt.Errorf("cluster spec cannot be modified after onboarding")
 		}
-		return admission.Warnings{"provider value was updated"}, nil
+	}
+	if oldCluster.Spec.Cluster != nil && cluster.Spec.Cluster == nil {
+		return nil, fmt.Errorf("cluster spec cannot be deleted")
 	}
 
 	return nil, nil
