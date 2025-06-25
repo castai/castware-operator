@@ -68,7 +68,7 @@ func (c *Client) toError(resp *resty.Response) error {
 	apiError := ApiError{}
 	err := json.Unmarshal(resp.Body(), &apiError)
 	if err != nil {
-		return fmt.Errorf("error calling api %s: %d - %w", resp.Request.URL, resp.StatusCode(), err)
+		return fmt.Errorf("error calling api %s: %d - %s", resp.Request.URL, resp.StatusCode(), string(resp.Body()))
 	}
 	return fmt.Errorf("error calling api %s: %d - %s", resp.Request.URL, resp.StatusCode(), apiError.Message)
 }
