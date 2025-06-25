@@ -74,7 +74,7 @@ leaderElection:
 defaultCluster:
   enabled: false
   # This will create a default Cluster CR if enabled
-  name: "castware"
+  name: "castai"
   api:
     apiUrl: "https://api.cast.ai"
   apiKeySecret: "castware-api-key"
@@ -88,7 +88,7 @@ defaultComponents:
   # Example:
   # - name: "castai-agent"
   #   component: "castai-agent"
-  #   cluster: "default"
+  #   cluster: "castai"
   #   enabled: true
   #   version: "v1.3.0"
   #   values:

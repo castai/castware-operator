@@ -25,12 +25,12 @@ leaderElection:
 # Create a default cluster
 defaultCluster:
   enabled: true
-  name: "castware"
+  name: "castai"
+  provider: "gke"
   api:
     apiUrl: "https://api.cast.ai"
     # Optional: apiGrpcUrl, grpcUrl, kvisorGrpcUrl
   apiKeySecret: "castware-api-key"
-  provider: "gke"
 
 # Create default components
 defaultComponents:
@@ -38,7 +38,7 @@ defaultComponents:
   components:
     - name: "castai-agent"
       component: "castai-agent"
-      cluster: "castware"
+      cluster: "castai"
       enabled: true
       version: "latest"
       values:
