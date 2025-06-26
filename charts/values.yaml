@@ -4,7 +4,6 @@ image:
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
 
-# Leader election configuration
 leaderElection:
   enabled: true
   # Leader election resource lock type
@@ -60,17 +59,8 @@ webhook:
     # If cert-manager is not installed, set this to false and provide your own certificates
     # You'll need to create a secret with the certificates and update the webhook configuration
 
-# Metrics configuration
 metrics:
   enabled: true
-
-# Leader election configuration
-leaderElection:
-  enabled: true
-  # Leader election resource lock type
-  resourceLock: "leases"
-  # Leader election resource name
-  resourceName: "castware-operator-leader-election"
 
 # Default cluster configuration
 defaultCluster:
