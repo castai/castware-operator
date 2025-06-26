@@ -1,0 +1,151 @@
+{{- if .Values.installCRDs }}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clusters.castware.cast.ai
+spec:
+  group: castware.cast.ai
+  names:
+    kind: Cluster
+    listKind: ClusterList
+    plural: clusters
+    singular: cluster
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Cluster is the Schema for the clusters API
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ClusterSpec defines the desired state of Cluster
+            properties:
+              api:
+                description: API holds all the Mothership API endpoints. Only apiUrl is required; the others are derived if omitted.
+                properties:
+                  apiGrpcUrl:
+                    description: apiGrpcUrl is the gRPC endpoint for the Mothership API (optional).
+                    format: uri
+                    type: string
+                  apiUrl:
+                    description: apiUrl is the "base" HTTP URL of the Mothership API.
+                    format: uri
+                    type: string
+                  grpcUrl:
+                    description: grpcUrl is a generic gRPC endpoint for any Mothership service (optional).
+                    format: uri
+                    type: string
+                  kvisorGrpcUrl:
+                    description: kvisorGrpcUrl is the gRPC endpoint for the Kvisor service (optional).
+                    format: uri
+                    type: string
+                required:
+                - apiUrl
+                type: object
+              apiKeySecret:
+                default: castware-api-key
+                description: APIKeySecret is the name of the Kubernetes Secret containing the Mothership API key. The operator does not work without it.
+                type: string
+              cluster:
+                description: Cluster contains metadata that is populated after the agent registers. All fields here are optional; if missing, the operator will fill them in at runtime.
+                properties:
+                  clusterID:
+                    description: ClusterID is the unique UUID of this cluster in the Cast AI database.
+                    pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89ABab][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$
+                    type: string
+                  clusterName:
+                    description: ClusterName is a human-readable name for this cluster (optional).
+                    type: string
+                  location:
+                    description: Location is the region or zone of the cluster (optional).
+                    type: string
+                  projectID:
+                    description: ProjectID is the cloud-provider project/subscription/account ID (optional).
+                    type: string
+                type: object
+              provider:
+                description: Provider is the cloud provider where Castware is installed.
+                type: string
+            required:
+            - api
+            - apiKeySecret
+            type: object
+          status:
+            description: ClusterStatus defines the observed state of Cluster
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: components.castware.cast.ai
+spec:
+  group: castware.cast.ai
+  names:
+    kind: Component
+    listKind: ComponentList
+    plural: components
+    singular: component
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Component is the Schema for the components API
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ComponentSpec defines the desired state of Component
+            properties:
+              cluster:
+                default: castai
+                description: Cluster is the name of the cluster CRD containing global parameters for this component.
+                type: string
+              component:
+                default: castai
+                description: Component is the name of the component represented in this CRD.
+                type: string
+              enabled:
+                description: Enabled is set to false if this component should be scaled to zero replicas.
+                type: boolean
+              values:
+                description: Values is a free-form map of Helm values (exactly like a values.yaml block). The operator will pass these to `helm install/upgrade --values`.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              version:
+                description: Version is the the version of the helm chart that should be installed, if not specified the latest version will be installed and the value will be filled by the operator.
+                type: string
+            required:
+            - cluster
+            - component
+            - enabled
+            type: object
+          status:
+            description: ComponentStatus defines the observed state of Component
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+{{- end }}

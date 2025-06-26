@@ -1,0 +1,108 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-cluster-role
+  labels:
+    {{- include "castware-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - castware.cast.ai.cast.ai
+  resources:
+  - clusters
+  - components
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - castware.cast.ai.cast.ai
+  resources:
+  - clusters/finalizers
+  - components/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - castware.cast.ai.cast.ai
+  resources:
+  - clusters/status
+  - components/status
+  verbs:
+  - get
+  - patch
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-cluster-role-binding
+  labels:
+    {{- include "castware-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "castware-operator.fullname" . }}-cluster-role
+subjects:
+- kind: ServiceAccount
+  name: {{ include "castware-operator.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- if .Values.leaderElection.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-leader-election-role
+  labels:
+    {{- include "castware-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-leader-election-role-binding
+  labels:
+    {{- include "castware-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "castware-operator.fullname" . }}-leader-election-role
+subjects:
+- kind: ServiceAccount
+  name: {{ include "castware-operator.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}

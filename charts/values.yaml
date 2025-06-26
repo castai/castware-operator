@@ -1,0 +1,96 @@
+image:
+  repository: us-docker.pkg.dev/castai-hub/library/castware-operator
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+leaderElection:
+  enabled: true
+  # Leader election resource lock type
+  resourceLock: "leases"
+  # Leader election resource name
+  resourceName: "castware-operator-leader-election"
+
+replicaCount: 1
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  fsGroup: 1005
+  runAsGroup: 1005
+  runAsUser: 1005
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 80
+
+resources: {}
+
+# CRD installation
+installCRDs: true
+
+# Webhook configuration
+webhook:
+  enabled: true
+  # Certificate manager configuration
+  certManager:
+    enabled: true
+    # If cert-manager is not installed, set this to false and provide your own certificates
+    # You'll need to create a secret with the certificates and update the webhook configuration
+
+metrics:
+  enabled: true
+
+apiKeySecret:
+  # Whether to create the API key secret
+  create: false
+  # Name of the secret (defaults to "castware-api-key")
+  name: "castware-api-key"
+  # The actual API key value (should be set via --set apiKeySecret.apiKey=YOUR_API_KEY)
+  apiKey: ""
+
+# Default cluster configuration
+defaultCluster:
+  enabled: false
+  # This will create a default Cluster CR if enabled
+  name: "castai"
+  api:
+    apiUrl: "https://api.cast.ai"
+  # If not specified, will use apiKeySecret.name from above
+  apiKeySecret: ""
+
+# Default components configuration
+defaultComponents:
+  enabled: false
+  # List of default components to create
+  # Each component will be created with the specified configuration
+  components: []
+  # Example:
+  # - name: "castai-agent"
+  #   component: "castai-agent"
+  #   cluster: "castai"
+  #   enabled: true
+  #   version: "v1.3.0"
+  #   values:
+  #     replicaCount: 1
