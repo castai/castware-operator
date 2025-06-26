@@ -17,7 +17,7 @@ spec:
     {{- if .Values.defaultCluster.api.kvisorGrpcUrl }}
     kvisorGrpcUrl: {{ .Values.defaultCluster.api.kvisorGrpcUrl | quote }}
     {{- end }}
-  apiKeySecret: {{ .Values.defaultCluster.apiKeySecret | quote }}
+  apiKeySecret: {{ .Values.defaultCluster.apiKeySecret | default (.Values.apiKeySecret.name | default "castware-api-key") | quote }}
   {{- if .Values.defaultCluster.provider }}
   provider: {{ .Values.defaultCluster.provider | quote }}
   {{- end }}

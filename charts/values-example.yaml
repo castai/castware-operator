@@ -30,6 +30,12 @@ resources:
     memory: 128Mi
 
 
+# API Key Secret configuration
+# Set this to true to create the secret, and provide the API key via --set
+apiKeySecret:
+  create: true
+  name: "castware-api-key"
+
 # Create a default cluster
 defaultCluster:
   enabled: true
@@ -38,7 +44,8 @@ defaultCluster:
   api:
     apiUrl: "https://api.cast.ai"
     # Optional: apiGrpcUrl, grpcUrl, kvisorGrpcUrl
-  apiKeySecret: "castware-api-key"
+  # Will use apiKeySecret.name if not specified
+  apiKeySecret: ""
 
 # Create default components
 defaultComponents:

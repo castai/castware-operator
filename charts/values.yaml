@@ -62,6 +62,14 @@ webhook:
 metrics:
   enabled: true
 
+apiKeySecret:
+  # Whether to create the API key secret
+  create: false
+  # Name of the secret (defaults to "castware-api-key")
+  name: "castware-api-key"
+  # The actual API key value (should be set via --set apiKeySecret.apiKey=YOUR_API_KEY)
+  apiKey: ""
+
 # Default cluster configuration
 defaultCluster:
   enabled: false
@@ -69,7 +77,8 @@ defaultCluster:
   name: "castai"
   api:
     apiUrl: "https://api.cast.ai"
-  apiKeySecret: "castware-api-key"
+  # If not specified, will use apiKeySecret.name from above
+  apiKeySecret: ""
 
 # Default components configuration
 defaultComponents:
