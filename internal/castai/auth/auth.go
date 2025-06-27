@@ -50,7 +50,7 @@ func (a *auth) GetApiKey(ctx context.Context, r client.Reader) (string, error) {
 		return "", err
 	}
 	apiKeySecret := &corev1.Secret{}
-	err = r.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: cluster.Spec.APIKeySecret}, apiKeySecret)
+	err = r.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Spec.APIKeySecret}, apiKeySecret)
 	if err != nil {
 		return "", err
 	}

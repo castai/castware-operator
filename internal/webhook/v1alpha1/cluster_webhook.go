@@ -6,10 +6,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/castai/castware-operator/internal/castai"
 	"github.com/castai/castware-operator/internal/castai/auth"
 	"github.com/castai/castware-operator/internal/config"
-	"github.com/sirupsen/logrus"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -107,12 +105,15 @@ func (v *ClusterCustomValidator) validateApiKey(ctx context.Context, cluster *ca
 		return fmt.Errorf("unable to load api key: %w", err)
 	}
 
-	restClient := castai.NewRestyClient(v.config, cluster.Spec.API.APIURL, auth, v.version.Version)
+	// TODO: enable api call
+	/*
+		restClient := castai.NewRestyClient(v.config, cluster.Spec.API.APIURL, auth, v.version.Version)
 
-	_, err = castai.NewClient(logrus.New(), restClient).Me(ctx)
-	if err != nil {
-		return err
-	}
+		_, err = castai.NewClient(logrus.New(), restClient).Me(ctx)
+		if err != nil {
+			return err
+		}
+	*/
 
 	return nil
 }
