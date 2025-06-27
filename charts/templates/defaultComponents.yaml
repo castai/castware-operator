@@ -1,0 +1,22 @@
+{{- if .Values.defaultComponents.enabled }}
+{{- range .Values.defaultComponents.components }}
+---
+apiVersion: castware.cast.ai/v1alpha1
+kind: Component
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "castware-operator.labels" $ | nindent 4 }}
+spec:
+  component: {{ .component | quote }}
+  cluster: {{ .cluster | quote }}
+  enabled: {{ .enabled }}
+  {{- if .version }}
+  version: {{ .version | quote }}
+  {{- end }}
+  {{- if .values }}
+  values:
+    {{- toYaml .values | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}
