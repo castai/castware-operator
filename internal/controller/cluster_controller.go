@@ -4,10 +4,16 @@ import (
 	"castai-agent/pkg/services/providers/aks"
 	"castai-agent/pkg/services/providers/eks"
 	"castai-agent/pkg/services/providers/gke"
-	"castai-agent/pkg/services/providers/types"
+	providers "castai-agent/pkg/services/providers/types"
 	"context"
 	"fmt"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/castai/castware-operator/internal/config"
 
@@ -21,6 +27,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+)
+
+// Definitions to manage status conditions
+const (
+	// typeAvailableCluster represents the status when cluster resource is reconciled and works as expected.
+	typeAvailableCluster = "Available"
+	// typeProgressingCluster represents the status when cluster resource reconciliation is in progress.
+	typeProgressingCluster = "Progressing"
+	// typeDegradedCastware represents the status used when something went wrong with cluster reconciliation.
+	typeDegradedCluster = "Degraded"
 )
 
 // clusterReconciler reconciles a Cluster object
@@ -40,15 +56,6 @@ func NewClusterReconciler(mgr manager.Manager) *clusterReconciler {
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=clusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=clusters/finalizers,verbs=update
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the Cluster object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
 func (r *clusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -66,6 +73,16 @@ func (r *clusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
+	if meta.IsStatusConditionTrue(cluster.Status.Conditions, typeAvailableCluster) {
+		// Cluster already reconciled, wait until something triggers the reconcile loop again or retry in 5 minutes.
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+	}
+
+	if err := r.setProgressing(ctx, cluster, true); err != nil {
+		log.Error(err, "Failed to set progressing")
+		return ctrl.Result{}, err
+	}
+
 	clusterMetadata := cluster.Spec.Cluster
 	if clusterMetadata == nil || clusterMetadata.ClusterID == "" {
 		p, err := GetProvider(ctx, cluster)
@@ -75,15 +92,20 @@ func (r *clusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{}, err
 		}
 
-		client, err := r.getCastaiClient(ctx, cluster)
+		castAiClient, err := r.getCastaiClient(ctx, cluster)
 		if err != nil {
 			log.Error(err, "Failed to get castaiClient")
 			return ctrl.Result{}, err
 		}
 
-		result, err := p.RegisterCluster(ctx, client)
+		result, err := p.RegisterCluster(ctx, castAiClient)
 		if err != nil {
 			log.Error(err, "Failed to register cluster")
+			meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{Type: typeDegradedCluster, Status: metav1.ConditionUnknown, Reason: err.Error(), Message: "Failed to register cluster"})
+			err = r.Status().Update(ctx, cluster)
+			if err != nil {
+				log.Error(err, "Failed to set status")
+			}
 			// TODO: retry logic
 			return ctrl.Result{RequeueAfter: time.Minute * 1}, err
 		}
@@ -95,10 +117,33 @@ func (r *clusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			// TODO: retry logic
 			return ctrl.Result{RequeueAfter: time.Minute * 1}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+	}
+
+	if clusterMetadata.ClusterID != "" {
+		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{Type: typeAvailableCluster, Status: metav1.ConditionTrue, Reason: "ClusterID available", Message: "Cluster reconciled"})
+		err = r.Status().Update(ctx, cluster)
+		if err != nil {
+			log.Error(err, "Failed to set available status")
+			return ctrl.Result{}, err
+		}
+	}
+
+	if err := r.setProgressing(ctx, cluster, false); err != nil {
+		log.Error(err, "Failed to set progressing")
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *clusterReconciler) setProgressing(ctx context.Context, cluster *castwarev1alpha1.Cluster, isProgressing bool) error {
+	status := metav1.ConditionFalse
+	if isProgressing {
+		status = metav1.ConditionTrue
+	}
+	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{Type: typeProgressingCluster, Status: status, Reason: "", Message: "Reconciling cluster"})
+	return r.Status().Update(ctx, cluster)
 }
 
 func (r *clusterReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
@@ -117,7 +162,7 @@ func (r *clusterReconciler) getCastaiClient(ctx context.Context, cluster *castwa
 	return client, nil
 }
 
-func GetProvider(ctx context.Context, cluster *castwarev1alpha1.Cluster) (types.Provider, error) {
+func GetProvider(ctx context.Context, cluster *castwarev1alpha1.Cluster) (providers.Provider, error) {
 	// TODO: move log
 	log := logrus.New()
 
@@ -137,9 +182,37 @@ func GetProvider(ctx context.Context, cluster *castwarev1alpha1.Cluster) (types.
 func (r *clusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// TODO: when implementing reconciler add a watcher to monitor api key secret changes and refresh cache
+	updatePredicate := predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			log := mgr.GetLogger()
+			switch newObj := e.ObjectNew.(type) {
+			case *castwarev1alpha1.Cluster:
+				return true
+			case *corev1.Secret:
+				oldObj, ok := e.ObjectOld.(*corev1.Secret)
+				if !ok {
+					log.Info("not updating", "name", e.ObjectOld.GetName())
+					return false
+				}
+				oldKey, ok := oldObj.Data["API_KEY"]
+				if !ok {
+					return false
+				}
+				newKey, ok := newObj.Data["API_KEY"]
+				if !ok {
+					return false
+				}
+				// Trigger reconcile when secret changes
+				return string(oldKey) != string(newKey)
+			}
+
+			return false
+		},
+	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&castwarev1alpha1.Cluster{}).
+		WithEventFilter(updatePredicate).
 		Named("cluster").
 		Complete(r)
 }
