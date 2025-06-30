@@ -7,6 +7,7 @@ import (
 	providers "castai-agent/pkg/services/providers/types"
 	"context"
 	"fmt"
+	"k8s.io/apimachinery/pkg/types"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -73,11 +74,6 @@ func (r *clusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	if meta.IsStatusConditionTrue(cluster.Status.Conditions, typeAvailableCluster) {
-		// Cluster already reconciled, wait until something triggers the reconcile loop again or retry in 5 minutes.
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
-	}
-
 	if err := r.setProgressing(ctx, cluster, true); err != nil {
 		log.Error(err, "Failed to set progressing")
 		return ctrl.Result{}, err
@@ -120,13 +116,38 @@ func (r *clusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
 
-	if clusterMetadata.ClusterID != "" {
+	if clusterMetadata.ClusterID != "" && !meta.IsStatusConditionTrue(cluster.Status.Conditions, typeAvailableCluster) {
 		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{Type: typeAvailableCluster, Status: metav1.ConditionTrue, Reason: "ClusterID available", Message: "Cluster reconciled"})
 		err = r.Status().Update(ctx, cluster)
 		if err != nil {
 			log.Error(err, "Failed to set available status")
 			return ctrl.Result{}, err
 		}
+	}
+
+	// Check if api key secret changed.
+	secret := &corev1.Secret{}
+	secKey := types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Spec.APIKeySecret}
+	if err := r.Get(ctx, secKey, secret); err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+	currentSecretVersion := ""
+	if secret != nil {
+		currentSecretVersion = secret.ResourceVersion
+	}
+	// If api key changed validate the new one.
+	if currentSecretVersion != cluster.Status.LastSecretVersion {
+		client, err := r.getCastaiClient(ctx, cluster)
+		if err != nil {
+			log.Error(err, "Failed to get api client")
+			return ctrl.Result{}, err
+		}
+		// TODO: better client validation
+		client.Me(ctx)
+	}
+	cluster.Status.LastSecretVersion = currentSecretVersion
+	if err := r.Status().Update(ctx, cluster); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	if err := r.setProgressing(ctx, cluster, false); err != nil {
@@ -181,7 +202,6 @@ func GetProvider(ctx context.Context, cluster *castwarev1alpha1.Cluster) (provid
 // SetupWithManager sets up the controller with the Manager.
 func (r *clusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
-	// TODO: when implementing reconciler add a watcher to monitor api key secret changes and refresh cache
 	updatePredicate := predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			log := mgr.GetLogger()

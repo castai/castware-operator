@@ -80,7 +80,7 @@ type ClusterStatus struct {
 	// Conditions store the status conditions of the Cluster instances
 	// +operator-sdk:csv:customresourcedefinitions:type=status
 	Conditions        []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
-	UpdateClusterInfo bool               `json:"updateClusterInfo,omitempty"`
+	LastSecretVersion string             `json:"lastSecretVersion,omitempty"`
 }
 
 //+kubebuilder:object:root=true
