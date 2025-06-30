@@ -15,7 +15,7 @@ import (
 )
 
 // namespace where the project is deployed in
-const namespace = "castware-operator-system"
+const namespace = "castai-agent"
 
 // serviceAccountName created for the project
 const serviceAccountName = "castware-operator-controller-manager"
