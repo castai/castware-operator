@@ -136,12 +136,31 @@ var _ = Describe("Component Webhook", func() {
 			Expect(validator.ValidateCreate(ctx, obj)).To(BeNil())
 		})
 
-		// It("Should validate updates correctly", func() {
-		//     By("simulating a valid update scenario")
-		//     oldObj.SomeRequiredField = "updated_value"
-		//     obj.SomeRequiredField = "updated_value"
-		//     Expect(validator.ValidateUpdate(ctx, oldObj, obj)).To(BeNil())
-		// })
-	})
+		It("Should deny update if component name has changed", func() {
+			By("simulating an invalid update scenario")
+			oldObj.Spec.Component = "castai-agent"
+			obj.Spec.Component = "changed"
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).Error().To(MatchError("component name cannot be modified"))
+		})
 
+		It("Should deny update if component cluster CRD has changed", func() {
+			By("simulating an invalid update scenario")
+			oldObj.Spec.Cluster = "castai"
+			obj.Spec.Cluster = "changed"
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).Error().To(MatchError("referenced cluster CRD cannot be modified"))
+		})
+
+		It("Should admit update", func() {
+			By("simulating a valid update scenario")
+			oldObj.Spec.Component = "castai-agent"
+			oldObj.Spec.Cluster = "castai"
+			oldObj.Spec.Enabled = false
+			obj.Spec.Component = "castai-agent"
+			obj.Spec.Cluster = "castai"
+			obj.Spec.Enabled = true
+			Expect(validator.ValidateUpdate(ctx, oldObj, obj)).To(BeNil())
+		})
+	})
 })

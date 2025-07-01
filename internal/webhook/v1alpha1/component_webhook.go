@@ -129,9 +129,17 @@ func (v *ComponentCustomValidator) ValidateUpdate(ctx context.Context, oldObj, n
 	if !ok {
 		return nil, fmt.Errorf("expected a Component object for the newObj but got %T", newObj)
 	}
-	componentlog.Info("Validation for Component upon update", "name", component.GetName())
+	oldComponent, ok := oldObj.(*castwarev1alpha1.Component)
+	if !ok {
+		return nil, fmt.Errorf("expected a Component object for the oldObj but got %T", newObj)
+	}
 
-	// TODO(user): fill in your validation logic upon object update.
+	if oldComponent.Spec.Component != component.Spec.Component {
+		return nil, fmt.Errorf("component name cannot be modified")
+	}
+	if oldComponent.Spec.Cluster != component.Spec.Cluster {
+		return nil, fmt.Errorf("referenced cluster CRD cannot be modified")
+	}
 
 	return nil, nil
 }
