@@ -15,7 +15,7 @@ type ComponentSpec struct {
 
 	// Component is the name of the component represented in this CRD.
 	//+kubebuilder:validation:Required
-	//+kubebuilder:default:="castai"
+	//+kubebuilder:default:="castai-agent"
 	Component string `json:"component"`
 
 	// Cluster is the name of the cluster CRD containing global parameters for this component.

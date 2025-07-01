@@ -137,7 +137,7 @@ func (v *ClusterCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	}
 	oldCluster, ok := oldObj.(*castwarev1alpha1.Cluster)
 	if !ok {
-		return nil, fmt.Errorf("expected a Cluster object for the newObj but got %T", newObj)
+		return nil, fmt.Errorf("expected a Cluster object for the oldObj but got %T", newObj)
 	}
 
 	if oldCluster.Spec.Provider != cluster.Spec.Provider {

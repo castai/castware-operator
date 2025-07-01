@@ -22,6 +22,7 @@ const (
 
 var (
 	ErrNoApiKey = errors.New("no api key")
+	ErrNotFound = errors.New("not found")
 	version     config.CastwareOperatorVersion
 )
 
@@ -29,6 +30,7 @@ type CastAIClient interface {
 	castai.Client
 	Me(ctx context.Context) (*User, error)
 	GetCluster(ctx context.Context, clusterID string) (*Cluster, error)
+	GetComponentByName(ctx context.Context, name string) (*Component, error)
 }
 type Client struct {
 	log  logrus.FieldLogger
@@ -146,4 +148,28 @@ func (c *Client) SendDelta(ctx context.Context, clusterID string, delta *castai.
 // SendLogEvent is not supported in castware operator, this function is here only to implement castai.Client interface needed for cluster registration
 func (c *Client) SendLogEvent(ctx context.Context, clusterID string, req *castai.IngestAgentLogsRequest) (*castai.IngestAgentLogsResponse, error) {
 	return nil, errors.New("not supported")
+}
+
+// GetComponentByName retrieves a component by its name.
+func (c *Client) GetComponentByName(ctx context.Context, name string) (*Component, error) {
+	resp, err := c.rest.R().
+		SetContext(ctx).
+		SetQueryParam("name", name).
+		Get("cluster-management/v1/components:getByName")
+	if err != nil {
+		return nil, err
+	}
+	err = c.toError(resp)
+	if err != nil {
+		if resp.StatusCode() == http.StatusNotFound {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	component := &Component{}
+	err = json.Unmarshal(resp.Body(), component)
+	if err != nil {
+		return nil, err
+	}
+	return component, nil
 }
