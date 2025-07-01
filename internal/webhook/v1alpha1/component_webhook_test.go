@@ -18,6 +18,10 @@ import (
 )
 
 var _ = Describe("Component Webhook", func() {
+	const (
+		componentName = "castai-agent"
+		clusterName   = "castai"
+	)
 	var (
 		obj       *castwarev1alpha1.Component
 		oldObj    *castwarev1alpha1.Component
@@ -68,11 +72,11 @@ var _ = Describe("Component Webhook", func() {
 				switch r.URL.Path {
 				case "/v1/me":
 					w.WriteHeader(http.StatusOK)
-					w.Write(dummyUser)
+					_, _ = w.Write(dummyUser)
 					return
 				case "/cluster-management/v1/components:getByName":
 					w.WriteHeader(http.StatusOK)
-					w.Write(dummyComponent)
+					_, _ = w.Write(dummyComponent)
 					return
 				default:
 					defer GinkgoRecover()
@@ -94,7 +98,7 @@ var _ = Describe("Component Webhook", func() {
 
 			cluster := &castwarev1alpha1.Cluster{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "castai",
+					Name:      clusterName,
 					Namespace: "default",
 				},
 				Spec: castwarev1alpha1.ClusterSpec{
@@ -121,7 +125,7 @@ var _ = Describe("Component Webhook", func() {
 
 		It("Should deny creation if cluster does not exist", func() {
 			By("simulating an invalid creation scenario")
-			obj.Spec.Component = "castai-agent"
+			obj.Spec.Component = componentName
 			obj.Spec.Cluster = "invalid"
 			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).Error().To(HaveOccurred())
@@ -130,15 +134,15 @@ var _ = Describe("Component Webhook", func() {
 
 		It("Should admit creation", func() {
 			By("simulating a valid creation scenario")
-			obj.Spec.Component = "castai-agent"
-			obj.Spec.Cluster = "castai"
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = clusterName
 			obj.SetNamespace("default")
 			Expect(validator.ValidateCreate(ctx, obj)).To(BeNil())
 		})
 
 		It("Should deny update if component name has changed", func() {
 			By("simulating an invalid update scenario")
-			oldObj.Spec.Component = "castai-agent"
+			oldObj.Spec.Component = componentName
 			obj.Spec.Component = "changed"
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
 			Expect(err).Error().To(MatchError("component name cannot be modified"))
@@ -146,7 +150,7 @@ var _ = Describe("Component Webhook", func() {
 
 		It("Should deny update if component cluster CRD has changed", func() {
 			By("simulating an invalid update scenario")
-			oldObj.Spec.Cluster = "castai"
+			oldObj.Spec.Cluster = clusterName
 			obj.Spec.Cluster = "changed"
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
 			Expect(err).Error().To(MatchError("referenced cluster CRD cannot be modified"))
@@ -154,11 +158,11 @@ var _ = Describe("Component Webhook", func() {
 
 		It("Should admit update", func() {
 			By("simulating a valid update scenario")
-			oldObj.Spec.Component = "castai-agent"
-			oldObj.Spec.Cluster = "castai"
+			oldObj.Spec.Component = componentName
+			oldObj.Spec.Cluster = clusterName
 			oldObj.Spec.Enabled = false
-			obj.Spec.Component = "castai-agent"
-			obj.Spec.Cluster = "castai"
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = clusterName
 			obj.Spec.Enabled = true
 			Expect(validator.ValidateUpdate(ctx, oldObj, obj)).To(BeNil())
 		})
