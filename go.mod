@@ -8,6 +8,7 @@ godebug default=go1.24.4
 
 require (
 	castai-agent v0.0.0-00010101000000-000000000000
+	github.com/bombsimon/logrusr/v4 v4.1.0
 	github.com/go-resty/resty/v2 v2.16.5
 	github.com/golang/mock v1.6.0
 	github.com/jarcoal/httpmock v1.4.0

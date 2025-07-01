@@ -20,26 +20,34 @@ const (
 	headerUserAgent = "User-Agent"
 )
 
-var ErrNoApiKey = errors.New("no api key")
+var (
+	ErrNoApiKey = errors.New("no api key")
+	version     config.CastwareOperatorVersion
+)
 
 type CastAIClient interface {
 	castai.Client
 	Me(ctx context.Context) (*User, error)
+	GetCluster(ctx context.Context, clusterID string) (*Cluster, error)
 }
 type Client struct {
-	log  *logrus.Logger
+	log  logrus.FieldLogger
 	rest *resty.Client
 }
 
+func SetVersion(v config.CastwareOperatorVersion) {
+	version = v
+}
+
 // NewClient returns new Client for communicating with Cast AI.
-func NewClient(log *logrus.Logger, rest *resty.Client) CastAIClient {
+func NewClient(log logrus.FieldLogger, rest *resty.Client) CastAIClient {
 	return &Client{
 		log:  log,
 		rest: rest,
 	}
 }
 
-func NewRestyClient(config *config.Config, apiURL string, auth auth.Auth, version string) *resty.Client {
+func NewRestyClient(config *config.Config, apiURL string, auth auth.Auth) *resty.Client {
 
 	client := resty.NewWithClient(&http.Client{
 		Timeout: config.RequestTimeout,
@@ -54,7 +62,7 @@ func NewRestyClient(config *config.Config, apiURL string, auth auth.Auth, versio
 		c.SetHeader(headerAPIKey, apiKey)
 		return nil
 	})
-	client.Header.Set(headerUserAgent, "castai-castware-operator/"+version)
+	client.Header.Set(headerUserAgent, "castai-castware-operator/"+version.String())
 	if config.LogLevel.Level() == logrus.TraceLevel {
 		client.SetDebug(true)
 	}
@@ -79,6 +87,25 @@ func (c *Client) toError(resp *resty.Response) error {
 func (c *Client) Me(ctx context.Context) (*User, error) {
 	result := &User{}
 	resp, err := c.rest.R().SetResult(result).SetContext(ctx).Get("/v1/me")
+	if err != nil {
+		return nil, err
+	}
+	err = c.toError(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// GetCluster gets a cluster by id.
+func (c *Client) GetCluster(ctx context.Context, clusterID string) (*Cluster, error) {
+	result := &Cluster{}
+	resp, err := c.rest.R().
+		SetResult(result).
+		SetContext(ctx).
+		SetPathParam("clusterId", clusterID).
+		Get("/v1/kubernetes/external-clusters/{clusterId}")
 	if err != nil {
 		return nil, err
 	}

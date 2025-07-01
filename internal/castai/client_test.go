@@ -22,7 +22,7 @@ func TestClientMe(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		mockAuth := mock_auth.NewMockAuth(ctrl)
 
-		restyClient := NewRestyClient(cfg, "https://api.castai.test", mockAuth, "0")
+		restyClient := NewRestyClient(cfg, "https://api.castai.test", mockAuth)
 		httpmock.ActivateNonDefault(restyClient.GetClient())
 		t.Cleanup(func() {
 			httpmock.Deactivate()
@@ -46,7 +46,7 @@ func TestClientMe(t *testing.T) {
 		ctx := context.Background()
 		ctrl := gomock.NewController(t)
 		mockAuth := mock_auth.NewMockAuth(ctrl)
-		restyClient := NewRestyClient(cfg, "https://api.castai.test", mockAuth, "0")
+		restyClient := NewRestyClient(cfg, "https://api.castai.test", mockAuth)
 		httpmock.ActivateNonDefault(restyClient.GetClient())
 		t.Cleanup(func() {
 			httpmock.Deactivate()
@@ -70,7 +70,7 @@ func TestClientMe(t *testing.T) {
 		ctx := context.Background()
 		ctrl := gomock.NewController(t)
 		mockAuth := mock_auth.NewMockAuth(ctrl)
-		restyClient := NewRestyClient(cfg, "https://api.castai.test", mockAuth, "0")
+		restyClient := NewRestyClient(cfg, "https://api.castai.test", mockAuth)
 		httpmock.ActivateNonDefault(restyClient.GetClient())
 		t.Cleanup(func() {
 			httpmock.Deactivate()
