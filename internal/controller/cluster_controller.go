@@ -116,11 +116,26 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
+	if err := r.reconcileSecret(ctx, cluster); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{RequeueAfter: time.Minute * 30}, nil
+}
+
+func (r *ClusterReconciler) reconcileSecret(ctx context.Context, cluster *castwarev1alpha1.Cluster) error {
+	log := r.Log
+
+	// Can't reconcile api key if the cluster is not there.
+	if cluster.Spec.Cluster == nil {
+		return nil
+	}
+
 	// Check if api key secret changed.
 	secret := &corev1.Secret{}
 	secKey := types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Spec.APIKeySecret}
 	if err := r.Get(ctx, secKey, secret); err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, err
+		return err
 	}
 
 	// If api key changed validate the new one.
@@ -128,10 +143,10 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		castAiClient, err := r.getCastaiClient(ctx, cluster)
 		if err != nil {
 			log.WithError(err).Error("Failed to get api client")
-			return ctrl.Result{}, err
+			return err
 		}
-		if _, err := castAiClient.GetCluster(ctx, clusterMetadata.ClusterID); err != nil {
-			log.WithError(err).WithField("clusterId", clusterMetadata.ClusterID).Error("Failed to get cluster")
+		if _, err := castAiClient.GetCluster(ctx, cluster.Spec.Cluster.ClusterID); err != nil {
+			log.WithError(err).WithField("clusterId", cluster.Spec.Cluster.ClusterID).Error("Failed to get cluster")
 
 			// Set cluster to unavailable if GetCluster fails.
 			meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
@@ -143,20 +158,19 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			err = r.Status().Update(ctx, cluster)
 			if err != nil {
 				log.WithError(err).Error("Failed to set available status to false")
-				return ctrl.Result{}, err
+				return err
 			}
 
-			return ctrl.Result{}, err
+			return err
 		}
 		log.Info("Api key updated")
 
 		cluster.Status.LastSecretVersion = secret.ResourceVersion
 		if err := r.Status().Update(ctx, cluster); err != nil {
-			return ctrl.Result{}, err
+			return err
 		}
 	}
-
-	return ctrl.Result{RequeueAfter: time.Minute * 30}, nil
+	return nil
 }
 
 func (r *ClusterReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
