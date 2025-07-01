@@ -231,7 +231,7 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Cluster")
 			os.Exit(1)
 		}
-		if err = webhookcastwarev1alpha1.SetupComponentWebhookWithManager(mgr, &version); err != nil {
+		if err = webhookcastwarev1alpha1.SetupComponentWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Component")
 			os.Exit(1)
 		}

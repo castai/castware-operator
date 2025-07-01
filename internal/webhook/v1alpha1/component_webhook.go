@@ -25,14 +25,14 @@ import (
 var componentlog = logf.Log.WithName("component-resource")
 
 // SetupComponentWebhookWithManager registers the webhook for Component in the manager.
-func SetupComponentWebhookWithManager(mgr ctrl.Manager, version *config.CastwareOperatorVersion) error {
+func SetupComponentWebhookWithManager(mgr ctrl.Manager) error {
 	cfg, err := config.GetFromEnvironment()
 	if err != nil {
 		return fmt.Errorf("unable to load config from environment: %w", err)
 	}
 
 	return ctrl.NewWebhookManagedBy(mgr).For(&castwarev1alpha1.Component{}).
-		WithValidator(&ComponentCustomValidator{client: mgr.GetClient(), config: cfg, version: version}).
+		WithValidator(&ComponentCustomValidator{client: mgr.GetClient(), config: cfg}).
 		WithDefaulter(&ComponentCustomDefaulter{}).
 		Complete()
 }
@@ -77,9 +77,8 @@ func (d *ComponentCustomDefaulter) Default(ctx context.Context, obj runtime.Obje
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
 type ComponentCustomValidator struct {
-	client  client.Client
-	config  *config.Config
-	version *config.CastwareOperatorVersion
+	client client.Client
+	config *config.Config
 }
 
 var _ webhook.CustomValidator = &ComponentCustomValidator{}
@@ -111,7 +110,7 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 		return nil, fmt.Errorf("unable to load api key: %w", err)
 	}
 
-	restClient := castai.NewRestyClient(v.config, cluster.Spec.API.APIURL, auth, v.version.Version)
+	restClient := castai.NewRestyClient(v.config, cluster.Spec.API.APIURL, auth)
 
 	_, err = castai.NewClient(logrus.New(), restClient).GetComponentByName(ctx, c.Spec.Component)
 	if err != nil {
