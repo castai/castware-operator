@@ -19,10 +19,14 @@ const (
 	headerUserAgent = "User-Agent"
 )
 
-var ErrNoApiKey = errors.New("no api key")
+var (
+	ErrNoApiKey = errors.New("no api key")
+	ErrNotFound = errors.New("not found")
+)
 
 type CastAIClient interface {
 	Me(ctx context.Context) (*User, error)
+	GetComponentByName(ctx context.Context, name string) (*Component, error)
 }
 type Client struct {
 	log  *logrus.Logger
@@ -89,4 +93,28 @@ func (c *Client) Me(ctx context.Context) (*User, error) {
 		return nil, err
 	}
 	return user, nil
+}
+
+// GetComponentByName retrieves a component by its name.
+func (c *Client) GetComponentByName(ctx context.Context, name string) (*Component, error) {
+	resp, err := c.rest.R().
+		SetContext(ctx).
+		SetQueryParam("name", name).
+		Get("cluster-management/v1/components:getByName")
+	if err != nil {
+		return nil, err
+	}
+	err = c.toError(resp)
+	if err != nil {
+		if resp.StatusCode() == http.StatusNotFound {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	component := &Component{}
+	err = json.Unmarshal(resp.Body(), component)
+	if err != nil {
+		return nil, err
+	}
+	return component, nil
 }
