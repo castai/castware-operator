@@ -98,7 +98,7 @@ var _ = BeforeSuite(func() {
 	err = SetupClusterWebhookWithManager(mgr, &config.CastwareOperatorVersion{})
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupComponentWebhookWithManager(mgr)
+	err = SetupComponentWebhookWithManager(mgr, &config.CastwareOperatorVersion{})
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:webhook

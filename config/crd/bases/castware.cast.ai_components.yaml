@@ -45,7 +45,7 @@ spec:
                   parameters for this component.
                 type: string
               component:
-                default: castai
+                default: castai-agent
                 description: Component is the name of the component represented in
                   this CRD.
                 type: string
