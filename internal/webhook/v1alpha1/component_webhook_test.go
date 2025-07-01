@@ -34,9 +34,8 @@ var _ = Describe("Component Webhook", func() {
 		obj = &castwarev1alpha1.Component{}
 		oldObj = &castwarev1alpha1.Component{}
 		validator = ComponentCustomValidator{
-			client:  k8sClient,
-			config:  cfg,
-			version: &config.CastwareOperatorVersion{},
+			client: k8sClient,
+			config: cfg,
 		}
 		Expect(validator).NotTo(BeNil(), "Expected validator to be initialized")
 		defaulter = ComponentCustomDefaulter{}

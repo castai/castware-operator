@@ -7,9 +7,10 @@ import (
 	"strings"
 
 	"github.com/castai/castware-operator/internal/castai"
+	"github.com/sirupsen/logrus"
+
 	"github.com/castai/castware-operator/internal/castai/auth"
 	"github.com/castai/castware-operator/internal/config"
-	"github.com/sirupsen/logrus"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -26,27 +27,22 @@ import (
 var clusterlog = logf.Log.WithName("cluster-resource")
 
 // SetupClusterWebhookWithManager registers the webhook for Cluster in the manager.
-func SetupClusterWebhookWithManager(mgr ctrl.Manager, version *config.CastwareOperatorVersion) error {
+func SetupClusterWebhookWithManager(mgr ctrl.Manager) error {
 	cfg, err := config.GetFromEnvironment()
 	if err != nil {
 		return fmt.Errorf("unable to load config from environment: %w", err)
 	}
 
 	return ctrl.NewWebhookManagedBy(mgr).For(&castwarev1alpha1.Cluster{}).
-		WithValidator(&ClusterCustomValidator{client: mgr.GetClient(), config: cfg, version: version}).
+		WithValidator(&ClusterCustomValidator{client: mgr.GetClient(), config: cfg}).
 		WithDefaulter(&ClusterCustomDefaulter{}).
 		Complete()
 }
-
-// TODO(user): EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 
 // +kubebuilder:webhook:path=/mutate-castware-cast-ai-v1alpha1-cluster,mutating=true,failurePolicy=fail,sideEffects=None,groups=castware.cast.ai,resources=clusters,verbs=create;update,versions=v1alpha1,name=mcluster-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // ClusterCustomDefaulter struct is responsible for setting default values on the custom resource of the
 // Kind Cluster when those are created or updated.
-//
-// NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
-// as it is used only for temporary operations and does not need to be deeply copied.
 type ClusterCustomDefaulter struct {
 	// TODO(user): Add more fields as needed for defaulting
 }
@@ -88,13 +84,9 @@ func (d *ClusterCustomDefaulter) Default(ctx context.Context, obj runtime.Object
 
 // ClusterCustomValidator struct is responsible for validating the Cluster resource
 // when it is created, updated, or deleted.
-//
-// NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
-// as this struct is used only for temporary operations and does not need to be deeply copied.
 type ClusterCustomValidator struct {
-	client  client.Client
-	config  *config.Config
-	version *config.CastwareOperatorVersion
+	client client.Client
+	config *config.Config
 }
 
 var _ webhook.CustomValidator = &ClusterCustomValidator{}
@@ -107,7 +99,7 @@ func (v *ClusterCustomValidator) validateApiKey(ctx context.Context, cluster *ca
 		return fmt.Errorf("unable to load api key: %w", err)
 	}
 
-	restClient := castai.NewRestyClient(v.config, cluster.Spec.API.APIURL, auth, v.version.Version)
+	restClient := castai.NewRestyClient(v.config, cluster.Spec.API.APIURL, auth)
 
 	_, err = castai.NewClient(logrus.New(), restClient).Me(ctx)
 	if err != nil {

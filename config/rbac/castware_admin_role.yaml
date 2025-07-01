@@ -16,12 +16,20 @@ rules:
 - apiGroups:
   - castware.cast.ai
   resources:
-  - castwares
+  - clusters
+  - components
   verbs:
   - '*'
 - apiGroups:
   - castware.cast.ai
   resources:
-  - castwares/status
+  - clusters/status
+  - components/status
   verbs:
   - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete

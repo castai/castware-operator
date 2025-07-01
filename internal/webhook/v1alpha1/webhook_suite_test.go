@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/castai/castware-operator/internal/config"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -95,10 +93,10 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupClusterWebhookWithManager(mgr, &config.CastwareOperatorVersion{})
+	err = SetupClusterWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupComponentWebhookWithManager(mgr, &config.CastwareOperatorVersion{})
+	err = SetupComponentWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:webhook
