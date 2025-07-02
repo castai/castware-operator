@@ -2,40 +2,237 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"time"
 
+	"helm.sh/helm/v3/pkg/release"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/castai/castware-operator/internal/castai"
+	"github.com/castai/castware-operator/internal/castai/auth"
+	"github.com/castai/castware-operator/internal/config"
+	"github.com/castai/castware-operator/internal/helm"
+	"github.com/sirupsen/logrus"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/types"
+
+	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
+)
 
-	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
+// Definitions to manage status conditions
+const (
+	// typeAvailableComponent represents the status when component resource is reconciled, installed and works as expected.
+	typeAvailableComponent = "Available"
+
+	// typeProgressingComponent represent the status when a component is installing
+	typeProgressingComponent = "Progressing"
 )
 
 // ComponentReconciler reconciles a Component object
 type ComponentReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme     *runtime.Scheme
+	Log        logrus.FieldLogger
+	HelmClient helm.Client
 }
 
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components/finalizers,verbs=update
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the Component object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
 func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	log := r.Log
 
-	// TODO(user): your logic here
+	component := &castwarev1alpha1.Component{}
+	err := r.Get(ctx, req.NamespacedName, component)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// If the custom resource is not found then it usually means that it was deleted or not created
+			// In this way, we will stop the reconciliation
+			log.Info("component resource not found. Ignoring since object must be deleted")
+			return ctrl.Result{}, nil
+		}
+		// Error reading the object - requeue the request.
+		log.WithError(err).Error("Failed to get component")
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+	}
+
+	cluster := &castwarev1alpha1.Cluster{}
+	err = r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to get cluster")
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+	}
+	log = log.WithField("component", component.Name).WithField("cluster", cluster.Name)
+
+	// If installation/upgrade is in progress we wait for completion or timeout.
+	if progressingCondition := meta.FindStatusCondition(component.Status.Conditions, typeProgressingComponent); progressingCondition != nil &&
+		progressingCondition.Status == metav1.ConditionTrue {
+		log.WithField("action", progressingCondition.Reason).Info("Helm installation is in progress")
+
+		// TODO: proper helm install timeout
+		if time.Now().After(progressingCondition.LastTransitionTime.Add(10 * time.Minute)) {
+			// Helm install got stuck, try to rollback or mark component as failed.
+			log.Warn("Helm installation timeout exceeded")
+			return ctrl.Result{}, nil
+		}
+
+		helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+			Namespace:   component.Namespace,
+			ReleaseName: component.Spec.Component,
+		})
+		if err != nil {
+			log.WithError(err).Error("Failed to get helm release")
+			return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+		}
+
+		progressingCondition := metav1.Condition{
+			Type:    typeProgressingComponent,
+			Status:  metav1.ConditionFalse,
+			Reason:  "Completed",
+			Message: "",
+		}
+
+		switch helmRelease.Info.Status {
+		case release.StatusDeployed:
+			log.Info("Helm release deployed")
+			progressingCondition.Reason = "Completed"
+			progressingCondition.Message = "Helm release install successful"
+			meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+				Type:    typeAvailableComponent,
+				Status:  metav1.ConditionTrue,
+				Reason:  "Installed",
+				Message: progressingCondition.Message,
+			})
+		case release.StatusFailed:
+			log.Warn("Helm release failed")
+			progressingCondition.Reason = "Failed"
+			progressingCondition.Message = fmt.Sprintf("Helm release install failed: %s", helmRelease.Info.Description)
+		default:
+			// Install still in progress, wait and check again.
+			return ctrl.Result{RequeueAfter: time.Second * 30}, err
+		}
+
+		meta.SetStatusCondition(&component.Status.Conditions, progressingCondition)
+		err = r.Status().Update(ctx, component)
+		if err != nil {
+			log.WithError(err).Error("Failed to set component status")
+		}
+
+		// TODO: how to deal with degraded components
+	}
+
+	// If version is empty we fetch the latest version, patch the crd and reconcile again.
+	if component.Spec.Version == "" {
+		log.Info("Component version not found, installing latest version")
+
+		castAiClient, err := r.getCastaiClient(ctx, log, cluster)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				log.Warn("cluster resource not found.")
+				return ctrl.Result{}, err
+			} else if errors.Is(err, castai.ErrNoApiKey) {
+				log.Warn("no api key found.")
+				return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+			}
+			return ctrl.Result{}, err
+		}
+		c, err := castAiClient.GetComponentByName(ctx, component.Spec.Component)
+		if err != nil {
+			log.WithError(err).Error("Failed to get component")
+			return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+		}
+
+		if c.LatestVersion == "" {
+			log.Warn("component latest version not returned by api, retrying in 5 minutes")
+			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+		}
+
+		component.Spec.Version = c.LatestVersion
+		err = r.Patch(ctx, component, client.Merge)
+		if err != nil {
+			log.WithError(err).Error("Failed to patch component")
+			return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+		}
+
+		// TODO: (after mvp) check dependencies
+		return ctrl.Result{RequeueAfter: time.Second * 30}, err
+	}
+
+	if !component.Spec.Enabled {
+		if !meta.IsStatusConditionTrue(component.Status.Conditions, typeAvailableComponent) {
+			// If component is not enabled in the crd and not installed we have nothing to do
+			log.Debug("Component not installed and not enabled, nothing to do")
+			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+		}
+
+		// TODO: (after mvp) if component is already installed scale it to 0
+		log.Info("Component is disabled, not installing it")
+	}
+
+	// TODO: better progress check
+	if component.Status.CurrentVersion == "" && !meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
+		log.Infof("Component is not installed, installing version %s", component.Spec.Version)
+
+		// TODO: set api url and stuff
+		_, err := r.HelmClient.Install(ctx, helm.InstallOptions{
+			ChartSource: &helm.ChartSource{
+				RepoURL: cluster.Spec.HelmRepoURL,
+				Name:    component.Spec.Component,
+				Version: component.Spec.Version,
+			},
+			Namespace:       component.Namespace,
+			CreateNamespace: false,
+			ReleaseName:     component.Spec.Component,
+			// TODO: overrides needed?
+			ValuesOverrides: nil,
+		})
+		if err != nil {
+			log.WithError(err).Error("Failed to install chart")
+			// TODO: retry?
+			return ctrl.Result{}, err
+		}
+		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+			Type:    typeProgressingComponent,
+			Status:  metav1.ConditionTrue,
+			Reason:  "Installing",
+			Message: fmt.Sprintf("Installing component: %s", component.Spec.Version),
+		})
+		err = r.Status().Update(ctx, component)
+		if err != nil {
+			log.WithError(err).Errorf("Failed to set '%s' status", typeDegradedCluster)
+		}
+
+		// TODO: set component available
+	}
+
+	// TODO: (WIRE-1440) compare actual version to desired version to upgrade/downgrade
+	// TODO: (WIRE-1441) delete component when crd is deleted
 
 	return ctrl.Result{}, nil
+}
+
+func (r *ComponentReconciler) getCastaiClient(ctx context.Context, log logrus.FieldLogger, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
+	auth := auth.NewAuth(cluster.Namespace, cluster.Name)
+	if err := auth.LoadApiKey(ctx, r.Client); err != nil {
+		log.WithError(err).Error("Failed to load api key")
+		return nil, err
+	}
+	cfg, err := config.GetFromEnvironment()
+	if err != nil {
+		log.WithError(err).Error("Failed to get config")
+		return nil, err
+	}
+	rest := castai.NewRestyClient(cfg, cluster.Spec.API.APIURL, auth)
+
+	client := castai.NewClient(log, rest)
+
+	return client, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
