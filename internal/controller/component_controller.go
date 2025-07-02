@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -179,8 +180,18 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if component.Status.CurrentVersion == "" && !meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
 		log.Infof("Component is not installed, installing version %s", component.Spec.Version)
 
-		// TODO: set api url and stuff
-		_, err := r.HelmClient.Install(ctx, helm.InstallOptions{
+		// TODO: validate json overrides in webhook?
+		overrides := map[string]string{}
+		if err := json.Unmarshal(component.Spec.Values.Raw, &overrides); err != nil {
+			log.WithError(err).Error("Failed to unmarshal values")
+			return ctrl.Result{}, err
+		}
+		// TODO: move in dedicated function
+		overrides["apiURL"] = cluster.Spec.API.APIURL
+		overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
+		overrides["provider"] = cluster.Spec.Provider
+
+		_, err = r.HelmClient.Install(ctx, helm.InstallOptions{
 			ChartSource: &helm.ChartSource{
 				RepoURL: cluster.Spec.HelmRepoURL,
 				Name:    component.Spec.Component,
@@ -189,13 +200,12 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			Namespace:       component.Namespace,
 			CreateNamespace: false,
 			ReleaseName:     component.Spec.Component,
-			// TODO: overrides needed?
-			ValuesOverrides: nil,
+			ValuesOverrides: overrides,
 		})
 		if err != nil {
 			log.WithError(err).Error("Failed to install chart")
 			// TODO: retry?
-			return ctrl.Result{}, err
+			return ctrl.Result{RequeueAfter: time.Minute * 5}, err
 		}
 		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
 			Type:    typeProgressingComponent,
