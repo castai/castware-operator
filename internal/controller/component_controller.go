@@ -45,6 +45,27 @@ type ComponentReconciler struct {
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components/finalizers,verbs=update
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;create
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings;clusterroles;clusterrolebindings,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods;nodes;services;events,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets;replicasets,verbs=get;list;watch
+
+// +kubebuilder:rbac:groups="",resources=limitranges;namespaces;persistentvolumeclaims;persistentvolumes;replicationcontrollers;resourcequotas,verbs=get;list;watch
+// +kubebuilder:rbac:groups=argoproj.io,resources=rollouts,verbs=get;list;watch
+// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=autoscaling.cast.ai,resources=recommendations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=batch,resources=cronjobs;jobs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=datadoghq.com,resources=extendeddaemonsetreplicasets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=karpenter.k8s.aws,resources=awsnodetemplates;ec2nodeclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=karpenter.sh,resources=machines;nodeclaims;nodepools;provisioners,verbs=get;list;watch
+// +kubebuilder:rbac:groups=metrics.k8s.io,resources=pods,verbs=get;list
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses;networkpolicies,verbs=get;list;watch
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=runbooks.cast.ai,resources=recommendationsyncs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=csinodes;storageclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=create;get;list;watch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=create;get;list;watch
 
 func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log
@@ -101,7 +122,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 		switch helmRelease.Info.Status {
 		case release.StatusDeployed:
-			log.Info("Helm release deployed")
+			log.Info("Helm chart deployed")
 			progressingCondition.Reason = "Completed"
 			progressingCondition.Message = "Helm release install successful"
 			meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
@@ -111,7 +132,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				Message: progressingCondition.Message,
 			})
 		case release.StatusFailed:
-			log.Warn("Helm release failed")
+			log.Warnf("Helm install failed: %s", helmRelease.Info.Description)
 			progressingCondition.Reason = "Failed"
 			progressingCondition.Message = fmt.Sprintf("Helm release install failed: %s", helmRelease.Info.Description)
 		default:
@@ -182,31 +203,50 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 		// TODO: validate json overrides in webhook?
 		overrides := map[string]string{}
-		if err := json.Unmarshal(component.Spec.Values.Raw, &overrides); err != nil {
-			log.WithError(err).Error("Failed to unmarshal values")
-			return ctrl.Result{}, err
+		if component.Spec.Values != nil {
+			if err := json.Unmarshal(component.Spec.Values.Raw, &overrides); err != nil {
+				log.WithError(err).Error("Failed to unmarshal values")
+				return ctrl.Result{}, err
+			}
 		}
-		// TODO: move in dedicated function
 		overrides["apiURL"] = cluster.Spec.API.APIURL
 		overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
 		overrides["provider"] = cluster.Spec.Provider
+		overrides["createNamespace"] = "false"
 
-		_, err = r.HelmClient.Install(ctx, helm.InstallOptions{
-			ChartSource: &helm.ChartSource{
-				RepoURL: cluster.Spec.HelmRepoURL,
-				Name:    component.Spec.Component,
-				Version: component.Spec.Version,
-			},
-			Namespace:       component.Namespace,
-			CreateNamespace: false,
-			ReleaseName:     component.Spec.Component,
-			ValuesOverrides: overrides,
+		_, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+			Namespace:   component.Namespace,
+			ReleaseName: component.Spec.Component,
 		})
+		// If release is not found we install it, otherwise we just set status as progressing and wait for completion.
 		if err != nil {
-			log.WithError(err).Error("Failed to install chart")
-			// TODO: retry?
-			return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+			log.Info("Helm release not found, installing component")
+			_, err = r.HelmClient.Install(ctx, helm.InstallOptions{
+				ChartSource: &helm.ChartSource{
+					RepoURL: cluster.Spec.HelmRepoURL,
+					Name:    component.Spec.Component,
+					Version: component.Spec.Version,
+				},
+				Namespace:       component.Namespace,
+				CreateNamespace: false,
+				ReleaseName:     component.Spec.Component,
+				ValuesOverrides: overrides,
+			})
+			if err != nil {
+				log.WithError(err).Error("Failed to install chart")
+				return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+			}
+			// time="2025-07-03T08:34:45Z" level=error msg="Failed to install chart" cluster=castai component=castai-agent error="running chart install, name=\"castai-agent\": Unable to continue with install:
+			// could not get information about the resource ClusterRole \"castai-agent\" in namespace \"\":
+			// clusterroles.rbac.authorization.k8s.io \"castai-agent\" is forbidden:
+			// User \"system:serviceaccount:castai-agent:castware-operator-controller-manager\" cannot get resource \"clusterroles\" in API group \"rbac.authorization.k8s.io\" at the cluster scope" gitCommit=undefined version=local
+
+			// time="2025-07-03T09:16:17Z" level=error msg="Failed to install chart" cluster=castai component=castai-agent error="running chart install, name=\"castai-agent\": Unable to continue with install: could not get information about the resource Role \"castai-agent\" in namespace \"kube-system\": roles.rbac.authorization.k8s.io \"castai-agent\" is forbidden: User \"system:serviceaccount:castai-agent:castware-operator-controller-manager\" cannot get resource \"roles\" in API group \"rbac.authorization.k8s.io\" in the namespace \"kube-system\"" gitCommit=undefined version=local
+			// time="2025-07-03T09:23:28Z" level=error msg="Failed to install chart" cluster=castai component=castai-agent error="running chart install, name=\"castai-agent\": Unable to continue with install: could not get information about the resource RoleBinding \"castai-agent\" in namespace \"kube-system\": rolebindings.rbac.authorization.k8s.io \"castai-agent\" is forbidden: User \"system:serviceaccount:castai-agent:castware-operator-controller-manager\" cannot get resource \"rolebindings\" in API group \"rbac.authorization.k8s.io\" in the namespace \"kube-system\"" gitCommit=undefined version=local
+			// time="2025-07-03T09:26:10Z" level=error msg="Failed to install chart" cluster=castai component=castai-agent error="running chart install, name=\"castai-agent\": failed to create resource: clusterroles.rbac.authorization.k8s.io \"castai-agent\" is forbidden: user \"system:serviceaccount:castai-agent:castware-operator-controller-manager\" (groups=[\"system:serviceaccounts\" \"system:serviceaccounts:castai-agent\" \"system:authenticated\"]) is attempting to grant RBAC permissions not currently held:\n{APIGroups:[\"\"], Resources:[\"events\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"\"], Resources:[\"limitranges\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"\"], Resources:[\"namespaces\"], Verbs:[\"get\" \"list\" \"watch\" \"get\"]}\n{APIGroups:[\"\"], Resources:[\"nodes\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"\"], Resources:[\"persistentvolumeclaims\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"\"], Resources:[\"persistentvolumes\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"\"], Resources:[\"pods\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"\"], Resources:[\"replicationcontrollers\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"\"], Resources:[\"resourcequotas\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"\"], Resources:[\"services\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"apps\"], Resources:[\"daemonsets\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"apps\"], Resources:[\"deployments\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"apps\"], Resources:[\"replicasets\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"apps\"], Resources:[\"statefulsets\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"argoproj.io\"], Resources:[\"rollouts\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"autoscaling\"], Resources:[\"horizontalpodautoscalers\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"autoscaling.cast.ai\"], Resources:[\"recommendations\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"batch\"], Resources:[\"cronjobs\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"batch\"], Resources:[\"jobs\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"datadoghq.com\"], Resources:[\"extendeddaemonsetreplicasets\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"karpenter.k8s.aws\"], Resources:[\"awsnodetemplates\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"karpenter.k8s.aws\"], Resources:[\"ec2nodeclasses\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"karpenter.sh\"], Resources:[\"machines\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"karpenter.sh\"], Resources:[\"nodeclaims\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"karpenter.sh\"], Resources:[\"nodepools\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"karpenter.sh\"], Resources:[\"provisioners\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"metrics.k8s.io\"], Resources:[\"pods\"], Verbs:[\"get\" \"list\"]}\n{APIGroups:[\"networking.k8s.io\"], Resources:[\"ingresses\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"networking.k8s.io\"], Resources:[\"networkpolicies\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"policy\"], Resources:[\"poddisruptionbudgets\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"rbac.authorization.k8s.io\"], Resources:[\"clusterrolebindings\"], Verbs:[\"watch\"]}\n{APIGroups:[\"rbac.authorization.k8s.io\"], Resources:[\"clusterroles\"], Verbs:[\"watch\"]}\n{APIGroups:[\"rbac.authorization.k8s.io\"], Resources:[\"rolebindings\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"rbac.authorization.k8s.io\"], Resources:[\"roles\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"runbooks.cast.ai\"], Resources:[\"recommendationsyncs\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"storage.k8s.io\"], Resources:[\"csinodes\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"storage.k8s.io\"], Resources:[\"storageclasses\"], Verbs:[\"get\" \"list\" \"watch\"]}" gitCommit=undefined version=local
+			// time="2025-07-03T10:40:16Z" level=warning msg="Helm install failed: Release \"castai-agent\" failed: 4 errors occurred:\n\t* clusterroles.rbac.authorization.k8s.io \"castai-agent\" is forbidden: user \"system:serviceaccount:castai-agent:castware-operator-controller-manager\" (groups=[\"system:serviceaccounts\" \"system:serviceaccounts:castai-agent\" \"system:authenticated\"]) is attempting to grant RBAC permissions not currently held:\n{APIGroups:[\"\"], Resources:[\"limitranges\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"\"], Resources:[\"namespaces\"], Verbs:[\"get\" \"list\" \"watch\" \"get\"]}\n{APIGroups:[\"\"], Resources:[\"persistentvolumeclaims\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"\"], Resources:[\"persistentvolumes\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"\"], Resources:[\"replicationcontrollers\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"\"], Resources:[\"resourcequotas\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"argoproj.io\"], Resources:[\"rollouts\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"autoscaling\"], Resources:[\"horizontalpodautoscalers\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"autoscaling.cast.ai\"], Resources:[\"recommendations\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"batch\"], Resources:[\"cronjobs\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"batch\"], Resources:[\"jobs\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"datadoghq.com\"], Resources:[\"extendeddaemonsetreplicasets\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"karpenter.k8s.aws\"], Resources:[\"awsnodetemplates\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"karpenter.k8s.aws\"], Resources:[\"ec2nodeclasses\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"karpenter.sh\"], Resources:[\"machines\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"karpenter.sh\"], Resources:[\"nodeclaims\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"karpenter.sh\"], Resources:[\"nodepools\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"karpenter.sh\"], Resources:[\"provisioners\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"metrics.k8s.io\"], Resources:[\"pods\"], Verbs:[\"get\" \"list\"]}\n{APIGroups:[\"networking.k8s.io\"], Resources:[\"ingresses\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"networking.k8s.io\"], Resources:[\"networkpolicies\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"policy\"], Resources:[\"poddisruptionbudgets\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"runbooks.cast.ai\"], Resources:[\"recommendationsyncs\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"storage.k8s.io\"], Resources:[\"csinodes\"], Verbs:[\"get\" \"list\" \"watch\"]}\n{APIGroups:[\"storage.k8s.io\"], Resources:[\"storageclasses\"], Verbs:[\"get\" \"list\" \"watch\"]}\n\t* clusterrolebindings.rbac.authorization.k8s.io \"castai-agent\" not found\n\t* roles.rbac.authorization.k8s.io is forbidden: User \"system:serviceaccount:castai-agent:castware-operator-controller-manager\" cannot create resource \"roles\" in API group \"rbac.authorization.k8s.io\" in the namespace \"kube-system\"\n\t* rolebindings.rbac.authorization.k8s.io is forbidden: User \"system:serviceaccount:castai-agent:castware-operator-controller-manager\" cannot create resource \"rolebindings\" in API group \"rbac.authorization.k8s.io\" in the namespace \"kube-system\"\n\n" cluster=castai component=castai-agent gitCommit=undefined version=local
 		}
+
 		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
 			Type:    typeProgressingComponent,
 			Status:  metav1.ConditionTrue,
@@ -215,7 +255,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		})
 		err = r.Status().Update(ctx, component)
 		if err != nil {
-			log.WithError(err).Errorf("Failed to set '%s' status", typeDegradedCluster)
+			log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
 		}
 
 		// TODO: set component available

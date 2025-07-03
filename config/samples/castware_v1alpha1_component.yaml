@@ -1,0 +1,13 @@
+apiVersion: castware.cast.ai/v1alpha1
+kind: Component
+metadata:
+  labels:
+    app.kubernetes.io/name: castware-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: castai-agent
+  namespace: castai-agent
+spec:
+  cluster: castai
+  component: castai-agent
+  enabled: true
+

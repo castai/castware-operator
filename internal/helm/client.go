@@ -109,6 +109,7 @@ func (c *client) Install(ctx context.Context, opts InstallOptions) (*release.Rel
 	install.CreateNamespace = opts.CreateNamespace
 	install.ReleaseName = opts.ReleaseName
 	install.Timeout = 10 * time.Minute
+	install.TakeOwnership = true
 	// TODO: why agent hangs? wait disabled for demo
 	// install.Wait = true // Wait unit all applied resources are running.
 

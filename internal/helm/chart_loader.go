@@ -39,7 +39,13 @@ type remoteChartLoader struct {
 }
 
 func (cl *remoteChartLoader) Load(ctx context.Context, c *ChartSource) (*chart.Chart, error) {
-	var res *chart.Chart
+	var (
+		res     *chart.Chart
+		repoURL = cl.repoURL
+	)
+	if c.RepoURL != "" {
+		repoURL = c.RepoURL
+	}
 
 	err := waitext.Retry(
 		ctx,
@@ -47,10 +53,10 @@ func (cl *remoteChartLoader) Load(ctx context.Context, c *ChartSource) (*chart.C
 		defaultOperationRetries,
 		func(ctx context.Context) (bool, error) {
 			var archiveURL string
-			if strings.HasSuffix(cl.repoURL, ".tgz") {
-				archiveURL = cl.repoURL
+			if strings.HasSuffix(repoURL, ".tgz") {
+				archiveURL = repoURL
 			} else {
-				index, err := cl.downloadHelmIndex(cl.repoURL)
+				index, err := cl.downloadHelmIndex(repoURL)
 				if err != nil {
 					return true, err
 				}

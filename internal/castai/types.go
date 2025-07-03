@@ -15,9 +15,9 @@ type User struct {
 type Component struct {
 	Id            string   `json:"id"`
 	Name          string   `json:"name"`
-	HelmChart     string   `json:"helm_chart"`
+	HelmChart     string   `json:"helmChart"`
 	Dependencies  []string `json:"dependencies"`
-	LatestVersion string   `json:"latest_version"`
+	LatestVersion string   `json:"latestVersion"`
 }
 
 type Cluster struct {

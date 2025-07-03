@@ -240,6 +240,8 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Component")
 			os.Exit(1)
 		}
+	} else {
+		log.Warn("webhooks disabled")
 	}
 
 	if err = (&controller.ComponentReconciler{
