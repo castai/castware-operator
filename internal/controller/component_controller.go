@@ -36,14 +36,6 @@ const (
 	typeProgressingComponent = "Progressing"
 )
 
-// ComponentReconciler reconciles a Component object
-type ComponentReconciler struct {
-	client.Client
-	Scheme     *runtime.Scheme
-	Log        logrus.FieldLogger
-	HelmClient helm.Client
-}
-
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components/finalizers,verbs=update
@@ -69,6 +61,14 @@ type ComponentReconciler struct {
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=create;get;list;watch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=create;get;list;watch
 
+// ComponentReconciler reconciles a Component object
+type ComponentReconciler struct {
+	client.Client
+	Scheme     *runtime.Scheme
+	Log        logrus.FieldLogger
+	HelmClient helm.Client
+}
+
 func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log
 
@@ -85,14 +85,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		log.WithError(err).Error("Failed to get component")
 		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
 	}
-
-	cluster := &castwarev1alpha1.Cluster{}
-	err = r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
-	if err != nil {
-		log.WithError(err).Error("Failed to get cluster")
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
-	}
-	log = log.WithField("component", component.Name).WithField("cluster", cluster.Name)
+	log = log.WithField("component", component.Name).WithField("cluster", component.Spec.Cluster)
 
 	// If installation/upgrade is in progress we wait for completion or timeout.
 	if progressingCondition := meta.FindStatusCondition(component.Status.Conditions, typeProgressingComponent); progressingCondition != nil &&
@@ -106,90 +99,12 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, nil
 		}
 
-		helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
-			Namespace:   component.Namespace,
-			ReleaseName: component.Spec.Component,
-		})
-		if err != nil {
-			log.WithError(err).Error("Failed to get helm release")
-			return ctrl.Result{RequeueAfter: time.Minute * 5}, err
-		}
-
-		progressingCondition := metav1.Condition{
-			Type:    typeProgressingComponent,
-			Status:  metav1.ConditionFalse,
-			Reason:  "Installing",
-			Message: "",
-		}
-
-		switch helmRelease.Info.Status {
-		case release.StatusDeployed:
-			log.Info("Helm chart deployed")
-			progressingCondition.Reason = "Completed"
-			progressingCondition.Message = "Helm release install successful"
-			meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
-				Type:    typeAvailableComponent,
-				Status:  metav1.ConditionTrue,
-				Reason:  "Installed",
-				Message: progressingCondition.Message,
-			})
-			// Component successfully deployed, we can safely set current version.
-			component.Status.CurrentVersion = component.Spec.Version
-		case release.StatusFailed:
-			log.Warnf("Helm install failed: %s", helmRelease.Info.Description)
-			progressingCondition.Reason = "Failed"
-			progressingCondition.Message = fmt.Sprintf("Helm release install failed: %s", helmRelease.Info.Description)
-		default:
-			// Install still in progress, wait and check again.
-			return ctrl.Result{RequeueAfter: time.Second * 30}, err
-		}
-
-		meta.SetStatusCondition(&component.Status.Conditions, progressingCondition)
-		err = r.updateStatus(ctx, component)
-		if err != nil {
-			log.WithError(err).Error("Failed to set component status")
-		}
-
-		// TODO: how to deal with degraded components/failed installs
-
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+		return r.checkInstallProgress(ctx, log, component)
 	}
 
 	// If version is empty we fetch the latest version, patch the crd and reconcile again.
 	if component.Spec.Version == "" {
-		log.Info("Component version not found, installing latest version")
-
-		castAiClient, err := r.getCastaiClient(ctx, log, cluster)
-		if err != nil {
-			if apierrors.IsNotFound(err) {
-				log.Warn("cluster resource not found.")
-				return ctrl.Result{}, err
-			} else if errors.Is(err, castai.ErrNoApiKey) {
-				log.Warn("no api key found.")
-				return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
-			}
-			return ctrl.Result{}, err
-		}
-		c, err := castAiClient.GetComponentByName(ctx, component.Spec.Component)
-		if err != nil {
-			log.WithError(err).Error("Failed to get component")
-			return ctrl.Result{RequeueAfter: time.Minute * 5}, err
-		}
-
-		if c.LatestVersion == "" {
-			log.Warn("component latest version not returned by api, retrying in 5 minutes")
-			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
-		}
-
-		component.Spec.Version = c.LatestVersion
-		err = r.Patch(ctx, component, client.Merge)
-		if err != nil {
-			log.WithError(err).Error("Failed to patch component")
-			return ctrl.Result{RequeueAfter: time.Minute * 5}, err
-		}
-
-		// TODO: (after mvp) check dependencies
-		return ctrl.Result{RequeueAfter: time.Second * 30}, err
+		return r.setLatestVersion(ctx, log, component)
 	}
 
 	// If component is not enabled in the crd and not installed we have nothing to do,
@@ -208,56 +123,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// If CurrentVersion is empty the component has to be installed for the first time.
 	if component.Status.CurrentVersion == "" && !meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
 		log.Infof("Component is not installed, installing version %s", component.Spec.Version)
-
-		// TODO: validate json overrides in webhook?
-		overrides := map[string]string{}
-		if component.Spec.Values != nil {
-			if err := json.Unmarshal(component.Spec.Values.Raw, &overrides); err != nil {
-				log.WithError(err).Error("Failed to unmarshal values")
-				return ctrl.Result{}, err
-			}
-		}
-		overrides["apiURL"] = cluster.Spec.API.APIURL
-		overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
-		overrides["provider"] = cluster.Spec.Provider
-		overrides["createNamespace"] = "false"
-
-		_, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
-			Namespace:   component.Namespace,
-			ReleaseName: component.Spec.Component,
-		})
-		// If release is not found we install it, otherwise we just set status as progressing and wait for completion.
-		if err != nil {
-			log.Info("Helm release not found, installing component")
-			_, err = r.HelmClient.Install(ctx, helm.InstallOptions{
-				ChartSource: &helm.ChartSource{
-					RepoURL: cluster.Spec.HelmRepoURL,
-					Name:    component.Spec.Component,
-					Version: component.Spec.Version,
-				},
-				Namespace:       component.Namespace,
-				CreateNamespace: false,
-				ReleaseName:     component.Spec.Component,
-				ValuesOverrides: overrides,
-			})
-			if err != nil {
-				log.WithError(err).Error("Failed to install chart")
-				return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
-			}
-		}
-
-		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
-			Type:    typeProgressingComponent,
-			Status:  metav1.ConditionTrue,
-			Reason:  "Installing",
-			Message: fmt.Sprintf("Installing component: %s", component.Spec.Version),
-		})
-		err = r.updateStatus(ctx, component)
-		if err != nil {
-			log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
-		}
-
-		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+		return r.installComponent(ctx, log, component)
 	}
 
 	// TODO: (WIRE-1440) compare actual version to desired version to upgrade/downgrade
@@ -266,8 +132,158 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{}, nil
 }
 
-func (r *ComponentReconciler) getCastaiClient(ctx context.Context, log logrus.FieldLogger, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
-	auth := auth.NewAuth(cluster.Namespace, cluster.Name)
+func (r *ComponentReconciler) setLatestVersion(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
+	log.Info("Component version not found, installing latest version")
+
+	castAiClient, err := r.getCastaiClient(ctx, log, component)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Warn("cluster resource not found.")
+			return ctrl.Result{}, err
+		} else if errors.Is(err, castai.ErrNoApiKey) {
+			log.Warn("no api key found.")
+			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+		}
+		return ctrl.Result{}, err
+	}
+	c, err := castAiClient.GetComponentByName(ctx, component.Spec.Component)
+	if err != nil {
+		log.WithError(err).Error("Failed to get component")
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+	}
+
+	if c.LatestVersion == "" {
+		log.Warn("component latest version not returned by api, retrying in 5 minutes")
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+	}
+
+	component.Spec.Version = c.LatestVersion
+	err = r.Patch(ctx, component, client.Merge)
+	if err != nil {
+		log.WithError(err).Error("Failed to patch component")
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+	}
+
+	// TODO: (after mvp) check dependencies
+	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+}
+
+func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
+	cluster := &castwarev1alpha1.Cluster{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to get cluster")
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+	}
+
+	// TODO: (after mvp) validate json overrides in webhook?
+	overrides := map[string]string{}
+	if component.Spec.Values != nil {
+		if err := json.Unmarshal(component.Spec.Values.Raw, &overrides); err != nil {
+			log.WithError(err).Error("Failed to unmarshal values")
+			return ctrl.Result{}, err
+		}
+	}
+	overrides["apiURL"] = cluster.Spec.API.APIURL
+	overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
+	overrides["provider"] = cluster.Spec.Provider
+	overrides["createNamespace"] = "false"
+
+	_, err = r.HelmClient.GetRelease(helm.GetReleaseOptions{
+		Namespace:   component.Namespace,
+		ReleaseName: component.Spec.Component,
+	})
+	// If release is not found we install it, otherwise we just set status as progressing and wait for completion.
+	if err != nil {
+		log.Info("Helm release not found, installing component")
+		_, err = r.HelmClient.Install(ctx, helm.InstallOptions{
+			ChartSource: &helm.ChartSource{
+				RepoURL: cluster.Spec.HelmRepoURL,
+				Name:    component.Spec.Component,
+				Version: component.Spec.Version,
+			},
+			Namespace:       component.Namespace,
+			CreateNamespace: false,
+			ReleaseName:     component.Spec.Component,
+			ValuesOverrides: overrides,
+		})
+		if err != nil {
+			log.WithError(err).Error("Failed to install chart")
+			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+		}
+	}
+
+	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+		Type:    typeProgressingComponent,
+		Status:  metav1.ConditionTrue,
+		Reason:  "Installing",
+		Message: fmt.Sprintf("Installing component: %s", component.Spec.Version),
+	})
+	err = r.updateStatus(ctx, component)
+	if err != nil {
+		log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
+	}
+
+	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+}
+
+func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
+	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+		Namespace:   component.Namespace,
+		ReleaseName: component.Spec.Component,
+	})
+	if err != nil {
+		log.WithError(err).Error("Failed to get helm release")
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+	}
+
+	progressingCondition := metav1.Condition{
+		Type:   typeProgressingComponent,
+		Status: metav1.ConditionFalse,
+	}
+
+	switch helmRelease.Info.Status {
+	case release.StatusDeployed:
+		log.Info("Helm chart deployed")
+		progressingCondition.Reason = "Completed"
+		progressingCondition.Message = "Helm release install successful"
+
+		// Component successfully deployed, we can safely set available status and current version.
+		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+			Type:    typeAvailableComponent,
+			Status:  metav1.ConditionTrue,
+			Reason:  "Installed",
+			Message: progressingCondition.Message,
+		})
+		component.Status.CurrentVersion = component.Spec.Version
+	case release.StatusFailed:
+		log.Warnf("Helm install failed: %s", helmRelease.Info.Description)
+		progressingCondition.Reason = "Failed"
+		progressingCondition.Message = fmt.Sprintf("Helm release install failed: %s", helmRelease.Info.Description)
+	default:
+		// Install still in progress, wait and check again.
+		return ctrl.Result{RequeueAfter: time.Second * 30}, err
+	}
+
+	meta.SetStatusCondition(&component.Status.Conditions, progressingCondition)
+	err = r.updateStatus(ctx, component)
+	if err != nil {
+		log.WithError(err).Error("Failed to set component status")
+	}
+
+	// TODO: how to deal with degraded components/failed installs
+
+	return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+}
+
+func (r *ComponentReconciler) getCastaiClient(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (castai.CastAIClient, error) {
+	cluster := &castwarev1alpha1.Cluster{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, cluster)
+	if err != nil {
+		return nil, err
+	}
+
+	auth := auth.NewAuth(component.Namespace, component.Spec.Cluster)
 	if err := auth.LoadApiKey(ctx, r.Client); err != nil {
 		log.WithError(err).Error("Failed to load api key")
 		return nil, err

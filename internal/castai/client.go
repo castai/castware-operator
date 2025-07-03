@@ -49,6 +49,7 @@ func NewClient(log logrus.FieldLogger, rest *resty.Client) CastAIClient {
 	}
 }
 
+// NewRestyClient returns a new authenticated rest client to send requests to the specified API.
 func NewRestyClient(config *config.Config, apiURL string, auth auth.Auth) *resty.Client {
 
 	client := resty.NewWithClient(&http.Client{
