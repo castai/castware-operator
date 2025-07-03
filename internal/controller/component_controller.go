@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	"k8s.io/client-go/util/retry"
+
 	"helm.sh/helm/v3/pkg/release"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -116,7 +118,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		progressingCondition := metav1.Condition{
 			Type:    typeProgressingComponent,
 			Status:  metav1.ConditionFalse,
-			Reason:  "Completed",
+			Reason:  "Installing",
 			Message: "",
 		}
 
@@ -143,12 +145,14 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 
 		meta.SetStatusCondition(&component.Status.Conditions, progressingCondition)
-		err = r.Status().Update(ctx, component)
+		err = r.updateStatus(ctx, component)
 		if err != nil {
 			log.WithError(err).Error("Failed to set component status")
 		}
 
-		// TODO: how to deal with degraded components
+		// TODO: how to deal with degraded components/failed installs
+
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
 	}
 
 	// If version is empty we fetch the latest version, patch the crd and reconcile again.
@@ -188,9 +192,11 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: time.Second * 30}, err
 	}
 
+	// If component is not enabled in the crd and not installed we have nothing to do,
+	// if the component is installed we can patch the helm chart to set replicas to zero.
 	if !component.Spec.Enabled {
 		if !meta.IsStatusConditionTrue(component.Status.Conditions, typeAvailableComponent) {
-			// If component is not enabled in the crd and not installed we have nothing to do
+
 			log.Debug("Component not installed and not enabled, nothing to do")
 			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 		}
@@ -199,7 +205,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		log.Info("Component is disabled, not installing it")
 	}
 
-	// TODO: better progress check
+	// If CurrentVersion is empty the component has to be installed for the first time.
 	if component.Status.CurrentVersion == "" && !meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
 		log.Infof("Component is not installed, installing version %s", component.Spec.Version)
 
@@ -246,12 +252,12 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			Reason:  "Installing",
 			Message: fmt.Sprintf("Installing component: %s", component.Spec.Version),
 		})
-		err = r.Status().Update(ctx, component)
+		err = r.updateStatus(ctx, component)
 		if err != nil {
 			log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
 		}
 
-		// TODO: set component available
+		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
 
 	// TODO: (WIRE-1440) compare actual version to desired version to upgrade/downgrade
@@ -276,6 +282,23 @@ func (r *ComponentReconciler) getCastaiClient(ctx context.Context, log logrus.Fi
 	client := castai.NewClient(log, rest)
 
 	return client, nil
+}
+
+func (r *ComponentReconciler) updateStatus(ctx context.Context, component *castwarev1alpha1.Component) error {
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		var latestComponent castwarev1alpha1.Component
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      component.Name,
+			Namespace: component.Namespace,
+		}, &latestComponent); err != nil {
+			return err
+		}
+
+		// Modify latestComponent.Status here
+		latestComponent.Status = component.Status
+
+		return r.Status().Update(ctx, &latestComponent)
+	})
 }
 
 // SetupWithManager sets up the controller with the Manager.
