@@ -95,6 +95,7 @@ spec:
                 default: https://castai.github.io/helm-charts
                 description: HelmRepoURL is the url of the Helm repository containing
                   components charts.
+                format: uri
                 type: string
               provider:
                 description: Provider is the cloud provider where Castware is installed.
@@ -102,7 +103,6 @@ spec:
             required:
             - api
             - apiKeySecret
-            - helmRepoURL
             type: object
           status:
             description: ClusterStatus defines the observed state of Cluster

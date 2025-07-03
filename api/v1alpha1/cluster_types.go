@@ -32,8 +32,9 @@ type ClusterSpec struct {
 	Cluster *ClusterMetadataSpec `json:"cluster,omitempty"`
 
 	// HelmRepoURL is the url of the Helm repository containing components charts.
-	//+kubebuilder:validation:Required
-	//+kubebuilder:default:="https://castai.github.io/helm-charts"
+	// +optional
+	// +kubebuilder:validation:Format=uri
+	// +kubebuilder:default:="https://castai.github.io/helm-charts"
 	HelmRepoURL string `json:"helmRepoURL"`
 }
 
