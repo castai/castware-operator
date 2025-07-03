@@ -33,7 +33,6 @@ type ClusterSpec struct {
 
 	// HelmRepoURL is the url of the Helm repository containing components charts.
 	// +optional
-	// +kubebuilder:validation:Format=uri
 	// +kubebuilder:default:="https://castai.github.io/helm-charts"
 	HelmRepoURL string `json:"helmRepoURL"`
 }
