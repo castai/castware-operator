@@ -40,8 +40,9 @@ const (
 // ClusterReconciler reconciles a Cluster object
 type ClusterReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Log    logrus.FieldLogger
+	Scheme      *runtime.Scheme
+	Log         logrus.FieldLogger
+	GetProvider func(ctx context.Context, log logrus.FieldLogger, cluster *castwarev1alpha1.Cluster) (providers.Provider, error)
 }
 
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=clusters,verbs=get;list;watch;create;update;patch;delete
@@ -67,7 +68,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	clusterMetadata := cluster.Spec.Cluster
 	if clusterMetadata == nil || clusterMetadata.ClusterID == "" {
-		p, err := GetProvider(ctx, r.Log, cluster)
+		p, err := r.GetProvider(ctx, r.Log, cluster)
 		if err != nil {
 			// TODO: handle error
 			log.WithError(err).Error("Failed to get provider")
@@ -219,6 +220,10 @@ func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		},
 	}
 
+	if r.GetProvider == nil {
+		r.GetProvider = getProvider
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&castwarev1alpha1.Cluster{}).
 		WithEventFilter(updatePredicate).
@@ -226,7 +231,7 @@ func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func GetProvider(ctx context.Context, log logrus.FieldLogger, cluster *castwarev1alpha1.Cluster) (providers.Provider, error) {
+func getProvider(ctx context.Context, log logrus.FieldLogger, cluster *castwarev1alpha1.Cluster) (providers.Provider, error) {
 	switch cluster.Spec.Provider {
 	case eks.Name:
 		return eks.New(ctx, log.WithField("provider", gke.Name), false)
