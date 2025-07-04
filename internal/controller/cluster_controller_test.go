@@ -6,6 +6,7 @@ import (
 	"context"
 	"github.com/castai/castware-operator/api/v1alpha1"
 	"github.com/golang/mock/gomock"
+	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
@@ -17,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"testing"
+	"time"
 )
 
 var _ = Describe("Cluster Controller", func() {
@@ -38,7 +40,7 @@ func TestClusterController(t *testing.T) {
 		r.NoError(err)
 		r.Equal(ctrlruntime.Result{}, result)
 	})
-	t.Run("When cluster metadata is not specified should register a new cluster", func(t *testing.T) {
+	t.Run("When cluster metadata is not specified should register a new cluster and set the cluster id in the crd", func(t *testing.T) {
 		r := require.New(t)
 		existing := &v1alpha1.Cluster{
 			ObjectMeta: metav1.ObjectMeta{
@@ -60,12 +62,20 @@ func TestClusterController(t *testing.T) {
 			},
 		}
 		testOps := newTestClusterTestOps(t, r, existing, secret)
-		// TODO
-		testOps.mockProvider.EXPECT().RegisterCluster(gomock.Any(), existing).Return(nil, nil)
+		resp := &providers.ClusterRegistration{
+			ClusterID:      uuid.New().String(),
+			OrganizationID: uuid.New().String(),
+		}
+		testOps.mockProvider.EXPECT().RegisterCluster(gomock.Any(), gomock.Any()).Return(resp, nil)
 
 		result, err := testOps.sut.Reconcile(context.Background(), ctrlruntime.Request{NamespacedName: types.NamespacedName{Name: "test", Namespace: "test"}})
 		r.NoError(err)
-		r.Equal(ctrlruntime.Result{}, result)
+
+		actualCluster := &v1alpha1.Cluster{}
+		r.NoError(testOps.sut.Get(ctx, types.NamespacedName{Namespace: existing.Namespace, Name: existing.Name}, actualCluster))
+
+		r.Equal(resp.ClusterID, actualCluster.Spec.Cluster.ClusterID)
+		r.Equal(ctrlruntime.Result{RequeueAfter: time.Second * 30}, result)
 	})
 
 }
