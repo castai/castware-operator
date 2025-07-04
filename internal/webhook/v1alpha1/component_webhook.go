@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -33,11 +34,9 @@ func SetupComponentWebhookWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewWebhookManagedBy(mgr).For(&castwarev1alpha1.Component{}).
 		WithValidator(&ComponentCustomValidator{client: mgr.GetClient(), config: cfg}).
-		WithDefaulter(&ComponentCustomDefaulter{}).
+		WithDefaulter(&ComponentCustomDefaulter{client: mgr.GetClient()}).
 		Complete()
 }
-
-// TODO(user): EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 
 // +kubebuilder:webhook:path=/mutate-castware-cast-ai-v1alpha1-component,mutating=true,failurePolicy=fail,sideEffects=None,groups=castware.cast.ai,resources=components,verbs=create;update,versions=v1alpha1,name=mcomponent-v1alpha1.kb.io,admissionReviewVersions=v1
 
@@ -47,7 +46,8 @@ func SetupComponentWebhookWithManager(mgr ctrl.Manager) error {
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as it is used only for temporary operations and does not need to be deeply copied.
 type ComponentCustomDefaulter struct {
-	// TODO(user): Add more fields as needed for defaulting
+	client client.Client
+	log    logrus.FieldLogger
 }
 
 var _ webhook.CustomDefaulter = &ComponentCustomDefaulter{}
@@ -59,14 +59,66 @@ func (d *ComponentCustomDefaulter) Default(ctx context.Context, obj runtime.Obje
 	if !ok {
 		return fmt.Errorf("expected an Component object but got %T", obj)
 	}
-	componentlog.Info("Defaulting for Component", "name", component.GetName())
+	log := d.log.WithField("component", component.GetName())
 
-	// TODO(user): fill in your defaulting logic.
+	// If version is empty we set it to the latest available.
+	if component.Spec.Version == "" {
+		if err := d.setLatestVersion(ctx, log, component); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
 
-// TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
+func (d *ComponentCustomDefaulter) getCastaiClient(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (castai.CastAIClient, error) {
+	cluster := &castwarev1alpha1.Cluster{}
+	err := d.client.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
+	if err != nil {
+		return nil, err
+	}
+
+	auth := auth.NewAuth(component.Namespace, component.Spec.Cluster)
+	if err := auth.LoadApiKey(ctx, d.client); err != nil {
+		log.WithError(err).Error("Failed to load api key")
+		return nil, err
+	}
+	cfg, err := config.GetFromEnvironment()
+	if err != nil {
+		log.WithError(err).Error("Failed to get config")
+		return nil, err
+	}
+	rest := castai.NewRestyClient(cfg, cluster.Spec.API.APIURL, auth)
+
+	client := castai.NewClient(log, rest)
+
+	return client, nil
+}
+
+func (d *ComponentCustomDefaulter) setLatestVersion(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) error {
+	log.Info("Component version not found, installing latest version")
+
+	castAiClient, err := d.getCastaiClient(ctx, log, component)
+	if err != nil {
+		log.WithError(err).Error("Failed to get castaiClient")
+		return err
+	}
+	c, err := castAiClient.GetComponentByName(ctx, component.Spec.Component)
+	if err != nil {
+		log.WithError(err).Error("Failed to get component")
+		return err
+	}
+
+	if c.LatestVersion == "" {
+		log.Error("component latest version not returned by api")
+		return errors.New("component latest version not returned by api")
+	}
+
+	component.Spec.Version = c.LatestVersion
+
+	return nil
+}
+
 // NOTE: The 'path' attribute must follow a specific pattern and should not be modified directly here.
 // Modifying the path for an invalid path can cause API server errors; failing to locate the webhook.
 // +kubebuilder:webhook:path=/validate-castware-cast-ai-v1alpha1-component,mutating=false,failurePolicy=fail,sideEffects=None,groups=castware.cast.ai,resources=components,verbs=create;update,versions=v1alpha1,name=vcomponent-v1alpha1.kb.io,admissionReviewVersions=v1

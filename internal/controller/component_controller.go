@@ -12,9 +12,6 @@ import (
 	"helm.sh/helm/v3/pkg/release"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/castai/castware-operator/internal/castai"
-	"github.com/castai/castware-operator/internal/castai/auth"
-	"github.com/castai/castware-operator/internal/config"
 	"github.com/castai/castware-operator/internal/helm"
 	"github.com/sirupsen/logrus"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -102,9 +99,9 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.checkInstallProgress(ctx, log, component)
 	}
 
-	// If version is empty we fetch the latest version, patch the crd and reconcile again.
+	// This should not happen as we set version in mutating webhook, just keeping it here as precaution.
 	if component.Spec.Version == "" {
-		return r.setLatestVersion(ctx, log, component)
+		return ctrl.Result{}, errors.New("version not set for component")
 	}
 
 	// If component is not enabled in the crd and not installed we have nothing to do,
@@ -130,42 +127,6 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// TODO: (WIRE-1441) delete component when crd is deleted
 
 	return ctrl.Result{}, nil
-}
-
-func (r *ComponentReconciler) setLatestVersion(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
-	log.Info("Component version not found, installing latest version")
-
-	castAiClient, err := r.getCastaiClient(ctx, log, component)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Warn("cluster resource not found.")
-			return ctrl.Result{}, err
-		} else if errors.Is(err, castai.ErrNoApiKey) {
-			log.Warn("no api key found.")
-			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
-		}
-		return ctrl.Result{}, err
-	}
-	c, err := castAiClient.GetComponentByName(ctx, component.Spec.Component)
-	if err != nil {
-		log.WithError(err).Error("Failed to get component")
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
-	}
-
-	if c.LatestVersion == "" {
-		log.Warn("component latest version not returned by api, retrying in 5 minutes")
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
-	}
-
-	component.Spec.Version = c.LatestVersion
-	err = r.Patch(ctx, component, client.Merge)
-	if err != nil {
-		log.WithError(err).Error("Failed to patch component")
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
-	}
-
-	// TODO: (after mvp) check dependencies
-	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 
 func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
@@ -274,30 +235,6 @@ func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logr
 	// TODO: how to deal with degraded components/failed installs
 
 	return ctrl.Result{RequeueAfter: time.Minute * 5}, err
-}
-
-func (r *ComponentReconciler) getCastaiClient(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (castai.CastAIClient, error) {
-	cluster := &castwarev1alpha1.Cluster{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, cluster)
-	if err != nil {
-		return nil, err
-	}
-
-	auth := auth.NewAuth(component.Namespace, component.Spec.Cluster)
-	if err := auth.LoadApiKey(ctx, r.Client); err != nil {
-		log.WithError(err).Error("Failed to load api key")
-		return nil, err
-	}
-	cfg, err := config.GetFromEnvironment()
-	if err != nil {
-		log.WithError(err).Error("Failed to get config")
-		return nil, err
-	}
-	rest := castai.NewRestyClient(cfg, cluster.Spec.API.APIURL, auth)
-
-	client := castai.NewClient(log, rest)
-
-	return client, nil
 }
 
 func (r *ComponentReconciler) updateStatus(ctx context.Context, component *castwarev1alpha1.Component) error {
