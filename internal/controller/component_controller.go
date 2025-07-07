@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"helm.sh/helm/v3/pkg/storage/driver"
 	"time"
 
 	"k8s.io/client-go/util/retry"
@@ -155,7 +156,13 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 		ReleaseName: component.Spec.Component,
 	})
 	// If release is not found we install it, otherwise we just set status as progressing and wait for completion.
+	// This could happen if we start to install but fail to set progressing
+	// status condition (for example because the operator is restarted).
 	if err != nil {
+		if !errors.Is(err, driver.ErrReleaseNotFound) {
+			log.WithError(err).Error("Failed to get release")
+			return ctrl.Result{}, err
+		}
 		log.Info("Helm release not found, installing component")
 		_, err = r.HelmClient.Install(ctx, helm.InstallOptions{
 			ChartSource: &helm.ChartSource{
