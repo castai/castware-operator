@@ -17,7 +17,7 @@ metadata:
   name: castware-api-key
   namespace: castai-agent
 data:
-  API_KEY: "NmI2NmIxMmExZmZmYThiNmY2Nzc0NTc0NTkxYzQzMDE1ZjBjMTY2NjlkMzFkZTdlYzdmMDk3MjAxZGJiMzRjZQ==" #Insert your API key here
+  API_KEY: "" #Insert your API key here
 ---
 apiVersion: castware.cast.ai/v1alpha1
 kind: Cluster

@@ -140,6 +140,16 @@ rules:
   - list
   - watch
 - apiGroups:
+  - pod-mutations.cast.ai
+  resources:
+  - podmutations
+  verbs:
+  - create
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
   - policy
   resources:
   - poddisruptionbudgets

@@ -59,6 +59,7 @@ const (
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=csinodes;storageclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=create;get;list;watch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=create;get;list;watch
+// +kubebuilder:rbac:groups=pod-mutations.cast.ai,resources=podmutations,verbs=create;update;get;list;watch
 
 // ComponentReconciler reconciles a Component object
 type ComponentReconciler struct {
@@ -181,6 +182,7 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 		}
 	}
+	// time="2025-07-07T08:08:26Z" level=error msg="Failed to install chart" cluster=castai component=castai-agent error="running chart install, name=\"castai-agent\": 2 errors occurred:\n\t* clusterroles.rbac.authorization.k8s.io \"castai-agent\" is forbidden: user \"system:serviceaccount:castai-agent:castware-operator-controller-manager\" (groups=[\"system:serviceaccounts\" \"system:serviceaccounts:castai-agent\" \"system:authenticated\"]) is attempting to grant RBAC permissions not currently held:\n{APIGroups:[\"pod-mutations.cast.ai\"], Resources:[\"podmutations\"], Verbs:[\"get\" \"list\" \"watch\"]}\n\t* clusterrolebindings.rbac.authorization.k8s.io \"castai-agent\" not found\n\n" gitCommit=undefined version=local
 
 	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
 		Type:    typeProgressingComponent,
