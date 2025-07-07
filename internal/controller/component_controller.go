@@ -33,13 +33,14 @@ const (
 
 	// typeProgressingComponent represent the status when a component is installing
 	typeProgressingComponent = "Progressing"
+
+	progressingReasonInstalling = "Installing"
+	progressingReasonUpgrading  = "Upgrading"
 )
 
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components/finalizers,verbs=update
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;create
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings;clusterroles;clusterrolebindings,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods;nodes;services;events;configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets;replicasets,verbs=get;list;watch
@@ -57,8 +58,8 @@ const (
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=runbooks.cast.ai,resources=recommendationsyncs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=csinodes;storageclasses,verbs=get;list;watch
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=create;get;list;watch
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=create;get;list;watch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=create;patch;get;list;watch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=create;patch;get;list;watch
 // +kubebuilder:rbac:groups=pod-mutations.cast.ai,resources=podmutations,verbs=create;update;get;list;watch
 
 // ComponentReconciler reconciles a Component object
@@ -123,7 +124,15 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// If CurrentVersion is empty the component has to be installed for the first time.
 	if component.Status.CurrentVersion == "" && !meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
 		log.Infof("Component is not installed, installing version %s", component.Spec.Version)
-		return r.installComponent(ctx, log, component)
+		return r.installComponent(ctx, log.WithField("action", "install"), component)
+	}
+
+	// If current version is not empty, but it's different from the one specified in the CRD the component
+	// must be upgraded or downgraded unless the controller is already performing another action
+	if component.Status.CurrentVersion != "" && component.Status.CurrentVersion != component.Spec.Version &&
+		!meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
+		return r.upgradeComponent(ctx, log.WithField("action", "upgrade"), component)
+		// TODO: up(down)grade component
 	}
 
 	// TODO: (WIRE-1440) compare actual version to desired version to upgrade/downgrade
@@ -141,17 +150,11 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 	}
 
 	// TODO: (after mvp) validate json overrides in webhook?
-	overrides := map[string]string{}
-	if component.Spec.Values != nil {
-		if err := json.Unmarshal(component.Spec.Values.Raw, &overrides); err != nil {
-			log.WithError(err).Error("Failed to unmarshal values")
-			return ctrl.Result{}, err
-		}
+	overrides, err := r.valueOverrides(component, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to set helm value overrides")
+		return ctrl.Result{}, err
 	}
-	overrides["apiURL"] = cluster.Spec.API.APIURL
-	overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
-	overrides["provider"] = cluster.Spec.Provider
-	overrides["createNamespace"] = "false"
 
 	_, err = r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
@@ -182,12 +185,11 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 		}
 	}
-	// time="2025-07-07T08:08:26Z" level=error msg="Failed to install chart" cluster=castai component=castai-agent error="running chart install, name=\"castai-agent\": 2 errors occurred:\n\t* clusterroles.rbac.authorization.k8s.io \"castai-agent\" is forbidden: user \"system:serviceaccount:castai-agent:castware-operator-controller-manager\" (groups=[\"system:serviceaccounts\" \"system:serviceaccounts:castai-agent\" \"system:authenticated\"]) is attempting to grant RBAC permissions not currently held:\n{APIGroups:[\"pod-mutations.cast.ai\"], Resources:[\"podmutations\"], Verbs:[\"get\" \"list\" \"watch\"]}\n\t* clusterrolebindings.rbac.authorization.k8s.io \"castai-agent\" not found\n\n" gitCommit=undefined version=local
 
 	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
 		Type:    typeProgressingComponent,
 		Status:  metav1.ConditionTrue,
-		Reason:  "Installing",
+		Reason:  progressingReasonInstalling,
 		Message: fmt.Sprintf("Installing component: %s", component.Spec.Version),
 	})
 	err = r.updateStatus(ctx, component)
@@ -195,6 +197,73 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 		log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
 	}
 
+	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+}
+
+func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]string, error) {
+	overrides := map[string]string{}
+	if component.Spec.Values != nil {
+		if err := json.Unmarshal(component.Spec.Values.Raw, &overrides); err != nil {
+			return nil, err
+		}
+	}
+	overrides["apiURL"] = cluster.Spec.API.APIURL
+	overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
+	overrides["provider"] = cluster.Spec.Provider
+	overrides["createNamespace"] = "false"
+	return overrides, nil
+}
+
+func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
+	cluster := &castwarev1alpha1.Cluster{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to get cluster")
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+	}
+
+	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+		Namespace:   component.Namespace,
+		ReleaseName: component.Spec.Component,
+	})
+	if err != nil {
+		log.WithError(err).Error("Failed to get helm release")
+		return ctrl.Result{}, err
+	}
+
+	overrides, err := r.valueOverrides(component, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to set helm value overrides")
+		return ctrl.Result{}, err
+	}
+
+	// TODO: how to set progressing atomically?
+	// TODO: how to handle value override changes?
+	_, err = r.HelmClient.Upgrade(ctx, helm.UpgradeOptions{
+		ChartSource: &helm.ChartSource{
+			RepoURL: cluster.Spec.HelmRepoURL,
+			Name:    component.Spec.Component,
+			Version: component.Spec.Version,
+		},
+		Release:              helmRelease,
+		ValuesOverrides:      overrides,
+		ResetThenReuseValues: true,
+	})
+	if err != nil {
+		log.WithError(err).Error("Failed to install chart")
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+	}
+
+	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+		Type:    typeProgressingComponent,
+		Status:  metav1.ConditionTrue,
+		Reason:  progressingReasonUpgrading,
+		Message: fmt.Sprintf("Upgrading component: %s -> %s", component.Status.CurrentVersion, component.Spec.Version),
+	})
+	err = r.updateStatus(ctx, component)
+	if err != nil {
+		log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
+	}
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 
@@ -218,6 +287,7 @@ func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logr
 		log.Info("Helm chart deployed")
 		progressingCondition.Reason = "Completed"
 		progressingCondition.Message = "Helm release install successful"
+		// TODO: check logs for errors, how?
 
 		// Component successfully deployed, we can safely set available status and current version.
 		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
@@ -229,6 +299,10 @@ func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logr
 		component.Status.CurrentVersion = component.Spec.Version
 	case release.StatusFailed:
 		log.Warnf("Helm install failed: %s", helmRelease.Info.Description)
+		if progressingCondition.Reason == progressingReasonUpgrading {
+			log.Warn("Helm chart upgrade failed, trying to rollback")
+			// TODO: rollback failed upgrades
+		}
 		progressingCondition.Reason = "Failed"
 		progressingCondition.Message = fmt.Sprintf("Helm release install failed: %s", helmRelease.Info.Description)
 	default:

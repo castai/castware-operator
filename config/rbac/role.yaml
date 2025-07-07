@@ -168,6 +168,7 @@ rules:
   - create
   - get
   - list
+  - patch
   - watch
 - apiGroups:
   - runbooks.cast.ai

@@ -3,7 +3,7 @@
 
 image:
   repository: cast.ai/castware-operator
-  tag: "0.0.1"
+  tag: "0.0.2"
   pullPolicy: IfNotPresent
 
 # Enable CRD installation
