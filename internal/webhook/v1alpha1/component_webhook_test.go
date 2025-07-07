@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 
+	"github.com/sirupsen/logrus"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -38,7 +40,7 @@ var _ = Describe("Component Webhook", func() {
 			config: cfg,
 		}
 		Expect(validator).NotTo(BeNil(), "Expected validator to be initialized")
-		defaulter = ComponentCustomDefaulter{}
+		defaulter = ComponentCustomDefaulter{log: logrus.New()}
 		Expect(defaulter).NotTo(BeNil(), "Expected defaulter to be initialized")
 		Expect(oldObj).NotTo(BeNil(), "Expected oldObj to be initialized")
 		Expect(obj).NotTo(BeNil(), "Expected obj to be initialized")

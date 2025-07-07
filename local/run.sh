@@ -8,6 +8,13 @@ CERT_KEY="$CERT_DIR/tls.key"
 KIND_CLUSTER_NAME="castware-operator"
 WEBHOOK_HOST="host.docker.internal"
 
+
+export GKE_CLUSTER_NAME="castware-operator-test"
+export GKE_PROJECT_ID="engineering-test-353509"
+export GKE_REGION="europe-southwest1"
+export GKE_LOCATION="europe-southwest1-a"
+
+
 # Check and generate certs if not exist
 if [[ ! -f "$CERT_CRT" || ! -f "$CERT_KEY" ]]; then
   echo "Certificates not found, generating with mkcert..."

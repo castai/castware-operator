@@ -91,6 +91,11 @@ spec:
                       ID (optional).
                     type: string
                 type: object
+              helmRepoURL:
+                default: https://castai.github.io/helm-charts
+                description: HelmRepoURL is the url of the Helm repository containing
+                  components charts.
+                type: string
               provider:
                 description: Provider is the cloud provider where Castware is installed.
                 type: string

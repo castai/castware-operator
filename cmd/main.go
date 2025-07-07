@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/castai/castware-operator/internal/helm"
+
 	"github.com/bombsimon/logrusr/v4"
 
 	"github.com/castai/castware-operator/internal/castai"
@@ -192,8 +194,8 @@ func main() {
 		})
 	}
 
-	restconfig := ctrl.GetConfigOrDie()
-	mgr, err := ctrl.NewManager(restconfig, ctrl.Options{
+	restConfig := ctrl.GetConfigOrDie()
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
@@ -225,21 +227,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	chartLoader := helm.NewChartLoader(log)
+	helmClient := helm.NewClient(log, chartLoader, restConfig)
+
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		if err = webhookcastwarev1alpha1.SetupClusterWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Cluster")
 			os.Exit(1)
 		}
-		if err = webhookcastwarev1alpha1.SetupComponentWebhookWithManager(mgr); err != nil {
+		if err = webhookcastwarev1alpha1.SetupComponentWebhookWithManager(mgr, log); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Component")
 			os.Exit(1)
 		}
+	} else {
+		log.Warn("webhooks disabled")
 	}
 
 	if err = (&controller.ComponentReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		Log:        log,
+		HelmClient: helmClient,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Component")
 		os.Exit(1)

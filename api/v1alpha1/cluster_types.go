@@ -30,6 +30,11 @@ type ClusterSpec struct {
 	// All fields here are optional; if missing, the operator will fill them in at runtime.
 	// +optional
 	Cluster *ClusterMetadataSpec `json:"cluster,omitempty"`
+
+	// HelmRepoURL is the url of the Helm repository containing components charts.
+	// +optional
+	// +kubebuilder:default:="https://castai.github.io/helm-charts"
+	HelmRepoURL string `json:"helmRepoURL"`
 }
 
 // APISpec groups HTTP/gRPC endpoints for Mothership and related services.

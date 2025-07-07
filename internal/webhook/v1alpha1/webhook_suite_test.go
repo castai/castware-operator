@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -96,7 +98,7 @@ var _ = BeforeSuite(func() {
 	err = SetupClusterWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupComponentWebhookWithManager(mgr)
+	err = SetupComponentWebhookWithManager(mgr, logrus.New())
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:webhook
