@@ -26,7 +26,7 @@ import (
 var componentlog = logf.Log.WithName("component-resource")
 
 // SetupComponentWebhookWithManager registers the webhook for Component in the manager.
-func SetupComponentWebhookWithManager(mgr ctrl.Manager) error {
+func SetupComponentWebhookWithManager(mgr ctrl.Manager, log logrus.FieldLogger) error {
 	cfg, err := config.GetFromEnvironment()
 	if err != nil {
 		return fmt.Errorf("unable to load config from environment: %w", err)
@@ -34,7 +34,7 @@ func SetupComponentWebhookWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewWebhookManagedBy(mgr).For(&castwarev1alpha1.Component{}).
 		WithValidator(&ComponentCustomValidator{client: mgr.GetClient(), config: cfg}).
-		WithDefaulter(&ComponentCustomDefaulter{client: mgr.GetClient()}).
+		WithDefaulter(&ComponentCustomDefaulter{client: mgr.GetClient(), log: log}).
 		Complete()
 }
 
