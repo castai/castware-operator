@@ -4,6 +4,7 @@ package helm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,8 @@ import (
 const (
 	defaultOperationRetries = 5
 )
+
+var ErrChartNotFound = errors.New("chart not found")
 
 type ChartLoader interface {
 	Load(ctx context.Context, c *ChartSource) (*chart.Chart, error)
@@ -62,6 +65,10 @@ func (cl *remoteChartLoader) Load(ctx context.Context, c *ChartSource) (*chart.C
 				}
 				archiveURL, err = cl.chartURL(index, c.Name, c.Version)
 				if err != nil {
+					// If the chart does not exist the error is not recoverable.
+					if errors.Is(err, ErrChartNotFound) {
+						return false, err
+					}
 					return true, err
 				}
 			}
@@ -139,5 +146,5 @@ func (cl *remoteChartLoader) chartURL(index *repo.IndexFile, name, version strin
 		}
 	}
 
-	return "", fmt.Errorf("finding chart %q version %q in helm repo index", name, version)
+	return "", ErrChartNotFound
 }
