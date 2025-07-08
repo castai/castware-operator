@@ -40,13 +40,15 @@ const (
 	progressingReasonInstalling = "Installing"
 	progressingReasonUpgrading  = "Upgrading"
 
-	eventReasonInstalled       = "Installed"
-	eventReasonInstallFailed   = "InstallFailed"
-	eventReasonRollbackFailed  = "RollbackFailed"
-	eventReasonRollbackStarted = "RollbackStarted"
-	eventReasonUpgradeFailed   = "UpgradeFailed"
-	eventReasonUpgradeStarted  = "UpgradeStarted"
+	reasonInstalled       = "Installed"
+	reasonInstallFailed   = "InstallFailed"
+	reasonRollbackFailed  = "RollbackFailed"
+	reasonRollbackStarted = "RollbackStarted"
+	reasonUpgradeFailed   = "UpgradeFailed"
+	reasonUpgradeStarted  = "UpgradeStarted"
 )
+
+var ErrNothingToRollback = errors.New("nothing to rollback")
 
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components/status,verbs=get;update;patch
@@ -104,11 +106,39 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		progressingCondition.Status == metav1.ConditionTrue {
 		log.WithField("action", progressingCondition.Reason).Info("Helm install in progress")
 
-		// TODO: proper helm install timeout
 		if time.Now().After(progressingCondition.LastTransitionTime.Add(10 * time.Minute)) {
 			// Helm install got stuck, try to rollback or mark component as failed.
-			log.Warn("Helm installation timeout exceeded")
-			return ctrl.Result{}, nil
+			log.Warn("Helm install timeout exceeded")
+			log := log.WithField("action", "rollback")
+			result, err := r.rollback(ctx, log, component)
+			if err != nil {
+				// TODO: (WIRE-1341) delete component if it's failed and there is nothing to rollback
+				if errors.Is(err, ErrNothingToRollback) {
+					// Nothing to rollback, marking component as unavailable and progressing as false
+					progressingCondition = &metav1.Condition{
+						Type:    typeProgressingComponent,
+						Status:  metav1.ConditionFalse,
+						Reason:  progressingReasonInstalling,
+						Message: fmt.Sprintf("Rollback failed: %v", err),
+					}
+					meta.SetStatusCondition(&component.Status.Conditions, *progressingCondition)
+					meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+						Type:    typeAvailableComponent,
+						Status:  metav1.ConditionFalse,
+						Reason:  progressingCondition.Reason,
+						Message: progressingCondition.Message,
+					})
+					if err := r.updateStatus(ctx, component); err != nil {
+						log.WithError(err).Error("Failed to update status")
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, err
+				}
+				log.WithError(err).Error("Failed to rollback")
+				return ctrl.Result{}, err
+			}
+
+			return result, nil
 		}
 
 		return r.checkInstallProgress(ctx, log, component)
@@ -227,7 +257,7 @@ func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Compone
 func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (_ ctrl.Result, err error) {
 	defer func() {
 		if err != nil {
-			r.Recorder.Eventf(component, v1.EventTypeWarning, eventReasonUpgradeFailed, "Upgrade failed: %v", err)
+			r.Recorder.Eventf(component, v1.EventTypeWarning, reasonUpgradeFailed, "Upgrade failed: %v", err)
 		}
 	}()
 	cluster := &castwarev1alpha1.Cluster{}
@@ -276,11 +306,12 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 			}
 			return ctrl.Result{RequeueAfter: time.Minute}, nil
 		}
+
 		log.WithError(err).Error("Failed to upgrade chart")
 		return r.rollback(ctx, log, component)
 	}
 
-	r.Recorder.Eventf(component, v1.EventTypeNormal, eventReasonUpgradeStarted, "Upgrade started: %s -> %s", component.Status.CurrentVersion, component.Spec.Version)
+	r.Recorder.Eventf(component, v1.EventTypeNormal, reasonUpgradeStarted, "Upgrade started: %s -> %s", component.Status.CurrentVersion, component.Spec.Version)
 
 	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
 		Type:    typeProgressingComponent,
@@ -299,7 +330,7 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 func (r *ComponentReconciler) rollback(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (_ ctrl.Result, err error) {
 	defer func() {
 		if err != nil {
-			r.Recorder.Eventf(component, v1.EventTypeWarning, eventReasonRollbackFailed, "Rollback failed: %v", err)
+			r.Recorder.Eventf(component, v1.EventTypeWarning, reasonRollbackFailed, "Rollback failed: %v", err)
 		}
 	}()
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
@@ -313,7 +344,7 @@ func (r *ComponentReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 	// Helm release version start from 1 for the first install, if version is lower than 2
 	// the component has never been upgrade, hence nothing to rollback
 	if helmRelease.Version < 2 {
-		return ctrl.Result{}, errors.New("nothing to rollback")
+		return ctrl.Result{}, ErrNothingToRollback
 	}
 	previousRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
@@ -346,7 +377,7 @@ func (r *ComponentReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 	log.WithField("previous_version", previousRelease.Chart.Metadata.Version).
 		WithField("failed_version", component.Spec.Version).
 		Info("rollback in progress")
-	r.Recorder.Eventf(component, v1.EventTypeNormal, eventReasonRollbackStarted, "Rollback to version %s started", previousRelease.Chart.Metadata.Version)
+	r.Recorder.Eventf(component, v1.EventTypeNormal, reasonRollbackStarted, "Rollback to version %s started", previousRelease.Chart.Metadata.Version)
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 
@@ -385,10 +416,10 @@ func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logr
 			Message: progressingCondition.Message,
 		})
 		component.Status.CurrentVersion = helmRelease.Chart.Metadata.Version
-		r.Recorder.Eventf(component, v1.EventTypeNormal, eventReasonInstalled, "Version %s installed successfully", component.Status.CurrentVersion)
+		r.Recorder.Eventf(component, v1.EventTypeNormal, reasonInstalled, "Version %s installed successfully", component.Status.CurrentVersion)
 	case release.StatusFailed:
 		log.Warnf("Helm install failed: %s", helmRelease.Info.Description)
-		r.Recorder.Eventf(component, v1.EventTypeWarning, eventReasonInstallFailed, "Version %s install failed", component.Spec.Version)
+		r.Recorder.Eventf(component, v1.EventTypeWarning, reasonInstallFailed, "Version %s install failed", component.Spec.Version)
 		if progressingCondition.Reason == progressingReasonUpgrading {
 			log.Warn("Helm chart upgrade failed, trying to rollback")
 			// If an upgrade attempt failed rollback to the previous version.
