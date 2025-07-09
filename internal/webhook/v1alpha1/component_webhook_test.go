@@ -3,9 +3,10 @@ package v1alpha1
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/castai/castware-operator/internal/helm"
 	"net/http"
 	"net/http/httptest"
+
+	"github.com/castai/castware-operator/internal/helm"
 
 	"github.com/sirupsen/logrus"
 
