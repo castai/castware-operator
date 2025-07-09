@@ -175,10 +175,23 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.upgradeComponent(ctx, log.WithField("action", "upgrade"), component)
 	}
 
-	// TODO: (WIRE-1440) compare actual version to desired version to upgrade/downgrade
 	// TODO: (WIRE-1441) delete component when crd is deleted
 
 	return ctrl.Result{}, nil
+}
+
+func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]string, error) {
+	overrides := map[string]string{}
+	if component.Spec.Values != nil {
+		if err := json.Unmarshal(component.Spec.Values.Raw, &overrides); err != nil {
+			return nil, err
+		}
+	}
+	overrides["apiURL"] = cluster.Spec.API.APIURL
+	overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
+	overrides["provider"] = cluster.Spec.Provider
+	overrides["createNamespace"] = "false"
+	return overrides, nil
 }
 
 func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
@@ -240,20 +253,6 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 
-func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]string, error) {
-	overrides := map[string]string{}
-	if component.Spec.Values != nil {
-		if err := json.Unmarshal(component.Spec.Values.Raw, &overrides); err != nil {
-			return nil, err
-		}
-	}
-	overrides["apiURL"] = cluster.Spec.API.APIURL
-	overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
-	overrides["provider"] = cluster.Spec.Provider
-	overrides["createNamespace"] = "false"
-	return overrides, nil
-}
-
 func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (_ ctrl.Result, err error) {
 	defer func() {
 		if err != nil {
@@ -285,12 +284,13 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 	_, err = r.HelmClient.Upgrade(ctx, helm.UpgradeOptions{
 		ChartSource: &helm.ChartSource{
 			RepoURL: cluster.Spec.HelmRepoURL,
-			Name:    component.Spec.Component,
+			Name:    helmRelease.Chart.Metadata.Name,
 			Version: component.Spec.Version,
 		},
 		Release:              helmRelease,
 		ValuesOverrides:      overrides,
 		ResetThenReuseValues: true,
+		Recreate:             true,
 	})
 	if err != nil {
 		// If new version does not exist reset to the currently installed version.

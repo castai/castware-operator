@@ -48,6 +48,7 @@ type UpgradeOptions struct {
 	MaxHistory           int
 	ResetThenReuseValues bool
 	DryRun               bool
+	Recreate             bool
 }
 
 type GetReleaseOptions struct {
@@ -165,6 +166,7 @@ func (c *client) Upgrade(ctx context.Context, opts UpgradeOptions) (*release.Rel
 	upgrade.DryRun = opts.DryRun
 	// upgrade.PostRenderer = hook.NewLabelIgnoreHook(cfg.KubeClient, opts.Release)
 	upgrade.ResetThenReuseValues = opts.ResetThenReuseValues
+	upgrade.Recreate = opts.Recreate
 	name := opts.Release.Name
 
 	// Prepare user value overrides.
@@ -190,6 +192,7 @@ func (c *client) Rollback(opts RollbackOptions) error {
 	}
 
 	rollback := action.NewRollback(cfg)
+	rollback.Recreate = true
 	err = rollback.Run(opts.ReleaseName)
 	if err != nil {
 		return fmt.Errorf("chart rollback failed, name=%s, namespace=%s: %w", opts.ReleaseName, opts.Namespace, err)

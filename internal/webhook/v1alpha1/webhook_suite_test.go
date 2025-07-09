@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
+	"github.com/golang/mock/gomock"
+
 	"github.com/sirupsen/logrus"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -98,7 +101,7 @@ var _ = BeforeSuite(func() {
 	err = SetupClusterWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupComponentWebhookWithManager(mgr, logrus.New())
+	err = SetupComponentWebhookWithManager(mgr, logrus.New(), mock_helm.NewMockChartLoader(gomock.NewController(GinkgoT())))
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:webhook
