@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/castai/castware-operator/internal/helm"
 	"net/http"
 	"net/http/httptest"
 
@@ -35,9 +36,12 @@ var _ = Describe("Component Webhook", func() {
 		cfg, _ := config.GetFromEnvironment()
 		obj = &castwarev1alpha1.Component{}
 		oldObj = &castwarev1alpha1.Component{}
+		log := logrus.New()
 		validator = ComponentCustomValidator{
-			client: k8sClient,
-			config: cfg,
+			client:      k8sClient,
+			config:      cfg,
+			chartLoader: helm.NewChartLoader(log),
+			log:         log,
 		}
 		Expect(validator).NotTo(BeNil(), "Expected validator to be initialized")
 		defaulter = ComponentCustomDefaulter{log: logrus.New()}
