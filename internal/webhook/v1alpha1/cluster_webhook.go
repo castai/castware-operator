@@ -27,15 +27,15 @@ import (
 var clusterlog = logf.Log.WithName("cluster-resource")
 
 // SetupClusterWebhookWithManager registers the webhook for Cluster in the manager.
-func SetupClusterWebhookWithManager(mgr ctrl.Manager) error {
+func SetupClusterWebhookWithManager(mgr ctrl.Manager, log logrus.FieldLogger) error {
 	cfg, err := config.GetFromEnvironment()
 	if err != nil {
 		return fmt.Errorf("unable to load config from environment: %w", err)
 	}
 
 	return ctrl.NewWebhookManagedBy(mgr).For(&castwarev1alpha1.Cluster{}).
-		WithValidator(&ClusterCustomValidator{client: mgr.GetClient(), config: cfg}).
-		WithDefaulter(&ClusterCustomDefaulter{}).
+		WithValidator(&ClusterCustomValidator{client: mgr.GetClient(), config: cfg, log: log}).
+		WithDefaulter(&ClusterCustomDefaulter{log: log}).
 		Complete()
 }
 
@@ -44,7 +44,7 @@ func SetupClusterWebhookWithManager(mgr ctrl.Manager) error {
 // ClusterCustomDefaulter struct is responsible for setting default values on the custom resource of the
 // Kind Cluster when those are created or updated.
 type ClusterCustomDefaulter struct {
-	// TODO(user): Add more fields as needed for defaulting
+	log logrus.FieldLogger
 }
 
 var _ webhook.CustomDefaulter = &ClusterCustomDefaulter{}
@@ -87,6 +87,7 @@ func (d *ClusterCustomDefaulter) Default(ctx context.Context, obj runtime.Object
 type ClusterCustomValidator struct {
 	client client.Client
 	config *config.Config
+	log    logrus.FieldLogger
 }
 
 var _ webhook.CustomValidator = &ClusterCustomValidator{}
@@ -120,6 +121,7 @@ func (v *ClusterCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 		return nil, fmt.Errorf("provider must be specified")
 	}
 
+	v.log.WithField("api_url", cluster.Spec.API.APIURL).Info("validating api key")
 	err := v.validateApiKey(ctx, cluster)
 	if err != nil {
 		return nil, err

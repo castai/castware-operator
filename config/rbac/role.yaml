@@ -159,6 +159,15 @@ rules:
   - watch
 - apiGroups:
   - rbac.authorization.k8s.io
+  resourceNames:
+  - castai-agent
+  resources:
+  - clusterrolebindings
+  - clusterroles
+  verbs:
+  - delete
+- apiGroups:
+  - rbac.authorization.k8s.io
   resources:
   - clusterrolebindings
   - clusterroles

@@ -109,7 +109,7 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupClusterWebhookWithManager(mgr)
+	err = SetupClusterWebhookWithManager(mgr, logrus.New())
 	Expect(err).NotTo(HaveOccurred())
 
 	chartLoader := mock_helm.NewMockChartLoader(gomock.NewController(GinkgoT()))

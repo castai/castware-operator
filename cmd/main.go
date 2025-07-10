@@ -232,7 +232,7 @@ func main() {
 
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookcastwarev1alpha1.SetupClusterWebhookWithManager(mgr); err != nil {
+		if err = webhookcastwarev1alpha1.SetupClusterWebhookWithManager(mgr, log); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Cluster")
 			os.Exit(1)
 		}

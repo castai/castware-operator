@@ -1,0 +1,7 @@
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: fix-namespace
+patch: '[{"op": "replace", "path": "/metadata/namespace", "value": "kube-system"}]'
+target:
+  name: castware-operator-kube-system-access

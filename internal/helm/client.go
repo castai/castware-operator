@@ -37,8 +37,10 @@ type InstallOptions struct {
 }
 
 type UninstallOptions struct {
-	Namespace   string
-	ReleaseName string
+	Namespace      string
+	ReleaseName    string
+	IgnoreNotFound bool
+	Wait           bool
 }
 
 type UpgradeOptions struct {
@@ -56,6 +58,12 @@ type GetReleaseOptions struct {
 	ReleaseName string
 	// Version is the helm release version, not the chart version. Setting it to 0 will get the last version.
 	Version int
+}
+type GetStatusOptions struct {
+	Namespace          string
+	ReleaseName        string
+	ShowResources      bool
+	ShowResourcesTable bool
 }
 
 type RollbackOptions struct {
@@ -82,6 +90,7 @@ type Client interface {
 	Upgrade(ctx context.Context, opts UpgradeOptions) (*release.Release, error)
 	Rollback(opts RollbackOptions) error
 	GetRelease(opts GetReleaseOptions) (*release.Release, error)
+	GetStatus(opts GetStatusOptions) (*release.Release, error)
 }
 
 type client struct {
@@ -133,8 +142,9 @@ func (c *client) Uninstall(opts UninstallOptions) (*release.UninstallReleaseResp
 	if err != nil {
 		return nil, err
 	}
-
 	uninstall := action.NewUninstall(cfg)
+	uninstall.IgnoreNotFound = opts.IgnoreNotFound
+	uninstall.Wait = opts.Wait
 	res, err := uninstall.Run(opts.ReleaseName)
 	if err != nil {
 		return nil, fmt.Errorf("chart uninstall failed, name=%s, namespace=%s: %w", opts.ReleaseName, opts.Namespace, err)
@@ -214,6 +224,21 @@ func (c *client) GetRelease(opts GetReleaseOptions) (*release.Release, error) {
 	}
 	return rel, nil
 }
+func (c *client) GetStatus(opts GetStatusOptions) (*release.Release, error) {
+	cfg, err := c.configurationGetter.Get(opts.Namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	status := action.NewStatus(cfg)
+	status.ShowResources = opts.ShowResources
+	status.ShowResourcesTable = opts.ShowResourcesTable
+	rel, err := status.Run(opts.ReleaseName)
+	if err != nil {
+		return nil, fmt.Errorf("getting chart release, name=%s, namespace=%s: %w", opts.ReleaseName, opts.Namespace, err)
+	}
+	return rel, nil
+}
 
 // ConfigurationGetter wraps helm actions configuration setup for mocking in unit tests.
 type ConfigurationGetter interface {
@@ -236,6 +261,9 @@ func (c *configurationGetter) Get(namespace string) (*action.Configuration, erro
 	err := cfg.Init(rcg, namespace, c.helmDriver, c.debugFuncf)
 	if err != nil {
 		return nil, fmt.Errorf("helm action config init: %w", err)
+	}
+	cfg.Log = func(s string, i ...interface{}) {
+		c.log.Infof(s, i...)
 	}
 	return cfg, nil
 }
