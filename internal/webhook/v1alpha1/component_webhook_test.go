@@ -6,6 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 
+	"github.com/castai/castware-operator/internal/helm"
+	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
+	"github.com/golang/mock/gomock"
+
 	"github.com/sirupsen/logrus"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -25,19 +29,24 @@ var _ = Describe("Component Webhook", func() {
 		clusterName   = "castai"
 	)
 	var (
-		obj       *castwarev1alpha1.Component
-		oldObj    *castwarev1alpha1.Component
-		validator ComponentCustomValidator
-		defaulter ComponentCustomDefaulter
+		obj         *castwarev1alpha1.Component
+		oldObj      *castwarev1alpha1.Component
+		validator   ComponentCustomValidator
+		chartLoader *mock_helm.MockChartLoader
+		defaulter   ComponentCustomDefaulter
 	)
 
 	BeforeEach(func() {
 		cfg, _ := config.GetFromEnvironment()
 		obj = &castwarev1alpha1.Component{}
 		oldObj = &castwarev1alpha1.Component{}
+		log := logrus.New()
+		chartLoader = mock_helm.NewMockChartLoader(gomock.NewController(GinkgoT()))
 		validator = ComponentCustomValidator{
-			client: k8sClient,
-			config: cfg,
+			client:      k8sClient,
+			config:      cfg,
+			chartLoader: chartLoader,
+			log:         log,
 		}
 		Expect(validator).NotTo(BeNil(), "Expected validator to be initialized")
 		defaulter = ComponentCustomDefaulter{log: logrus.New()}
@@ -138,6 +147,11 @@ var _ = Describe("Component Webhook", func() {
 			obj.Spec.Component = componentName
 			obj.Spec.Cluster = clusterName
 			obj.SetNamespace("default")
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: "",
+			})
 			Expect(validator.ValidateCreate(ctx, obj)).To(BeNil())
 		})
 
@@ -161,10 +175,21 @@ var _ = Describe("Component Webhook", func() {
 			By("simulating a valid update scenario")
 			oldObj.Spec.Component = componentName
 			oldObj.Spec.Cluster = clusterName
-			oldObj.Spec.Enabled = false
+			oldObj.Spec.Enabled = true
+			oldObj.SetNamespace("default")
+
 			obj.Spec.Component = componentName
 			obj.Spec.Cluster = clusterName
 			obj.Spec.Enabled = true
+			obj.Spec.Version = "0.0.1"
+			obj.SetNamespace("default")
+
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: "0.0.1",
+			})
+
 			Expect(validator.ValidateUpdate(ctx, oldObj, obj)).To(BeNil())
 		})
 	})

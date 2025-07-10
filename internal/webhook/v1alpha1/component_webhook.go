@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/castai/castware-operator/internal/helm"
+
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -26,14 +28,14 @@ import (
 var componentlog = logf.Log.WithName("component-resource")
 
 // SetupComponentWebhookWithManager registers the webhook for Component in the manager.
-func SetupComponentWebhookWithManager(mgr ctrl.Manager, log logrus.FieldLogger) error {
+func SetupComponentWebhookWithManager(mgr ctrl.Manager, log logrus.FieldLogger, chartLoader helm.ChartLoader) error {
 	cfg, err := config.GetFromEnvironment()
 	if err != nil {
 		return fmt.Errorf("unable to load config from environment: %w", err)
 	}
 
 	return ctrl.NewWebhookManagedBy(mgr).For(&castwarev1alpha1.Component{}).
-		WithValidator(&ComponentCustomValidator{client: mgr.GetClient(), config: cfg}).
+		WithValidator(&ComponentCustomValidator{client: mgr.GetClient(), config: cfg, log: log, chartLoader: chartLoader}).
 		WithDefaulter(&ComponentCustomDefaulter{client: mgr.GetClient(), log: log}).
 		Complete()
 }
@@ -129,8 +131,10 @@ func (d *ComponentCustomDefaulter) setLatestVersion(ctx context.Context, log log
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
 type ComponentCustomValidator struct {
-	client client.Client
-	config *config.Config
+	client      client.Client
+	config      *config.Config
+	chartLoader helm.ChartLoader
+	log         logrus.FieldLogger
 }
 
 var _ webhook.CustomValidator = &ComponentCustomValidator{}
@@ -155,22 +159,16 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 	}
 
 	// validate that CAST.AI supports the component
-	auth := auth.NewAuthFromCR(cluster)
-
-	err = auth.LoadApiKey(ctx, v.client)
+	castComponent, err := v.getComponentByName(ctx, cluster, c.Spec.Component)
 	if err != nil {
-		return nil, fmt.Errorf("unable to load api key: %w", err)
-	}
-
-	restClient := castai.NewRestyClient(v.config, cluster.Spec.API.APIURL, auth)
-
-	_, err = castai.NewClient(logrus.New(), restClient).GetComponentByName(ctx, c.Spec.Component)
-	if err != nil {
-		if errors.Is(err, castai.ErrNotFound) {
-			return nil, fmt.Errorf("component '%s' is not supported by CAST.AI", c.Spec.Component)
-		}
 		return nil, err
 	}
+
+	// check that the version exists
+	if err := v.validateVersion(ctx, castComponent.HelmChart, c); err != nil {
+		return nil, fmt.Errorf("failed to validate version %s for chart '%s': %w", c.Spec.Version, castComponent.HelmChart, err)
+	}
+
 	return nil, nil
 }
 
@@ -192,6 +190,21 @@ func (v *ComponentCustomValidator) ValidateUpdate(ctx context.Context, oldObj, n
 		return nil, fmt.Errorf("referenced cluster CRD cannot be modified")
 	}
 
+	cluster := &castwarev1alpha1.Cluster{}
+	err := v.client.Get(ctx, client.ObjectKey{Namespace: component.GetNamespace(), Name: component.Spec.Cluster}, cluster)
+	if err != nil {
+		return nil, fmt.Errorf("cluster '%s' does not exist", component.Spec.Cluster)
+	}
+
+	castComponent, err := v.getComponentByName(ctx, cluster, component.Spec.Component)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := v.validateVersion(ctx, castComponent.HelmChart, component); err != nil {
+		return nil, fmt.Errorf("failed to validate version %s for chart '%s': %w", component.Spec.Version, castComponent.HelmChart, err)
+	}
+
 	return nil, nil
 }
 
@@ -206,4 +219,38 @@ func (v *ComponentCustomValidator) ValidateDelete(ctx context.Context, obj runti
 	// TODO(user): fill in your validation logic upon object deletion.
 
 	return nil, nil
+}
+
+func (v *ComponentCustomValidator) validateVersion(ctx context.Context, helmChart string, component *castwarev1alpha1.Component) error {
+	cluster := &castwarev1alpha1.Cluster{}
+	err := v.client.Get(ctx, client.ObjectKey{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
+	if err != nil {
+		return err
+	}
+	_, err = v.chartLoader.Load(ctx, &helm.ChartSource{
+		RepoURL: cluster.Spec.HelmRepoURL,
+		Name:    helmChart,
+		Version: component.Spec.Version,
+	})
+	return err
+}
+func (v *ComponentCustomValidator) getComponentByName(ctx context.Context, cluster *castwarev1alpha1.Cluster, componentName string) (*castai.Component, error) {
+	auth := auth.NewAuthFromCR(cluster)
+
+	err := auth.LoadApiKey(ctx, v.client)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load api key: %w", err)
+	}
+
+	restClient := castai.NewRestyClient(v.config, cluster.Spec.API.APIURL, auth)
+
+	resp, err := castai.NewClient(logrus.New(), restClient).GetComponentByName(ctx, componentName)
+	if err != nil {
+		if errors.Is(err, castai.ErrNotFound) {
+			return nil, fmt.Errorf("component '%s' is not supported by CAST.AI", componentName)
+		}
+		return nil, err
+	}
+
+	return resp, nil
 }

@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"time"
 
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/record"
+
 	"helm.sh/helm/v3/pkg/storage/driver"
 
 	"k8s.io/client-go/util/retry"
@@ -33,13 +36,23 @@ const (
 
 	// typeProgressingComponent represent the status when a component is installing
 	typeProgressingComponent = "Progressing"
+
+	progressingReasonInstalling = "Installing"
+	progressingReasonUpgrading  = "Upgrading"
+
+	reasonInstalled       = "Installed"
+	reasonInstallFailed   = "InstallFailed"
+	reasonRollbackFailed  = "RollbackFailed"
+	reasonRollbackStarted = "RollbackStarted"
+	reasonUpgradeFailed   = "UpgradeFailed"
+	reasonUpgradeStarted  = "UpgradeStarted"
 )
+
+var ErrNothingToRollback = errors.New("nothing to rollback")
 
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components/finalizers,verbs=update
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;create
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings;clusterroles;clusterrolebindings,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods;nodes;services;events;configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets;replicasets,verbs=get;list;watch
@@ -57,8 +70,8 @@ const (
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=runbooks.cast.ai,resources=recommendationsyncs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=csinodes;storageclasses,verbs=get;list;watch
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=create;get;list;watch
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=create;get;list;watch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=create;patch;get;list;watch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=create;patch;get;list;watch
 // +kubebuilder:rbac:groups=pod-mutations.cast.ai,resources=podmutations,verbs=create;update;get;list;watch
 
 // ComponentReconciler reconciles a Component object
@@ -67,6 +80,7 @@ type ComponentReconciler struct {
 	Scheme     *runtime.Scheme
 	Log        logrus.FieldLogger
 	HelmClient helm.Client
+	Recorder   record.EventRecorder
 }
 
 func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -90,13 +104,41 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// If installation/upgrade is in progress we wait for completion or timeout.
 	if progressingCondition := meta.FindStatusCondition(component.Status.Conditions, typeProgressingComponent); progressingCondition != nil &&
 		progressingCondition.Status == metav1.ConditionTrue {
-		log.WithField("action", progressingCondition.Reason).Info("Helm installation is in progress")
+		log.WithField("action", progressingCondition.Reason).Info("Helm install in progress")
 
-		// TODO: proper helm install timeout
 		if time.Now().After(progressingCondition.LastTransitionTime.Add(10 * time.Minute)) {
 			// Helm install got stuck, try to rollback or mark component as failed.
-			log.Warn("Helm installation timeout exceeded")
-			return ctrl.Result{}, nil
+			log.Warn("Helm install timeout exceeded")
+			log := log.WithField("action", "rollback")
+			result, err := r.rollback(ctx, log, component)
+			if err != nil {
+				// TODO: (WIRE-1341) delete component if it's failed and there is nothing to rollback
+				if errors.Is(err, ErrNothingToRollback) {
+					// Nothing to rollback, marking component as unavailable and progressing as false
+					progressingCondition = &metav1.Condition{
+						Type:    typeProgressingComponent,
+						Status:  metav1.ConditionFalse,
+						Reason:  progressingReasonInstalling,
+						Message: fmt.Sprintf("Rollback failed: %v", err),
+					}
+					meta.SetStatusCondition(&component.Status.Conditions, *progressingCondition)
+					meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+						Type:    typeAvailableComponent,
+						Status:  metav1.ConditionFalse,
+						Reason:  progressingCondition.Reason,
+						Message: progressingCondition.Message,
+					})
+					if err := r.updateStatus(ctx, component); err != nil {
+						log.WithError(err).Error("Failed to update status")
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, err
+				}
+				log.WithError(err).Error("Failed to rollback")
+				return ctrl.Result{}, err
+			}
+
+			return result, nil
 		}
 
 		return r.checkInstallProgress(ctx, log, component)
@@ -123,13 +165,33 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// If CurrentVersion is empty the component has to be installed for the first time.
 	if component.Status.CurrentVersion == "" && !meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
 		log.Infof("Component is not installed, installing version %s", component.Spec.Version)
-		return r.installComponent(ctx, log, component)
+		return r.installComponent(ctx, log.WithField("action", "install"), component)
 	}
 
-	// TODO: (WIRE-1440) compare actual version to desired version to upgrade/downgrade
+	// If current version is not empty, but it's different from the one specified in the CRD the component
+	// must be upgraded or downgraded unless the controller is already performing another action
+	if component.Status.CurrentVersion != "" && component.Status.CurrentVersion != component.Spec.Version &&
+		!meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
+		return r.upgradeComponent(ctx, log.WithField("action", "upgrade"), component)
+	}
+
 	// TODO: (WIRE-1441) delete component when crd is deleted
 
 	return ctrl.Result{}, nil
+}
+
+func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]string, error) {
+	overrides := map[string]string{}
+	if component.Spec.Values != nil {
+		if err := json.Unmarshal(component.Spec.Values.Raw, &overrides); err != nil {
+			return nil, err
+		}
+	}
+	overrides["apiURL"] = cluster.Spec.API.APIURL
+	overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
+	overrides["provider"] = cluster.Spec.Provider
+	overrides["createNamespace"] = "false"
+	return overrides, nil
 }
 
 func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
@@ -141,17 +203,11 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 	}
 
 	// TODO: (after mvp) validate json overrides in webhook?
-	overrides := map[string]string{}
-	if component.Spec.Values != nil {
-		if err := json.Unmarshal(component.Spec.Values.Raw, &overrides); err != nil {
-			log.WithError(err).Error("Failed to unmarshal values")
-			return ctrl.Result{}, err
-		}
+	overrides, err := r.valueOverrides(component, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to set helm value overrides")
+		return ctrl.Result{}, err
 	}
-	overrides["apiURL"] = cluster.Spec.API.APIURL
-	overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
-	overrides["provider"] = cluster.Spec.Provider
-	overrides["createNamespace"] = "false"
 
 	_, err = r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
@@ -182,12 +238,11 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 		}
 	}
-	// time="2025-07-07T08:08:26Z" level=error msg="Failed to install chart" cluster=castai component=castai-agent error="running chart install, name=\"castai-agent\": 2 errors occurred:\n\t* clusterroles.rbac.authorization.k8s.io \"castai-agent\" is forbidden: user \"system:serviceaccount:castai-agent:castware-operator-controller-manager\" (groups=[\"system:serviceaccounts\" \"system:serviceaccounts:castai-agent\" \"system:authenticated\"]) is attempting to grant RBAC permissions not currently held:\n{APIGroups:[\"pod-mutations.cast.ai\"], Resources:[\"podmutations\"], Verbs:[\"get\" \"list\" \"watch\"]}\n\t* clusterrolebindings.rbac.authorization.k8s.io \"castai-agent\" not found\n\n" gitCommit=undefined version=local
 
 	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
 		Type:    typeProgressingComponent,
 		Status:  metav1.ConditionTrue,
-		Reason:  "Installing",
+		Reason:  progressingReasonInstalling,
 		Message: fmt.Sprintf("Installing component: %s", component.Spec.Version),
 	})
 	err = r.updateStatus(ctx, component)
@@ -195,6 +250,134 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 		log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
 	}
 
+	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+}
+
+func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (_ ctrl.Result, err error) {
+	defer func() {
+		if err != nil {
+			r.Recorder.Eventf(component, v1.EventTypeWarning, reasonUpgradeFailed, "Upgrade failed: %v", err)
+		}
+	}()
+	cluster := &castwarev1alpha1.Cluster{}
+	err = r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to get cluster")
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+	}
+
+	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+		Namespace:   component.Namespace,
+		ReleaseName: component.Spec.Component,
+	})
+	if err != nil {
+		log.WithError(err).Error("Failed to get helm release")
+		return ctrl.Result{}, err
+	}
+
+	overrides, err := r.valueOverrides(component, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to set helm value overrides")
+		return ctrl.Result{}, err
+	}
+
+	_, err = r.HelmClient.Upgrade(ctx, helm.UpgradeOptions{
+		ChartSource: &helm.ChartSource{
+			RepoURL: cluster.Spec.HelmRepoURL,
+			Name:    helmRelease.Chart.Metadata.Name,
+			Version: component.Spec.Version,
+		},
+		Release:              helmRelease,
+		ValuesOverrides:      overrides,
+		ResetThenReuseValues: true,
+		Recreate:             true,
+	})
+	if err != nil {
+		// If new version does not exist reset to the currently installed version.
+		if errors.Is(err, helm.ErrChartNotFound) {
+			log.Warnf("Helm release not found, reverting CRD version to %s", helmRelease.Chart.Metadata.Version)
+			updatedComponent := component.DeepCopy()
+			updatedComponent.Spec.Version = helmRelease.Chart.Metadata.Version
+			err = r.Client.Patch(ctx, updatedComponent, client.MergeFrom(component))
+			// Patch failure is a recoverable error.
+			if err != nil {
+				log.WithError(err).Error("Failed to patch component")
+				return ctrl.Result{RequeueAfter: time.Minute}, err
+			}
+			return ctrl.Result{RequeueAfter: time.Minute}, nil
+		}
+
+		log.WithError(err).Error("Failed to upgrade chart")
+		return r.rollback(ctx, log, component)
+	}
+
+	r.Recorder.Eventf(component, v1.EventTypeNormal, reasonUpgradeStarted, "Upgrade started: %s -> %s", component.Status.CurrentVersion, component.Spec.Version)
+
+	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+		Type:    typeProgressingComponent,
+		Status:  metav1.ConditionTrue,
+		Reason:  progressingReasonUpgrading,
+		Message: fmt.Sprintf("Upgrading component: %s -> %s", component.Status.CurrentVersion, component.Spec.Version),
+	})
+	err = r.updateStatus(ctx, component)
+	if err != nil {
+		// Update status errors are recoverable, if it happens we just requeue and end up here again.
+		log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
+	}
+	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+}
+
+func (r *ComponentReconciler) rollback(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (_ ctrl.Result, err error) {
+	defer func() {
+		if err != nil {
+			r.Recorder.Eventf(component, v1.EventTypeWarning, reasonRollbackFailed, "Rollback failed: %v", err)
+		}
+	}()
+	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+		Namespace:   component.Namespace,
+		ReleaseName: component.Spec.Component,
+	})
+	if err != nil {
+		log.WithError(err).Error("Failed to get helm release")
+		return ctrl.Result{}, err
+	}
+	// Helm release version start from 1 for the first install, if version is lower than 2
+	// the component has never been upgrade, hence nothing to rollback
+	if helmRelease.Version < 2 {
+		return ctrl.Result{}, ErrNothingToRollback
+	}
+	previousRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+		Namespace:   component.Namespace,
+		ReleaseName: component.Spec.Component,
+		Version:     helmRelease.Version - 1,
+	})
+	if err != nil {
+		log.WithError(err).Error("Failed to get previous helm release")
+		return ctrl.Result{}, err
+	}
+	// Before proceeding with rollback we set the desired version to the one we want,
+	// otherwise the reconcile loop will try upgrade it again.
+	updatedComponent := component.DeepCopy()
+	updatedComponent.Spec.Version = previousRelease.Chart.Metadata.Version
+	err = r.Client.Patch(ctx, updatedComponent, client.MergeFrom(component))
+	if err != nil {
+		log.WithError(err).Error("Failed to reset component CRD version")
+		return ctrl.Result{}, err
+	}
+
+	err = r.HelmClient.Rollback(helm.RollbackOptions{
+		Namespace:   component.Namespace,
+		ReleaseName: component.Spec.Component,
+	})
+	if err != nil {
+		log.WithError(err).Error("Failed to rollback component")
+		return ctrl.Result{}, err
+	}
+
+	log.WithField("previous_version", previousRelease.Chart.Metadata.Version).
+		WithField("failed_version", component.Spec.Version).
+		Info("rollback in progress")
+	r.Recorder.Eventf(component, v1.EventTypeNormal, reasonRollbackStarted, "Rollback to version %s started", previousRelease.Chart.Metadata.Version)
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 
@@ -215,9 +398,15 @@ func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logr
 
 	switch helmRelease.Info.Status {
 	case release.StatusDeployed:
-		log.Info("Helm chart deployed")
+		log.WithField("component_version", component.Spec.Version).Info("Helm chart deployed")
 		progressingCondition.Reason = "Completed"
-		progressingCondition.Message = "Helm release install successful"
+		if progressingCondition.Reason == progressingReasonUpgrading {
+			progressingCondition.Message = "Helm release upgrade successful"
+		} else {
+			progressingCondition.Message = "Helm release install successful"
+		}
+
+		// TODO: (after mvp) check component logs for known errors and rollback
 
 		// Component successfully deployed, we can safely set available status and current version.
 		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
@@ -226,11 +415,28 @@ func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logr
 			Reason:  "Installed",
 			Message: progressingCondition.Message,
 		})
-		component.Status.CurrentVersion = component.Spec.Version
+		component.Status.CurrentVersion = helmRelease.Chart.Metadata.Version
+		r.Recorder.Eventf(component, v1.EventTypeNormal, reasonInstalled, "Version %s installed successfully", component.Status.CurrentVersion)
 	case release.StatusFailed:
 		log.Warnf("Helm install failed: %s", helmRelease.Info.Description)
+		r.Recorder.Eventf(component, v1.EventTypeWarning, reasonInstallFailed, "Version %s install failed", component.Spec.Version)
+		if progressingCondition.Reason == progressingReasonUpgrading {
+			log.Warn("Helm chart upgrade failed, trying to rollback")
+			// If an upgrade attempt failed rollback to the previous version.
+			if component.Status.CurrentVersion != "" {
+				return r.rollback(ctx, log.WithField("action", "rollback"), component)
+			}
+		}
+		// If the component was installed for the first time we can't roll back,
+		// the only thing we can do is setting available and progressing status conditions to false.
 		progressingCondition.Reason = "Failed"
-		progressingCondition.Message = fmt.Sprintf("Helm release install failed: %s", helmRelease.Info.Description)
+		progressingCondition.Message = fmt.Sprintf("Helm release install failed: %s - %s", component.Spec.Version, helmRelease.Info.Description)
+		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+			Type:    typeAvailableComponent,
+			Status:  metav1.ConditionFalse,
+			Reason:  "InstallFailed",
+			Message: progressingCondition.Message,
+		})
 	default:
 		// Install still in progress, wait and check again.
 		return ctrl.Result{RequeueAfter: time.Second * 30}, err
@@ -266,6 +472,7 @@ func (r *ComponentReconciler) updateStatus(ctx context.Context, component *castw
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ComponentReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorderFor("component-controller")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&castwarev1alpha1.Component{}).
 		Named("component").

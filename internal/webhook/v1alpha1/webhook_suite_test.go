@@ -10,6 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samber/lo"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
+
+	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
+	"github.com/golang/mock/gomock"
+
 	"github.com/sirupsen/logrus"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -61,10 +67,18 @@ var _ = BeforeSuite(func() {
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
 		ErrorIfCRDPathMissing: false,
-
+		// BinaryAssetsDirectory: filepath.Join("..", "..", "..", "bin", "k8s", "k8s"),
 		WebhookInstallOptions: envtest.WebhookInstallOptions{
 			Paths: []string{filepath.Join("..", "..", "..", "config", "webhook")},
 		},
+	}
+	useExistingCluster := os.Getenv("USE_EXISTING_CLUSTER") == "true"
+	if useExistingCluster {
+		testEnv.UseExistingCluster = lo.ToPtr(true)
+	}
+	if kubeconfig := os.Getenv("KUBECONTEXT"); kubeconfig != "" && useExistingCluster {
+		testEnv.Config, err = config.GetConfigWithContext(kubeconfig)
+		Expect(err).NotTo(HaveOccurred())
 	}
 
 	// Retrieve the first found binary directory to allow running tests from IDEs
@@ -98,7 +112,9 @@ var _ = BeforeSuite(func() {
 	err = SetupClusterWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupComponentWebhookWithManager(mgr, logrus.New())
+	chartLoader := mock_helm.NewMockChartLoader(gomock.NewController(GinkgoT()))
+
+	err = SetupComponentWebhookWithManager(mgr, logrus.New(), chartLoader)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:webhook
@@ -139,15 +155,30 @@ var _ = AfterSuite(func() {
 // properly set up, run 'make setup-envtest' beforehand.
 func getFirstFoundEnvTestBinaryDir() string {
 	basePath := filepath.Join("..", "..", "..", "bin", "k8s")
-	entries, err := os.ReadDir(basePath)
+	dirs, err := os.ReadDir(basePath)
 	if err != nil {
 		logf.Log.Error(err, "Failed to read directory", "path", basePath)
 		return ""
 	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			return filepath.Join(basePath, entry.Name())
+
+	for _, d := range dirs {
+		if !d.IsDir() {
+			continue
+		}
+		candidate := filepath.Join(basePath, d.Name())
+
+		// If candidate only contains one subdirectory, descend into it
+		subEntries, _ := os.ReadDir(candidate)
+		if len(subEntries) == 1 && subEntries[0].IsDir() {
+			candidate = filepath.Join(candidate, subEntries[0].Name())
+		}
+
+		// Verify it contains the etcd binary (or any one of the expected executables)
+		if _, err := os.Stat(filepath.Join(candidate, "etcd")); err == nil {
+			return candidate
 		}
 	}
+
+	// Nothing matched
 	return ""
 }

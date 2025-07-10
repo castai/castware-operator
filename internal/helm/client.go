@@ -47,11 +47,15 @@ type UpgradeOptions struct {
 	ValuesOverrides      map[string]string
 	MaxHistory           int
 	ResetThenReuseValues bool
+	DryRun               bool
+	Recreate             bool
 }
 
 type GetReleaseOptions struct {
 	Namespace   string
 	ReleaseName string
+	// Version is the helm release version, not the chart version. Setting it to 0 will get the last version.
+	Version int
 }
 
 type RollbackOptions struct {
@@ -159,8 +163,10 @@ func (c *client) Upgrade(ctx context.Context, opts UpgradeOptions) (*release.Rel
 	upgrade := action.NewUpgrade(cfg)
 	upgrade.Namespace = namespace
 	upgrade.MaxHistory = opts.MaxHistory
+	upgrade.DryRun = opts.DryRun
 	// upgrade.PostRenderer = hook.NewLabelIgnoreHook(cfg.KubeClient, opts.Release)
 	upgrade.ResetThenReuseValues = opts.ResetThenReuseValues
+	upgrade.Recreate = opts.Recreate
 	name := opts.Release.Name
 
 	// Prepare user value overrides.
@@ -186,6 +192,7 @@ func (c *client) Rollback(opts RollbackOptions) error {
 	}
 
 	rollback := action.NewRollback(cfg)
+	rollback.Recreate = true
 	err = rollback.Run(opts.ReleaseName)
 	if err != nil {
 		return fmt.Errorf("chart rollback failed, name=%s, namespace=%s: %w", opts.ReleaseName, opts.Namespace, err)
@@ -200,6 +207,7 @@ func (c *client) GetRelease(opts GetReleaseOptions) (*release.Release, error) {
 	}
 
 	list := action.NewGet(cfg)
+	list.Version = opts.Version
 	rel, err := list.Run(opts.ReleaseName)
 	if err != nil {
 		return nil, fmt.Errorf("getting chart release, name=%s, namespace=%s: %w", opts.ReleaseName, opts.Namespace, err)
