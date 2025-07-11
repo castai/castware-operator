@@ -59,12 +59,6 @@ type GetReleaseOptions struct {
 	// Version is the helm release version, not the chart version. Setting it to 0 will get the last version.
 	Version int
 }
-type GetStatusOptions struct {
-	Namespace          string
-	ReleaseName        string
-	ShowResources      bool
-	ShowResourcesTable bool
-}
 
 type RollbackOptions struct {
 	Namespace   string
@@ -141,6 +135,7 @@ func (c *client) Uninstall(opts UninstallOptions) (*release.UninstallReleaseResp
 	if err != nil {
 		return nil, err
 	}
+
 	uninstall := action.NewUninstall(cfg)
 	uninstall.IgnoreNotFound = opts.IgnoreNotFound
 	uninstall.Wait = opts.Wait
