@@ -90,7 +90,6 @@ type Client interface {
 	Upgrade(ctx context.Context, opts UpgradeOptions) (*release.Release, error)
 	Rollback(opts RollbackOptions) error
 	GetRelease(opts GetReleaseOptions) (*release.Release, error)
-	GetStatus(opts GetStatusOptions) (*release.Release, error)
 }
 
 type client struct {
@@ -219,21 +218,6 @@ func (c *client) GetRelease(opts GetReleaseOptions) (*release.Release, error) {
 	list := action.NewGet(cfg)
 	list.Version = opts.Version
 	rel, err := list.Run(opts.ReleaseName)
-	if err != nil {
-		return nil, fmt.Errorf("getting chart release, name=%s, namespace=%s: %w", opts.ReleaseName, opts.Namespace, err)
-	}
-	return rel, nil
-}
-func (c *client) GetStatus(opts GetStatusOptions) (*release.Release, error) {
-	cfg, err := c.configurationGetter.Get(opts.Namespace)
-	if err != nil {
-		return nil, err
-	}
-
-	status := action.NewStatus(cfg)
-	status.ShowResources = opts.ShowResources
-	status.ShowResourcesTable = opts.ShowResourcesTable
-	rel, err := status.Run(opts.ReleaseName)
 	if err != nil {
 		return nil, fmt.Errorf("getting chart release, name=%s, namespace=%s: %w", opts.ReleaseName, opts.Namespace, err)
 	}

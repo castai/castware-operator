@@ -89,7 +89,7 @@ type ComponentReconciler struct {
 
 func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithField("component", req.NamespacedName.String())
-	log.Info("Reconciling Component")
+	log.Debug("Reconciling Component")
 
 	component := &castwarev1alpha1.Component{}
 	err := r.Get(ctx, req.NamespacedName, component)
@@ -122,6 +122,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				log.WithError(err).Error("Failed to uninstall Helm release")
 				return ctrl.Result{}, err
 			}
+			// If the helm chart is successfully uninstalled the finalizer is removed and the CR deleted.
 			controllerutil.RemoveFinalizer(component, componentFinalizer)
 			if err := r.Update(ctx, component); err != nil {
 				return ctrl.Result{}, err
@@ -212,9 +213,9 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.upgradeComponent(ctx, log.WithField("action", "upgrade"), component)
 	}
 
-	log.Info("Component reconciled")
+	log.Debug("Component reconciled")
 
-	return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+	return ctrl.Result{RequeueAfter: time.Minute * 15}, nil
 }
 
 func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]string, error) {

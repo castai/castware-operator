@@ -94,7 +94,12 @@ func main() {
 		GitRef:    GitRef,
 		Version:   Version,
 	}
+
 	log := logrus.New().WithField("gitCommit", version.GitCommit).WithField("version", version.Version)
+	if os.Getenv("DEBUG") == "true" {
+		log.Level = logrus.DebugLevel
+	}
+
 	castai.SetVersion(version)
 
 	ctrl.SetLogger(logrusr.New(log))
