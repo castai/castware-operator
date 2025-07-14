@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/record"
 
@@ -31,6 +33,7 @@ import (
 
 // Definitions to manage status conditions
 const (
+	componentFinalizer = "castware.cast.ai/cleanup-helm"
 	// typeAvailableComponent represents the status when component resource is reconciled, installed and works as expected.
 	typeAvailableComponent = "Available"
 
@@ -73,6 +76,7 @@ var ErrNothingToRollback = errors.New("nothing to rollback")
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=create;patch;get;list;watch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=create;patch;get;list;watch
 // +kubebuilder:rbac:groups=pod-mutations.cast.ai,resources=podmutations,verbs=create;update;get;list;watch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=delete,resourceNames=castai-agent
 
 // ComponentReconciler reconciles a Component object
 type ComponentReconciler struct {
@@ -84,7 +88,8 @@ type ComponentReconciler struct {
 }
 
 func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log
+	log := r.Log.WithField("component", req.NamespacedName.String())
+	log.Debug("Reconciling Component")
 
 	component := &castwarev1alpha1.Component{}
 	err := r.Get(ctx, req.NamespacedName, component)
@@ -99,7 +104,40 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		log.WithError(err).Error("Failed to get component")
 		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
 	}
-	log = log.WithField("component", component.Name).WithField("cluster", component.Spec.Cluster)
+	log = log.WithField("cluster", component.Spec.Cluster)
+
+	if component.DeletionTimestamp != nil && !component.DeletionTimestamp.IsZero() {
+		log.Info("Component is being deleted")
+		if controllerutil.ContainsFinalizer(component, componentFinalizer) {
+			log.Info("Uninstalling Helm release")
+			_, err := r.HelmClient.Uninstall(helm.UninstallOptions{
+				Namespace:   component.Namespace,
+				ReleaseName: component.Spec.Component,
+				Wait:        true,
+				// If the helm release is not found there is nothing to uninstall,
+				// hence we can safely remove the finalizer.
+				IgnoreNotFound: true,
+			})
+			if err != nil {
+				log.WithError(err).Error("Failed to uninstall Helm release")
+				return ctrl.Result{}, err
+			}
+			// If the helm chart is successfully uninstalled the finalizer is removed and the CR deleted.
+			controllerutil.RemoveFinalizer(component, componentFinalizer)
+			if err := r.Update(ctx, component); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		// Stop reconciliation, deletion in progress.
+		return ctrl.Result{}, nil
+	}
+
+	if !controllerutil.ContainsFinalizer(component, componentFinalizer) {
+		controllerutil.AddFinalizer(component, componentFinalizer)
+		if err := r.Update(ctx, component); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
 	// If installation/upgrade is in progress we wait for completion or timeout.
 	if progressingCondition := meta.FindStatusCondition(component.Status.Conditions, typeProgressingComponent); progressingCondition != nil &&
@@ -175,9 +213,9 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.upgradeComponent(ctx, log.WithField("action", "upgrade"), component)
 	}
 
-	// TODO: (WIRE-1441) delete component when crd is deleted
+	log.Debug("Component reconciled")
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: time.Minute * 15}, nil
 }
 
 func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]string, error) {
@@ -450,7 +488,7 @@ func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logr
 
 	// TODO: how to deal with degraded components/failed installs
 
-	return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+	return ctrl.Result{RequeueAfter: time.Second * 30}, err
 }
 
 func (r *ComponentReconciler) updateStatus(ctx context.Context, component *castwarev1alpha1.Component) error {

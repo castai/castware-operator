@@ -94,7 +94,12 @@ func main() {
 		GitRef:    GitRef,
 		Version:   Version,
 	}
+
 	log := logrus.New().WithField("gitCommit", version.GitCommit).WithField("version", version.Version)
+	if os.Getenv("DEBUG") == "true" {
+		log.Level = logrus.DebugLevel
+	}
+
 	castai.SetVersion(version)
 
 	ctrl.SetLogger(logrusr.New(log))
@@ -232,7 +237,7 @@ func main() {
 
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookcastwarev1alpha1.SetupClusterWebhookWithManager(mgr); err != nil {
+		if err = webhookcastwarev1alpha1.SetupClusterWebhookWithManager(mgr, log); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Cluster")
 			os.Exit(1)
 		}

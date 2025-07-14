@@ -37,8 +37,10 @@ type InstallOptions struct {
 }
 
 type UninstallOptions struct {
-	Namespace   string
-	ReleaseName string
+	Namespace      string
+	ReleaseName    string
+	IgnoreNotFound bool
+	Wait           bool
 }
 
 type UpgradeOptions struct {
@@ -135,6 +137,8 @@ func (c *client) Uninstall(opts UninstallOptions) (*release.UninstallReleaseResp
 	}
 
 	uninstall := action.NewUninstall(cfg)
+	uninstall.IgnoreNotFound = opts.IgnoreNotFound
+	uninstall.Wait = opts.Wait
 	res, err := uninstall.Run(opts.ReleaseName)
 	if err != nil {
 		return nil, fmt.Errorf("chart uninstall failed, name=%s, namespace=%s: %w", opts.ReleaseName, opts.Namespace, err)
@@ -236,6 +240,9 @@ func (c *configurationGetter) Get(namespace string) (*action.Configuration, erro
 	err := cfg.Init(rcg, namespace, c.helmDriver, c.debugFuncf)
 	if err != nil {
 		return nil, fmt.Errorf("helm action config init: %w", err)
+	}
+	cfg.Log = func(s string, i ...interface{}) {
+		c.log.Infof(s, i...)
 	}
 	return cfg, nil
 }
