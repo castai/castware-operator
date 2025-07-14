@@ -4,6 +4,9 @@ kind: Cluster
 metadata:
   name: {{ .Values.defaultCluster.name }}
   namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: hook-succeeded,before-hook-creation
   labels:
     {{- include "castware-operator.labels" . | nindent 4 }}
 spec:

@@ -66,7 +66,7 @@ metrics:
 
 apiKeySecret:
   # Whether to create the API key secret
-  create: false
+  create: true
   # Name of the secret (defaults to "castware-api-key")
   name: "castware-api-key"
   # The actual API key value (should be set via --set apiKeySecret.apiKey=YOUR_API_KEY)
@@ -74,11 +74,11 @@ apiKeySecret:
 
 # Default cluster configuration
 defaultCluster:
-  enabled: false
+  enabled: true
   # This will create a default Cluster CR if enabled
   name: "castai"
   api:
-    apiUrl: "https://api.cast.ai"
+    apiUrl: "https://api.dev-master.cast.ai" #"https://api.cast.ai"
   # If not specified, will use apiKeySecret.name from above
   apiKeySecret: ""
 
