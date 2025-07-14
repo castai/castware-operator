@@ -23,7 +23,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "castware-operator.serviceAccountName" . }}
+      serviceAccountName: {{ include "castware-operator.serviceAccountName" . }}-controller-manager
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
