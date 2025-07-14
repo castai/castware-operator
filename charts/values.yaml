@@ -17,6 +17,8 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+namespace: "castai-agent"
+
 serviceAccount:
   # Specifies whether a service account should be created
   create: true
@@ -85,12 +87,9 @@ defaultComponents:
   enabled: false
   # List of default components to create
   # Each component will be created with the specified configuration
-  components: []
-  # Example:
-  # - name: "castai-agent"
-  #   component: "castai-agent"
-  #   cluster: "castai"
-  #   enabled: true
-  #   version: "v1.3.0"
-  #   values:
-  #     replicaCount: 1
+  components:
+   - name: "castai-agent"
+     component: "castai-agent"
+     cluster: "castai"
+     enabled: true
+

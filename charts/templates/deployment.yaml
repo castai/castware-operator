@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "castware-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "castware-operator.labels" . | nindent 4 }}
 spec:

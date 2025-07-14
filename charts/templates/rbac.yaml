@@ -1,56 +1,18 @@
----
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
-  name: {{ include "castware-operator.fullname" . }}-cluster-role
+  name: {{ include "castware-operator.fullname" . }}-kube-system-access
   labels:
     {{- include "castware-operator.labels" . | nindent 4 }}
 rules:
 - apiGroups:
-  - castware.cast.ai.cast.ai
+  - rbac.authorization.k8s.io
   resources:
-  - clusters
-  - components
+  - roles
+  - rolebindings
   verbs:
-  - create
+  - get
   - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - castware.cast.ai.cast.ai
-  resources:
-  - clusters/finalizers
-  - components/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - castware.cast.ai.cast.ai
-  resources:
-  - clusters/status
-  - components/status
-  verbs:
-  - get
-  - patch
-  - update
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: {{ include "castware-operator.fullname" . }}-cluster-role-binding
-  labels:
-    {{- include "castware-operator.labels" . | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: {{ include "castware-operator.fullname" . }}-cluster-role
-subjects:
-- kind: ServiceAccount
-  name: {{ include "castware-operator.serviceAccountName" . }}
-  namespace: {{ .Release.Namespace }}
-{{- if .Values.leaderElection.enabled }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -92,17 +54,322 @@ rules:
   - patch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-namespace-admin
+  labels:
+    {{- include "castware-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - '*'
+  resources:
+  - '*'
+  verbs:
+  - '*'
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-manager-role
+  labels:
+    {{- include "castware-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - events
+  - limitranges
+  - namespaces
+  - nodes
+  - persistentvolumeclaims
+  - persistentvolumes
+  - pods
+  - replicationcontrollers
+  - resourcequotas
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  - deployments
+  - replicasets
+  - statefulsets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - argoproj.io
+  resources:
+  - rollouts
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - autoscaling
+  resources:
+  - horizontalpodautoscalers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - autoscaling.cast.ai
+  resources:
+  - recommendations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - cronjobs
+  - jobs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - castware.cast.ai
+  resources:
+  - clusters
+  - components
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - castware.cast.ai
+  resources:
+  - clusters/finalizers
+  - components/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - castware.cast.ai
+  resources:
+  - clusters/status
+  - components/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - datadoghq.com
+  resources:
+  - extendeddaemonsetreplicasets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - karpenter.k8s.aws
+  resources:
+  - awsnodetemplates
+  - ec2nodeclasses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - karpenter.sh
+  resources:
+  - machines
+  - nodeclaims
+  - nodepools
+  - provisioners
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - metrics.k8s.io
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  - networkpolicies
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - pod-mutations.cast.ai
+  resources:
+  - podmutations
+  verbs:
+  - create
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - policy
+  resources:
+  - poddisruptionbudgets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resourceNames:
+  - castai-agent
+  resources:
+  - clusterrolebindings
+  - clusterroles
+  verbs:
+  - delete
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  - clusterroles
+  - rolebindings
+  - roles
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - runbooks.cast.ai
+  resources:
+  - recommendationsyncs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - storage.k8s.io
+  resources:
+  - csinodes
+  - storageclasses
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-metrics-auth-role
+  labels:
+    {{- include "castware-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - subjectaccessreviews
+  verbs:
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-metrics-reader
+  labels:
+    {{- include "castware-operator.labels" . | nindent 4 }}
+rules:
+- nonResourceURLs:
+  - /metrics
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ include "castware-operator.fullname" . }}-leader-election-role-binding
+  name: {{ include "castware-operator.fullname" . }}-kube-system-access
   labels:
     {{- include "castware-operator.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ include "castware-operator.fullname" . }}-leader-election-role
+  name: castware-operator-kube-system-access
 subjects:
 - kind: ServiceAccount
-  name: {{ include "castware-operator.serviceAccountName" . }}
-  namespace: {{ .Release.Namespace }}
-{{- end }}
+  name: castware-operator-controller-manager
+  namespace: castai-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-leader-election-rolebinding
+  labels:
+    {{- include "castware-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: castware-operator-leader-election-role
+subjects:
+- kind: ServiceAccount
+  name: castware-operator-controller-manager
+  namespace: castai-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-namespace-admin-binding
+  labels:
+    {{- include "castware-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: castware-operator-namespace-admin
+subjects:
+- kind: ServiceAccount
+  name: castware-operator-controller-manager
+  namespace: castai-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-manager-rolebinding
+  labels:
+    {{- include "castware-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: castware-operator-manager-role
+subjects:
+- kind: ServiceAccount
+  name: castware-operator-controller-manager
+  namespace: castai-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-metrics-auth-rolebinding
+  labels:
+    {{- include "castware-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: castware-operator-metrics-auth-role
+subjects:
+- kind: ServiceAccount
+  name: castware-operator-controller-manager
+  namespace: castai-agent

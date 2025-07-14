@@ -5,6 +5,7 @@ apiVersion: castware.cast.ai/v1alpha1
 kind: Component
 metadata:
   name: {{ .name }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "castware-operator.labels" $ | nindent 4 }}
 spec:
