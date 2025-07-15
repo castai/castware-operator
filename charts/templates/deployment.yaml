@@ -78,6 +78,12 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+            - name: health-probe
+              containerPort: 8081
+              protocol: TCP
+            - name: webhooks
+              containerPort: {{ .Values.webhook.port }}
+              protocol: TCP
           {{- with .Values.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}
