@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sigs.k8s.io/yaml"
 	"sort"
 	"strings"
+
+	"sigs.k8s.io/yaml"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
@@ -22,10 +23,7 @@ var rbacKindOrder = map[string]int{
 }
 
 func parseManifests(r io.Reader) ([]*unstructured.Unstructured, error) {
-	var (
-		rbacObjs []*unstructured.Unstructured
-		saObjs   []*unstructured.Unstructured
-	)
+	var rbacObjs []*unstructured.Unstructured
 
 	dec := yamlutil.NewYAMLOrJSONDecoder(r, 4096)
 
@@ -46,8 +44,6 @@ func parseManifests(r io.Reader) ([]*unstructured.Unstructured, error) {
 		switch u.GetKind() {
 		case "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding":
 			rbacObjs = append(rbacObjs, u)
-		case "ServiceAccount":
-			saObjs = append(saObjs, u)
 		}
 
 	}
@@ -69,9 +65,6 @@ func parseManifests(r io.Reader) ([]*unstructured.Unstructured, error) {
 	if err := injectAndWrite(rbacObjs, "charts/templates/rbac.yaml", "", ""); err != nil {
 		return nil, err
 	}
-	if err := injectAndWrite(saObjs, "charts/templates/serviceaccount.yaml", "{{- if .Values.serviceAccount.create -}}", "{{- end }}"); err != nil {
-		return nil, err
-	}
 
 	return rbacObjs, nil
 }
@@ -81,6 +74,7 @@ func injectAndWrite(objs []*unstructured.Unstructured, outFilePath, header, foot
 	if err != nil {
 		return err
 	}
+	// nolint:errcheck
 	defer outF.Close()
 	if header != "" {
 		if _, err := outF.WriteString(header + "\n"); err != nil {
@@ -98,10 +92,7 @@ func injectAndWrite(objs []*unstructured.Unstructured, outFilePath, header, foot
 				return err
 			}
 		}
-		injectedData, err := injectTemplating(data, obj)
-		if err != nil {
-			return err
-		}
+		injectedData := injectTemplating(data, obj)
 		if _, err := outF.Write(injectedData); err != nil {
 			return err
 		}
@@ -109,13 +100,13 @@ func injectAndWrite(objs []*unstructured.Unstructured, outFilePath, header, foot
 
 	if footer != "" {
 		if _, err := outF.WriteString("\n" + footer); err != nil {
-
+			return err
 		}
 	}
 	return nil
 }
 
-func injectTemplating(in []byte, obj *unstructured.Unstructured) ([]byte, error) {
+func injectTemplating(in []byte, obj *unstructured.Unstructured) []byte {
 	lines := splitLines(in)
 
 	var out []string
@@ -139,7 +130,7 @@ func injectTemplating(in []byte, obj *unstructured.Unstructured) ([]byte, error)
 			}
 
 			out = append(out,
-				indent+`  name: `+strings.Replace(obj.GetName(), "castware-operator", `{{ include "castware-operator.fullname" . }}`, 1),
+				indent+`  name: `+strings.Replace(obj.GetName(), "castware-operator", `{{ include "castware-operator.fullname" . }}`, 1), // nolint:lll
 				indent+"  labels:",
 				indent+"    {{- include \"castware-operator.labels\" . | nindent 4 }}",
 			)
@@ -154,12 +145,12 @@ func injectTemplating(in []byte, obj *unstructured.Unstructured) ([]byte, error)
 			}
 			continue
 		}
-		line = strings.Replace(line, "castware-operator-controller-manager", "{{ include \"castware-operator.fullname\" . }}-controller-manager", -1)
+		line = strings.Replace(line, "castware-operator-controller-manager", "{{ include \"castware-operator.fullname\" . }}-controller-manager", -1) // nolint:lll
 		out = append(out, line)
 		i++
 	}
 
-	return []byte(strings.Join(out, "\n")), nil
+	return []byte(strings.Join(out, "\n"))
 }
 
 func splitLines(b []byte) []string {
@@ -188,6 +179,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	// nolint:errcheck
 	defer f.Close()
 
 	objs, err := parseManifests(f)
