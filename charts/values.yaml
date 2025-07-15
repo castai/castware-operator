@@ -30,18 +30,35 @@ serviceAccount:
 
 podAnnotations: {}
 
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
 podSecurityContext:
   runAsNonRoot: true
   fsGroup: 1005
   runAsGroup: 1005
   runAsUser: 1005
+  seccompProfile:
+    type: RuntimeDefault
 
-securityContext:
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true
-  capabilities:
-    drop:
-      - ALL
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8081
+  initialDelaySeconds: 15
+  periodSeconds: 20
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8081
+  initialDelaySeconds: 5
+  periodSeconds: 10
 
 service:
   type: ClusterIP
@@ -81,10 +98,12 @@ defaultCluster:
     apiUrl: "https://api.dev-master.cast.ai" #"https://api.cast.ai"
   # If not specified, will use apiKeySecret.name from above
   apiKeySecret: ""
+  provider: ""
+  helmRepoURL: "https://castai.github.io/helm-charts"
 
 # Default components configuration
 defaultComponents:
-  enabled: false
+  enabled: true
   # List of default components to create
   # Each component will be created with the specified configuration
   components:
@@ -92,4 +111,3 @@ defaultComponents:
      component: "castai-agent"
      cluster: "castai"
      enabled: true
-

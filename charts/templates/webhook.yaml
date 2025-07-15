@@ -115,7 +115,7 @@ webhooks:
       port: 443
   admissionReviewVersions: ["v1"]
   sideEffects: None
-  timeoutSeconds: 5
+  timeoutSeconds: 10
 - name: vcomponent.kb.io
   rules:
   - apiGroups: ["castware.cast.ai"]
@@ -131,5 +131,5 @@ webhooks:
       port: 443
   admissionReviewVersions: ["v1"]
   sideEffects: None
-  timeoutSeconds: 5
+  timeoutSeconds: 10
 {{- end }}

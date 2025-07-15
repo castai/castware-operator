@@ -23,15 +23,20 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "castware-operator.serviceAccountName" . }}-controller-manager
+      serviceAccountName: {{ include "castware-operator.fullname" . }}-controller-manager
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: {{ .Chart.Name }}
-          securityContext:
-            {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --metrics-bind-address=:8443
+            - --leader-elect
+            - --health-probe-bind-address=:8081
+            - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
+          command:
+            - /manager
           env:
             - name: WATCH_NAMESPACE
               value: ""
@@ -79,10 +84,16 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
           volumeMounts:
             - name: webhook-server-cert
               mountPath: /tmp/k8s-webhook-server/serving-certs
               readOnly: true
+            - mountPath: /.cache/helm
+              name: helm-cache
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 12 }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -99,3 +110,6 @@ spec:
         - name: webhook-server-cert
           secret:
             secretName: {{ include "castware-operator.fullname" . }}-webhook-cert
+        - name: helm-cache
+          emptyDir:
+            sizeLimit: 500Mi

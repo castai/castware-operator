@@ -125,9 +125,19 @@ func injectTemplating(in []byte, obj *unstructured.Unstructured) ([]byte, error)
 			// determine indentation
 			indentLen := countLeadingSpaces(line)
 			indent := strings.Repeat(" ", indentLen)
+			namespace := `"{{ .Release.Namespace }}"`
+			if obj.GetNamespace() != "castai-agent" {
+				namespace = obj.GetNamespace()
+			}
 
 			// emit the templated metadata block
 			out = append(out, indent+"metadata:")
+
+			// ClusterRole and ClusterRoleBinding are not namespaced
+			if !strings.HasPrefix(obj.GetKind(), "Cluster") {
+				out = append(out, indent+`  namespace: `+namespace)
+			}
+
 			out = append(out,
 				indent+`  name: `+strings.Replace(obj.GetName(), "castware-operator", `{{ include "castware-operator.fullname" . }}`, 1),
 				indent+"  labels:",
@@ -144,6 +154,7 @@ func injectTemplating(in []byte, obj *unstructured.Unstructured) ([]byte, error)
 			}
 			continue
 		}
+		line = strings.Replace(line, "castware-operator-controller-manager", "{{ include \"castware-operator.fullname\" . }}-controller-manager", -1)
 		out = append(out, line)
 		i++
 	}

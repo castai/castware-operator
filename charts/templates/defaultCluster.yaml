@@ -5,8 +5,9 @@ metadata:
   name: {{ .Values.defaultCluster.name }}
   namespace: {{ .Release.Namespace }}
   annotations:
-    helm.sh/hook: post-install,post-upgrade
-    helm.sh/hook-delete-policy: hook-succeeded,before-hook-creation
+    helm.sh/hook: post-install
+    helm.sh/hook-delete-policy: hook-failed
+    helm.sh/hook-weight: "5"
   labels:
     {{- include "castware-operator.labels" . | nindent 4 }}
 spec:
@@ -25,6 +26,7 @@ spec:
   {{- if .Values.defaultCluster.provider }}
   provider: {{ .Values.defaultCluster.provider | quote }}
   {{- end }}
+  helmRepoURL: {{ .Values.defaultCluster.helmRepoURL | quote }}
   {{- if .Values.defaultCluster.cluster }}
   cluster:
     {{- toYaml .Values.defaultCluster.cluster | nindent 4 }}

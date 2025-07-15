@@ -97,8 +97,9 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{RequeueAfter: time.Minute * 1}, err
 		}
 		// Set cluster ID from register cluster result
-		cluster.Spec.Cluster = &castwarev1alpha1.ClusterMetadataSpec{ClusterID: result.ClusterID}
-		err = r.Update(ctx, cluster)
+		updatedCluster := cluster.DeepCopy()
+		updatedCluster.Spec.Cluster = &castwarev1alpha1.ClusterMetadataSpec{ClusterID: result.ClusterID}
+		err = r.Client.Patch(ctx, updatedCluster, client.MergeFrom(cluster))
 		if err != nil {
 			log.WithError(err).Error("Failed to set cluster id")
 			// TODO: retry logic

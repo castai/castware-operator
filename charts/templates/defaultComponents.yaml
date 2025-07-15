@@ -5,7 +5,11 @@ apiVersion: castware.cast.ai/v1alpha1
 kind: Component
 metadata:
   name: {{ .name }}
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ $.Release.Namespace }}
+  annotations:
+    helm.sh/hook: post-install
+    helm.sh/hook-delete-policy: hook-failed
+    helm.sh/hook-weight: "10"
   labels:
     {{- include "castware-operator.labels" $ | nindent 4 }}
 spec:

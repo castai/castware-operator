@@ -49,6 +49,9 @@ func (cl *remoteChartLoader) Load(ctx context.Context, c *ChartSource) (*chart.C
 	if c.RepoURL != "" {
 		repoURL = c.RepoURL
 	}
+	log := cl.log.WithField("repo_url", repoURL).
+		WithField("chart_name", c.Name).
+		WithField("chart_version", c.Version)
 
 	err := waitext.Retry(
 		ctx,
@@ -80,7 +83,7 @@ func (cl *remoteChartLoader) Load(ctx context.Context, c *ChartSource) (*chart.C
 			defer func(Body io.ReadCloser) {
 				err := Body.Close()
 				if err != nil {
-					cl.log.Warnf("loading chart from archive - failed to close response body: %v", err)
+					log.Warnf("loading chart from archive - failed to close response body: %v", err)
 				}
 			}(archiveResp.Body)
 
@@ -92,7 +95,7 @@ func (cl *remoteChartLoader) Load(ctx context.Context, c *ChartSource) (*chart.C
 			return false, nil
 		},
 		func(err error) {
-			cl.log.Warnf("error loading chart from archive, will retry: %v", err)
+			log.Warnf("error loading chart from archive, will retry: %v", err)
 		},
 	)
 	if err != nil {
