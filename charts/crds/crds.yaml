@@ -1,0 +1,313 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: clusters.castware.cast.ai
+spec:
+  group: castware.cast.ai
+  names:
+    kind: Cluster
+    listKind: ClusterList
+    plural: clusters
+    singular: cluster
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: Cluster is the Schema for the clusters API
+          properties:
+            apiVersion:
+              description: |-
+                APIVersion defines the versioned schema of this representation of an object.
+                Servers should convert recognized schemas to the latest internal value, and
+                may reject unrecognized values.
+                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+              type: string
+            kind:
+              description: |-
+                Kind is a string value representing the REST resource this object represents.
+                Servers may infer this from the endpoint the client submits requests to.
+                Cannot be updated.
+                In CamelCase.
+                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: ClusterSpec defines the desired state of Cluster
+              properties:
+                api:
+                  description: |-
+                    API holds all the Mothership API endpoints.
+                    Only apiUrl is required; the others are derived if omitted.
+                  properties:
+                    apiGrpcUrl:
+                      description: apiGrpcUrl is the gRPC endpoint for the Mothership
+                        API (optional).
+                      type: string
+                    apiUrl:
+                      description: apiUrl is the “base” HTTP URL of the Mothership API.
+                      format: uri
+                      type: string
+                    grpcUrl:
+                      description: grpcUrl is a generic gRPC endpoint for any Mothership
+                        service (optional).
+                      type: string
+                    kvisorGrpcUrl:
+                      description: kvisorGrpcUrl is the gRPC endpoint for the Kvisor
+                        service (optional).
+                      type: string
+                  required:
+                    - apiUrl
+                  type: object
+                apiKeySecret:
+                  default: castware-api-key
+                  description: |-
+                    APIKeySecret is the name of the Kubernetes Secret containing the Mothership API key.
+                    The operator does not work without it.
+                  type: string
+                cluster:
+                  description: |-
+                    Cluster contains metadata that is populated after the agent registers.
+                    All fields here are optional; if missing, the operator will fill them in at runtime.
+                  properties:
+                    clusterID:
+                      description: ClusterID is the unique UUID of this cluster in the
+                        Cast AI database.
+                      pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89ABab][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$
+                      type: string
+                    clusterName:
+                      description: ClusterName is a human-readable name for this cluster
+                        (optional).
+                      type: string
+                    location:
+                      description: Location is the region or zone of the cluster (optional).
+                      type: string
+                    projectID:
+                      description: ProjectID is the cloud-provider project/subscription/account
+                        ID (optional).
+                      type: string
+                  type: object
+                helmRepoURL:
+                  default: https://castai.github.io/helm-charts
+                  description: HelmRepoURL is the url of the Helm repository containing
+                    components charts.
+                  type: string
+                provider:
+                  description: Provider is the cloud provider where Castware is installed.
+                  type: string
+              required:
+                - api
+                - apiKeySecret
+              type: object
+            status:
+              description: ClusterStatus defines the observed state of Cluster
+              properties:
+                conditions:
+                  description: Conditions store the status conditions of the Cluster
+                    instances
+                  items:
+                    description: Condition contains details for one aspect of the current
+                      state of this API Resource.
+                    properties:
+                      lastTransitionTime:
+                        description: |-
+                          lastTransitionTime is the last time the condition transitioned from one status to another.
+                          This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                        format: date-time
+                        type: string
+                      message:
+                        description: |-
+                          message is a human readable message indicating details about the transition.
+                          This may be an empty string.
+                        maxLength: 32768
+                        type: string
+                      observedGeneration:
+                        description: |-
+                          observedGeneration represents the .metadata.generation that the condition was set based upon.
+                          For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                          with respect to the current state of the instance.
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      reason:
+                        description: |-
+                          reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                          Producers of specific condition types may define expected values and meanings for this field,
+                          and whether the values are considered a guaranteed API.
+                          The value should be a CamelCase string.
+                          This field may not be empty.
+                        maxLength: 1024
+                        minLength: 1
+                        pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                        type: string
+                      status:
+                        description: status of the condition, one of True, False, Unknown.
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                        type: string
+                      type:
+                        description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                        maxLength: 316
+                        pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                        type: string
+                    required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                    type: object
+                  type: array
+                lastSecretVersion:
+                  type: string
+              type: object
+          type: object
+      served: true
+      storage: true
+      subresources:
+        status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: components.castware.cast.ai
+spec:
+  group: castware.cast.ai
+  names:
+    kind: Component
+    listKind: ComponentList
+    plural: components
+    singular: component
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: Component is the Schema for the components API
+          properties:
+            apiVersion:
+              description: |-
+                APIVersion defines the versioned schema of this representation of an object.
+                Servers should convert recognized schemas to the latest internal value, and
+                may reject unrecognized values.
+                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+              type: string
+            kind:
+              description: |-
+                Kind is a string value representing the REST resource this object represents.
+                Servers may infer this from the endpoint the client submits requests to.
+                Cannot be updated.
+                In CamelCase.
+                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: ComponentSpec defines the desired state of Component
+              properties:
+                cluster:
+                  default: castai
+                  description: Cluster is the name of the cluster CRD containing global
+                    parameters for this component.
+                  type: string
+                component:
+                  default: castai-agent
+                  description: Component is the name of the component represented in
+                    this CRD.
+                  type: string
+                enabled:
+                  description: Enabled is set to false if this component should be scaled
+                    to zero replicas.
+                  type: boolean
+                values:
+                  description: |-
+                    Values is a free-form map of Helm values (exactly like a values.yaml block).
+                    The operator will pass these to `helm install/upgrade --values`.
+                  x-kubernetes-preserve-unknown-fields: true
+                version:
+                  description: |-
+                    Version is the the version of the helm chart that should be installed, if not specified
+                    the latest version will be installed and the value will be filled by the operator.
+                  type: string
+              required:
+                - cluster
+                - component
+                - enabled
+              type: object
+            status:
+              description: ComponentStatus defines the observed state of Component
+              properties:
+                conditions:
+                  description: Conditions store the status conditions of the Component
+                    instances
+                  items:
+                    description: Condition contains details for one aspect of the current
+                      state of this API Resource.
+                    properties:
+                      lastTransitionTime:
+                        description: |-
+                          lastTransitionTime is the last time the condition transitioned from one status to another.
+                          This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                        format: date-time
+                        type: string
+                      message:
+                        description: |-
+                          message is a human readable message indicating details about the transition.
+                          This may be an empty string.
+                        maxLength: 32768
+                        type: string
+                      observedGeneration:
+                        description: |-
+                          observedGeneration represents the .metadata.generation that the condition was set based upon.
+                          For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                          with respect to the current state of the instance.
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      reason:
+                        description: |-
+                          reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                          Producers of specific condition types may define expected values and meanings for this field,
+                          and whether the values are considered a guaranteed API.
+                          The value should be a CamelCase string.
+                          This field may not be empty.
+                        maxLength: 1024
+                        minLength: 1
+                        pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                        type: string
+                      status:
+                        description: status of the condition, one of True, False, Unknown.
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                        type: string
+                      type:
+                        description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                        maxLength: 316
+                        pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                        type: string
+                    required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                    type: object
+                  type: array
+                currentVersion:
+                  type: string
+              type: object
+          type: object
+      served: true
+      storage: true
+      subresources:
+        status: {}
+

@@ -5,6 +5,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: {{ include "castware-operator.fullname" . }}-webhook-cert
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "castware-operator.labels" . | nindent 4 }}
 spec:
@@ -30,6 +31,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ include "castware-operator.fullname" . }}-webhook-service
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "castware-operator.labels" . | nindent 4 }}
 spec:
@@ -38,6 +40,56 @@ spec:
     targetPort: 9443
   selector:
     {{- include "castware-operator.selectorLabels" . | nindent 4 }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-webhook-configuration
+  labels:
+    {{- include "castware-operator.labels" . | nindent 4 }}
+  annotations:
+    cert-manager.io/inject-ca-from: "{{ .Release.Namespace }}/{{ include "castware-operator.fullname" . }}-webhook-cert"
+webhooks:
+  - admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: castware-operator-webhook-service
+        namespace: castai-agent
+        path: /mutate-castware-cast-ai-v1alpha1-cluster
+    failurePolicy: Fail
+    name: mcluster-v1alpha1.kb.io
+    rules:
+      - apiGroups:
+          - castware.cast.ai
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - clusters
+    sideEffects: None
+  - admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: castware-operator-webhook-service
+        namespace: castai-agent
+        path: /mutate-castware-cast-ai-v1alpha1-component
+    failurePolicy: Fail
+    name: mcomponent-v1alpha1.kb.io
+    rules:
+      - apiGroups:
+          - castware.cast.ai
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - components
+    sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
@@ -63,7 +115,7 @@ webhooks:
       port: 443
   admissionReviewVersions: ["v1"]
   sideEffects: None
-  timeoutSeconds: 5
+  timeoutSeconds: 10
 - name: vcomponent.kb.io
   rules:
   - apiGroups: ["castware.cast.ai"]
@@ -79,5 +131,5 @@ webhooks:
       port: 443
   admissionReviewVersions: ["v1"]
   sideEffects: None
-  timeoutSeconds: 5
+  timeoutSeconds: 10
 {{- end }}

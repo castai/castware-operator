@@ -17,6 +17,8 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+namespace: "castai-agent"
+
 serviceAccount:
   # Specifies whether a service account should be created
   create: true
@@ -28,18 +30,35 @@ serviceAccount:
 
 podAnnotations: {}
 
-podSecurityContext:
-  runAsNonRoot: true
-  fsGroup: 1005
-  runAsGroup: 1005
-  runAsUser: 1005
-
 securityContext:
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true
   capabilities:
     drop:
       - ALL
+
+podSecurityContext:
+  runAsNonRoot: true
+  fsGroup: 1005
+  runAsGroup: 1005
+  runAsUser: 1005
+  seccompProfile:
+    type: RuntimeDefault
+
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8081
+  initialDelaySeconds: 15
+  periodSeconds: 20
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8081
+  initialDelaySeconds: 5
+  periodSeconds: 10
 
 service:
   type: ClusterIP
@@ -53,6 +72,7 @@ installCRDs: true
 # Webhook configuration
 webhook:
   enabled: true
+  port: 9443
   # Certificate manager configuration
   certManager:
     enabled: true
@@ -64,7 +84,7 @@ metrics:
 
 apiKeySecret:
   # Whether to create the API key secret
-  create: false
+  create: true
   # Name of the secret (defaults to "castware-api-key")
   name: "castware-api-key"
   # The actual API key value (should be set via --set apiKeySecret.apiKey=YOUR_API_KEY)
@@ -72,25 +92,23 @@ apiKeySecret:
 
 # Default cluster configuration
 defaultCluster:
-  enabled: false
+  enabled: true
   # This will create a default Cluster CR if enabled
   name: "castai"
   api:
-    apiUrl: "https://api.cast.ai"
+    apiUrl: "https://api.dev-master.cast.ai" #"https://api.cast.ai"
   # If not specified, will use apiKeySecret.name from above
   apiKeySecret: ""
+  provider: ""
+  helmRepoURL: "https://castai.github.io/helm-charts"
 
 # Default components configuration
 defaultComponents:
-  enabled: false
+  enabled: true
   # List of default components to create
   # Each component will be created with the specified configuration
-  components: []
-  # Example:
-  # - name: "castai-agent"
-  #   component: "castai-agent"
-  #   cluster: "castai"
-  #   enabled: true
-  #   version: "v1.3.0"
-  #   values:
-  #     replicaCount: 1
+  components:
+   - name: "castai-agent"
+     component: "castai-agent"
+     cluster: "castai"
+     enabled: true

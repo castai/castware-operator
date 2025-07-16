@@ -121,8 +121,17 @@ func (v *ClusterCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 		return nil, fmt.Errorf("provider must be specified")
 	}
 
+	apiURL, err := url.Parse(cluster.Spec.API.APIURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid api url: %w", err)
+	}
+	baseUrl := strings.Split(apiURL.Host, ".")
+	if len(baseUrl) < 2 {
+		return nil, fmt.Errorf("invalid api url: %s", cluster.Spec.API.APIURL)
+	}
+
 	v.log.WithField("api_url", cluster.Spec.API.APIURL).Info("validating api key")
-	err := v.validateApiKey(ctx, cluster)
+	err = v.validateApiKey(ctx, cluster)
 	if err != nil {
 		return nil, err
 	}

@@ -2,6 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ include "castware-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "castware-operator.labels" . | nindent 4 }}
 spec:
