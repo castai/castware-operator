@@ -253,7 +253,7 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 
 # Helm chart generation
 .PHONY: helm
-helm: manifests generate ## Generate Helm charts using chart_generator tool.
+helm: build-installer ## Generate Helm charts using chart_generator tool.
 	 go run tools/chart_generator/main.go
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
