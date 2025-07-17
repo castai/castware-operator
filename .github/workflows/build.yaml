@@ -161,7 +161,7 @@ jobs:
 
       - name: Upload Library to Artifact Registry
         run: |
-          gcloud artifacts go upload --repository=go-modules --location=us-central1 --version ${{ env.RELEASE_TAG }} --module-path=github.com/castai/castware-operator --source=./src
+          gcloud artifacts go upload --repository=go-modules --location=us-central1 --version=${{ env.RELEASE_TAG }} --module-path=github.com/castai/castware-operator --source=./src
 
   release_chart:
     name: Release Helm Chart

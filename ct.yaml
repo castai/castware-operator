@@ -4,6 +4,7 @@ target-branch: main
 chart-dirs:
   - charts
 helm-extra-args: --timeout 600s
+helm-lint-extra-args: --set=apiKeySecret.apiKey=test
 validate-maintainers: false
 namespace: default
 release-label: app.kubernetes.io/instance
