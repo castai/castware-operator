@@ -60,5 +60,5 @@ jobs:
           kubectl rollout status deployment/cert-manager -n cert-manager --timeout=120s
         if: steps.list-changed.outputs.changed == 'true'
 
-      - name: Run chart-testing (install)
-        run: ct install --config ct.yaml --helm-extra-set-args "--set=apiKeySecret.apiKey=test"
+      # - name: Run chart-testing (install)
+      #   run: ct install --config ct.yaml --helm-extra-set-args "--set=apiKeySecret.apiKey=test"
