@@ -51,5 +51,14 @@ jobs:
           config: kind.yaml
         if: steps.list-changed.outputs.changed == 'true'
 
+      - name: Install cert-manager
+        run: |
+          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+          echo "Waiting for cert-manager webhook to be ready..."
+          kubectl rollout status deployment/cert-manager-webhook -n cert-manager --timeout=120s
+          echo "Waiting for cert-manager controller to be ready..."
+          kubectl rollout status deployment/cert-manager -n cert-manager --timeout=120s
+        if: steps.list-changed.outputs.changed == 'true'
+
       - name: Run chart-testing (install)
         run: ct install --config ct.yaml
