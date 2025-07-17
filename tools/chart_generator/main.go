@@ -62,7 +62,7 @@ func parseManifests(r io.Reader) ([]*unstructured.Unstructured, error) {
 		return oi.GetName() < oj.GetName()
 	})
 
-	if err := injectAndWrite(rbacObjs, "charts/templates/rbac.yaml", "", ""); err != nil {
+	if err := injectAndWrite(rbacObjs, "charts/castai-castware-operator/templates/rbac.yaml", "", ""); err != nil {
 		return nil, err
 	}
 
