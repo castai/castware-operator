@@ -96,7 +96,7 @@ defaultCluster:
   # This will create a default Cluster CR if enabled
   name: "castai"
   api:
-    apiUrl: "https://api.dev-master.cast.ai" #"https://api.cast.ai"
+    apiUrl: "https://api.dev-master.cast.ai"  # "https://api.cast.ai"
   # If not specified, will use apiKeySecret.name from above
   apiKeySecret: ""
   provider: ""
@@ -108,7 +108,7 @@ defaultComponents:
   # List of default components to create
   # Each component will be created with the specified configuration
   components:
-   - name: "castai-agent"
-     component: "castai-agent"
-     cluster: "castai"
-     enabled: true
+    - name: "castai-agent"
+      component: "castai-agent"
+      cluster: "castai"
+      enabled: true
