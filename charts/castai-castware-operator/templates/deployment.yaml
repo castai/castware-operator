@@ -38,6 +38,8 @@ spec:
           command:
             - /manager
           env:
+            - name: CERTS_ROTATION
+              value: "true"
             - name: WATCH_NAMESPACE
               value: ""
             - name: POD_NAME

@@ -66,6 +66,13 @@ spec:
         image: controller:latest
         name: manager
         imagePullPolicy: IfNotPresent
+        env:
+          - name: CERTS_ROTATION
+            value: "true"
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
         ports: []
         securityContext:
           allowPrivilegeEscalation: false
