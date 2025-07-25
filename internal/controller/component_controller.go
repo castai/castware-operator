@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/castai/castware-operator/internal/config"
+
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	v1 "k8s.io/api/core/v1"
@@ -85,6 +87,7 @@ type ComponentReconciler struct {
 	Log        logrus.FieldLogger
 	HelmClient helm.Client
 	Recorder   record.EventRecorder
+	Config     *config.Config
 }
 
 func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

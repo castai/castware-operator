@@ -42,6 +42,7 @@ type ClusterReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Log    logrus.FieldLogger
+	Config *config.Config
 }
 
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=clusters,verbs=get;list;watch;create;update;patch;delete
@@ -179,11 +180,7 @@ func (r *ClusterReconciler) getCastaiClient(ctx context.Context, cluster *castwa
 	if err := auth.LoadApiKey(ctx, r.Client); err != nil {
 		return nil, err
 	}
-	cfg, err := config.GetFromEnvironment()
-	if err != nil {
-		return nil, err
-	}
-	rest := castai.NewRestyClient(cfg, cluster.Spec.API.APIURL, auth)
+	rest := castai.NewRestyClient(r.Config, cluster.Spec.API.APIURL, auth)
 
 	client := castai.NewClient(nil, rest)
 
