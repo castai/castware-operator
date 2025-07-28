@@ -13,7 +13,7 @@ installCRDs: true
 webhook:
   enabled: true
   certManager:
-    enabled: true
+    enabled: false
 
 # Leader election configuration
 leaderElection:

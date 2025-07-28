@@ -47,8 +47,10 @@ metadata:
   name: {{ include "castware-operator.fullname" . }}-webhook-configuration
   labels:
     {{- include "castware-operator.labels" . | nindent 4 }}
+  {{- if .Values.webhook.certManager.enabled }}
   annotations:
     cert-manager.io/inject-ca-from: "{{ .Release.Namespace }}/{{ include "castware-operator.fullname" . }}-webhook-cert"
+  {{- end }}
 webhooks:
   - admissionReviewVersions:
       - v1
@@ -97,8 +99,10 @@ metadata:
   name: {{ include "castware-operator.fullname" . }}-webhook-configuration
   labels:
     {{- include "castware-operator.labels" . | nindent 4 }}
+  {{- if .Values.webhook.certManager.enabled }}
   annotations:
     cert-manager.io/inject-ca-from: "{{ .Release.Namespace }}/{{ include "castware-operator.fullname" . }}-webhook-cert"
+  {{- end }}
 webhooks:
 - name: vcluster.kb.io
   rules:

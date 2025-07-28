@@ -75,9 +75,8 @@ webhook:
   port: 9443
   # Certificate manager configuration
   certManager:
-    enabled: true
-    # If cert-manager is not installed, set this to false and provide your own certificates
-    # You'll need to create a secret with the certificates and update the webhook configuration
+    enabled: false
+    # If cert-manager is not installed, set this to false and the operator will take care of certificate creation and rotation
 
 metrics:
   enabled: true
