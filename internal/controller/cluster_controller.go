@@ -42,11 +42,14 @@ type ClusterReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Log    logrus.FieldLogger
+	Config *config.Config
 }
 
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=clusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=clusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=clusters/finalizers,verbs=update
+// +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=mutatingwebhookconfigurations,verbs=get;list;watch;patch;update
+// +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingwebhookconfigurations,verbs=get;list;watch;patch;update
 
 func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log
@@ -179,11 +182,7 @@ func (r *ClusterReconciler) getCastaiClient(ctx context.Context, cluster *castwa
 	if err := auth.LoadApiKey(ctx, r.Client); err != nil {
 		return nil, err
 	}
-	cfg, err := config.GetFromEnvironment()
-	if err != nil {
-		return nil, err
-	}
-	rest := castai.NewRestyClient(cfg, cluster.Spec.API.APIURL, auth)
+	rest := castai.NewRestyClient(r.Config, cluster.Spec.API.APIURL, auth)
 
 	client := castai.NewClient(nil, rest)
 

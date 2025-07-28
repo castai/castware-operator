@@ -73,11 +73,6 @@ installCRDs: true
 webhook:
   enabled: true
   port: 9443
-  # Certificate manager configuration
-  certManager:
-    enabled: true
-    # If cert-manager is not installed, set this to false and provide your own certificates
-    # You'll need to create a secret with the certificates and update the webhook configuration
 
 metrics:
   enabled: true

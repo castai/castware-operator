@@ -3,9 +3,14 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/open-policy-agent/cert-controller/pkg/rotator"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/castai/castware-operator/internal/helm"
 
@@ -59,11 +64,46 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
+func setupCertRotator(mgr manager.Manager, cfg *config.Config) (chan struct{}, error) {
+	isReady := make(chan struct{})
+	if !cfg.CertsRotation {
+		close(isReady)
+		return isReady, nil
+	}
+	webhooksCertName := fmt.Sprintf("%s-webhooks", cfg.ServiceName)
+	err := rotator.AddRotator(mgr, &rotator.CertRotator{
+		SecretKey: types.NamespacedName{
+			Name:      cfg.CertsSecret,
+			Namespace: cfg.PodNamespace,
+		},
+		CertDir:                cfg.CertDir,
+		CAName:                 fmt.Sprintf("%v-ca", webhooksCertName),
+		CAOrganization:         webhooksCertName,
+		DNSName:                fmt.Sprintf("%s-webhook-service.%s.svc", cfg.ServiceName, cfg.PodNamespace),
+		IsReady:                isReady,
+		RestartOnSecretRefresh: true,
+		Webhooks: []rotator.WebhookInfo{
+			{
+				Name: fmt.Sprintf("%s-mutating-webhook-configuration", cfg.ServiceName),
+				Type: rotator.Mutating,
+			},
+			{
+				Name: fmt.Sprintf("%s-validating-webhook-configuration", cfg.ServiceName),
+				Type: rotator.Validating,
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("setting up cert rotation: %w", err)
+	}
+
+	return isReady, nil
+}
+
 // nolint:gocyclo
 func main() {
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
-	var webhookCertPath, webhookCertName, webhookCertKey string
 	var enableLeaderElection bool
 	var probeAddr string
 	var secureMetrics bool
@@ -77,9 +117,6 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
-	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
-	flag.StringVar(&webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
-	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
 	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
 		"The directory that contains the metrics server certificate.")
 	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
@@ -94,11 +131,14 @@ func main() {
 		GitRef:    GitRef,
 		Version:   Version,
 	}
-
 	log := logrus.New().WithField("gitCommit", version.GitCommit).WithField("version", version.Version)
-	if os.Getenv("DEBUG") == "true" {
-		log.Level = logrus.DebugLevel
+
+	cfg, err := config.GetFromEnvironment()
+	if err != nil {
+		log.Fatalf("failed to get config from environment: %v", err)
 	}
+
+	log.Level = cfg.LogLevel.Level()
 
 	castai.SetVersion(version)
 
@@ -120,29 +160,10 @@ func main() {
 	}
 
 	// Create watchers for metrics and webhooks certificates
-	var metricsCertWatcher, webhookCertWatcher *certwatcher.CertWatcher
+	var metricsCertWatcher *certwatcher.CertWatcher
 
 	// Initial webhook TLS options
 	webhookTLSOpts := tlsOpts
-
-	if len(webhookCertPath) > 0 {
-		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", webhookCertPath, "webhook-cert-name", webhookCertName, "webhook-cert-key", webhookCertKey)
-
-		var err error
-		webhookCertWatcher, err = certwatcher.New(
-			filepath.Join(webhookCertPath, webhookCertName),
-			filepath.Join(webhookCertPath, webhookCertKey),
-		)
-		if err != nil {
-			setupLog.Error(err, "Failed to initialize webhook certificate watcher")
-			os.Exit(1)
-		}
-
-		webhookTLSOpts = append(webhookTLSOpts, func(config *tls.Config) {
-			config.GetCertificate = webhookCertWatcher.GetCertificate
-		})
-	}
 
 	var port int
 	if portEnv := os.Getenv("WEBHOOK_PORT"); portEnv != "" {
@@ -155,7 +176,7 @@ func main() {
 
 	webhookServer := webhook.NewServer(webhook.Options{
 		Port:    port,
-		CertDir: os.Getenv("WEBHOOK_CERT_DIR"),
+		CertDir: cfg.CertDir,
 		TLSOpts: webhookTLSOpts,
 	})
 
@@ -199,8 +220,10 @@ func main() {
 		})
 	}
 
+	log.Info("Starting manager")
 	restConfig := ctrl.GetConfigOrDie()
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
+		Logger:                 ctrl.Log,
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
@@ -231,27 +254,40 @@ func main() {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
+	log.Info("Manager started")
 
 	chartLoader := helm.NewChartLoader(log)
-	helmClient := helm.NewClient(log, chartLoader, restConfig)
 
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err = webhookcastwarev1alpha1.SetupClusterWebhookWithManager(mgr, log); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "Cluster")
+		log.Info("Setting up webhook certificate")
+		certReady, err := setupCertRotator(mgr, cfg)
+		if err != nil {
+			setupLog.Error(err, "unable to start cert rotator")
 			os.Exit(1)
 		}
-		if err = webhookcastwarev1alpha1.SetupComponentWebhookWithManager(mgr, log, chartLoader); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "Component")
-			os.Exit(1)
-		}
+		go func() {
+			<-certReady
+			log.Info("Starting webhook server")
+			if err = webhookcastwarev1alpha1.SetupClusterWebhookWithManager(mgr, log); err != nil {
+				setupLog.Error(err, "unable to create webhook", "webhook", "Cluster")
+				os.Exit(1)
+			}
+			if err = webhookcastwarev1alpha1.SetupComponentWebhookWithManager(mgr, log, chartLoader); err != nil {
+				setupLog.Error(err, "unable to create webhook", "webhook", "Component")
+				os.Exit(1)
+			}
+		}()
 	} else {
 		log.Warn("webhooks disabled")
 	}
 
+	helmClient := helm.NewClient(log, chartLoader, restConfig)
+
 	if err = (&controller.ComponentReconciler{
 		Client:     mgr.GetClient(),
 		Scheme:     mgr.GetScheme(),
+		Config:     cfg,
 		Log:        log,
 		HelmClient: helmClient,
 	}).SetupWithManager(mgr); err != nil {
@@ -262,6 +298,7 @@ func main() {
 	if err = (&controller.ClusterReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Config: cfg,
 		Log:    log,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Cluster")
@@ -273,14 +310,6 @@ func main() {
 		setupLog.Info("Adding metrics certificate watcher to manager")
 		if err := mgr.Add(metricsCertWatcher); err != nil {
 			setupLog.Error(err, "unable to add metrics certificate watcher to manager")
-			os.Exit(1)
-		}
-	}
-
-	if webhookCertWatcher != nil {
-		setupLog.Info("Adding webhook certificate watcher to manager")
-		if err := mgr.Add(webhookCertWatcher); err != nil {
-			setupLog.Error(err, "unable to add webhook certificate watcher to manager")
 			os.Exit(1)
 		}
 	}
