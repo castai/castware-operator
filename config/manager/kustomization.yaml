@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: europe-west8-docker.pkg.dev/engineering-test-353509/niccolo/castware-operator
-  newTag: 0.0.4
+  newTag: 0.0.3
