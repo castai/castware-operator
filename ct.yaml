@@ -8,3 +8,4 @@ helm-lint-extra-args: --set=apiKeySecret.apiKey=test
 validate-maintainers: false
 namespace: default
 release-label: app.kubernetes.io/instance
+check-version-increment: false
