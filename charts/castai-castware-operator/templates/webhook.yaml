@@ -1,31 +1,4 @@
 {{- if .Values.webhook.enabled }}
-{{- if .Values.webhook.certManager.enabled }}
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: {{ include "castware-operator.fullname" . }}-webhook-cert
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "castware-operator.labels" . | nindent 4 }}
-spec:
-  secretName: {{ include "castware-operator.fullname" . }}-webhook-cert
-  issuerRef:
-    name: {{ include "castware-operator.fullname" . }}-selfsigned-issuer
-    kind: ClusterIssuer
-  dnsNames:
-  - {{ include "castware-operator.fullname" . }}-webhook-service.{{ .Release.Namespace }}.svc
-  - {{ include "castware-operator.fullname" . }}-webhook-service.{{ .Release.Namespace }}.svc.cluster.local
----
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: {{ include "castware-operator.fullname" . }}-selfsigned-issuer
-  labels:
-    {{- include "castware-operator.labels" . | nindent 4 }}
-spec:
-  selfSigned: {}
-{{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -44,13 +17,9 @@ spec:
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
-  name: {{ include "castware-operator.fullname" . }}-webhook-configuration
+  name: {{ include "castware-operator.fullname" . }}-mutating-webhook-configuration
   labels:
     {{- include "castware-operator.labels" . | nindent 4 }}
-  {{- if .Values.webhook.certManager.enabled }}
-  annotations:
-    cert-manager.io/inject-ca-from: "{{ .Release.Namespace }}/{{ include "castware-operator.fullname" . }}-webhook-cert"
-  {{- end }}
 webhooks:
   - admissionReviewVersions:
       - v1
@@ -96,13 +65,9 @@ webhooks:
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
-  name: {{ include "castware-operator.fullname" . }}-webhook-configuration
+  name: {{ include "castware-operator.fullname" . }}-validating-webhook-configuration
   labels:
     {{- include "castware-operator.labels" . | nindent 4 }}
-  {{- if .Values.webhook.certManager.enabled }}
-  annotations:
-    cert-manager.io/inject-ca-from: "{{ .Release.Namespace }}/{{ include "castware-operator.fullname" . }}-webhook-cert"
-  {{- end }}
 webhooks:
 - name: vcluster.kb.io
   rules:

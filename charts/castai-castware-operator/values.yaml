@@ -73,10 +73,6 @@ installCRDs: true
 webhook:
   enabled: true
   port: 9443
-  # Certificate manager configuration
-  certManager:
-    enabled: false
-    # If cert-manager is not installed, set this to false and the operator will take care of certificate creation and rotation
 
 metrics:
   enabled: true
