@@ -27,3 +27,4 @@ go.work
 *~
 /local/certs/
 /dist/
+/local/samples/

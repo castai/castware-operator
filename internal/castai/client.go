@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	headerAPIKey    = "X-API-Key" // nolint: gosec
-	headerUserAgent = "User-Agent"
+	headerAPIKey            = "X-API-Key" // nolint: gosec
+	headerUserAgent         = "User-Agent"
+	headerKubernetesVersion = "X-K8s-Version"
 )
 
 var (
@@ -31,6 +32,8 @@ type CastAIClient interface {
 	Me(ctx context.Context) (*User, error)
 	GetCluster(ctx context.Context, clusterID string) (*Cluster, error)
 	GetComponentByName(ctx context.Context, name string) (*Component, error)
+	GetActions(ctx context.Context, k8sVersion, clusterID string) ([]*ClusterAction, error)
+	AckAction(ctx context.Context, actionID, clusterID string, error *string) error
 }
 type Client struct {
 	log  logrus.FieldLogger
@@ -173,4 +176,39 @@ func (c *Client) GetComponentByName(ctx context.Context, name string) (*Componen
 		return nil, err
 	}
 	return component, nil
+}
+
+func (c *Client) GetActions(ctx context.Context, k8sVersion, clusterID string) ([]*ClusterAction, error) {
+	res := &GetClusterActionsResponse{}
+	resp, err := c.rest.R().
+		SetContext(ctx).
+		SetResult(res).
+		SetHeader(headerKubernetesVersion, k8sVersion).
+		SetQueryParam("target", "ActionTarget_OPERATOR").
+		Get(fmt.Sprintf("/v1/kubernetes/clusters/%s/actions", clusterID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to request cluster-actions: %w", err)
+	}
+	if resp.IsError() {
+		return nil, fmt.Errorf("get cluster-actions: request error host=%s, status_code=%d body=%s", c.rest.BaseURL, resp.StatusCode(), resp.Body())
+	}
+	return res.Items, nil
+}
+
+func (c *Client) AckAction(ctx context.Context, actionID, clusterID string, error *string) error {
+	req := &AckClusterActionRequest{
+		Error:  error,
+		Target: "ActionTarget_OPERATOR",
+	}
+	resp, err := c.rest.R().
+		SetContext(ctx).
+		SetBody(req).
+		Post(fmt.Sprintf("/v1/kubernetes/clusters/%s/actions/%s/ack", clusterID, actionID))
+	if err != nil {
+		return fmt.Errorf("failed to request cluster-actions ack: %w", err)
+	}
+	if resp.IsError() {
+		return fmt.Errorf("ack cluster-actions: request error status_code=%d body=%s", resp.StatusCode(), resp.Body())
+	}
+	return nil
 }

@@ -7,6 +7,7 @@ import (
 	providers "castai-agent/pkg/services/providers/types"
 	"context"
 	"fmt"
+	"github.com/samber/lo"
 	"time"
 
 	"k8s.io/apimachinery/pkg/types"
@@ -124,7 +125,48 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: time.Minute * 30}, nil
+	// If everything is reconciled, we can listen for cluster hub events.
+	client, err := r.getCastaiClient(ctx, cluster)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	actions, err := client.GetActions(ctx, "", cluster.Spec.Cluster.ClusterID)
+	if err != nil {
+		log.WithError(err).Error("Failed to get actions")
+		return ctrl.Result{}, err
+	}
+	log.Infof("Got %d actions", len(actions))
+	for _, action := range actions {
+		if !action.IsValid() {
+			log.Errorf("Invalid action: %v", action.GetType())
+			err := client.AckAction(ctx, action.ID, cluster.Spec.Cluster.ClusterID, lo.ToPtr(fmt.Sprintf("invalid action: %s", action.GetType())))
+			if err != nil {
+				log.WithError(err).Error("Failed to ack action")
+			}
+			log.Infof("Acked invalid action: %v", action.GetType())
+			continue
+		}
+		switch t := action.Data().(type) {
+		case *castai.ActionChartUpsert:
+			log.Infof("Got chart upsert action: %v", t)
+			err := client.AckAction(ctx, action.ID, cluster.Spec.Cluster.ClusterID, nil)
+			if err != nil {
+				log.WithError(err).Error("Failed to ack action")
+				return ctrl.Result{}, err
+			}
+			log.Infof("Acked chart upsert action: %v", t)
+		default:
+			log.Infof("Got unknown action: %v", t)
+			err := client.AckAction(ctx, action.ID, cluster.Spec.Cluster.ClusterID, lo.ToPtr("unknown action"))
+			if err != nil {
+				log.WithError(err).Error("Failed to ack action")
+			}
+			log.Infof("Acked unknown action: %v", t)
+		}
+	}
+
+	// TODO: change to higher value like 5 mins
+	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 
 func (r *ClusterReconciler) reconcileSecret(ctx context.Context, cluster *castwarev1alpha1.Cluster) error {

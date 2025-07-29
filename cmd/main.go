@@ -79,7 +79,7 @@ func setupCertRotator(mgr manager.Manager, cfg *config.Config) (chan struct{}, e
 		CertDir:                cfg.CertDir,
 		CAName:                 fmt.Sprintf("%v-ca", webhooksCertName),
 		CAOrganization:         webhooksCertName,
-		DNSName:                fmt.Sprintf("%s-webhook-service.%s.svc", cfg.ServiceName, cfg.PodNamespace),
+		DNSName:                "host.docker.internal", // fmt.Sprintf("%s-webhook-service.%s.svc", cfg.ServiceName, cfg.PodNamespace),
 		IsReady:                isReady,
 		RestartOnSecretRefresh: true,
 		Webhooks: []rotator.WebhookInfo{
