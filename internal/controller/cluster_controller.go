@@ -156,12 +156,12 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			}
 			log.Infof("Acked chart upsert action: %v", t)
 		default:
-			log.Infof("Got unknown action: %v", t)
-			err := client.AckAction(ctx, action.ID, cluster.Spec.Cluster.ClusterID, lo.ToPtr("unknown action"))
+			log.Infof("Got unsupported action: %v", t)
+			err := client.AckAction(ctx, action.ID, cluster.Spec.Cluster.ClusterID, lo.ToPtr(fmt.Sprintf("unsupported action: %s", action.GetType())))
 			if err != nil {
 				log.WithError(err).Error("Failed to ack action")
 			}
-			log.Infof("Acked unknown action: %v", t)
+			log.Infof("Acked unsupported action: %v", t)
 		}
 	}
 
