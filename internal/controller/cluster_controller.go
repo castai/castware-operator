@@ -126,11 +126,11 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// If everything is reconciled, we can listen for cluster hub events.
-	client, err := r.getCastaiClient(ctx, cluster)
+	castaiClient, err := r.getCastaiClient(ctx, cluster)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	actions, err := client.GetActions(ctx, "", cluster.Spec.Cluster.ClusterID)
+	actions, err := castaiClient.GetActions(ctx, "", cluster.Spec.Cluster.ClusterID)
 	if err != nil {
 		log.WithError(err).Error("Failed to get actions")
 		return ctrl.Result{}, err
@@ -139,7 +139,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	for _, action := range actions {
 		if !action.IsValid() {
 			log.Errorf("Invalid action: %v", action.GetType())
-			err := client.AckAction(ctx, action.ID, cluster.Spec.Cluster.ClusterID, lo.ToPtr(fmt.Sprintf("invalid action: %s", action.GetType())))
+			err := castaiClient.AckAction(ctx, action.ID, cluster.Spec.Cluster.ClusterID, lo.ToPtr(fmt.Sprintf("invalid action: %s", action.GetType())))
 			if err != nil {
 				log.WithError(err).Error("Failed to ack action")
 			}
@@ -149,7 +149,27 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		switch t := action.Data().(type) {
 		case *castai.ActionChartUpsert:
 			log.Infof("Got chart upsert action: %v", t)
-			err := client.AckAction(ctx, action.ID, cluster.Spec.Cluster.ClusterID, nil)
+			component := &castwarev1alpha1.Component{}
+			// TODO: handle errors
+			err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: t.ReleaseName}, component)
+			if err != nil {
+				log.WithError(err).Error("Failed to get component")
+				return ctrl.Result{}, err
+			}
+			if component.Spec.Version != t.ChartSource.Version {
+				log.Infof("Component version changed, reconciling")
+				updatedComponent := component.DeepCopy()
+				updatedComponent.Spec.Version = t.ChartSource.Version
+				err = r.Client.Patch(ctx, updatedComponent, client.MergeFrom(component))
+				if err != nil {
+					log.WithError(err).Error("Failed to patch component CR")
+					return ctrl.Result{}, err
+				}
+			} else {
+				log.Infof("Component version not changed")
+			}
+
+			err = castaiClient.AckAction(ctx, action.ID, cluster.Spec.Cluster.ClusterID, nil)
 			if err != nil {
 				log.WithError(err).Error("Failed to ack action")
 				return ctrl.Result{}, err
@@ -157,7 +177,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			log.Infof("Acked chart upsert action: %v", t)
 		default:
 			log.Infof("Got unsupported action: %v", t)
-			err := client.AckAction(ctx, action.ID, cluster.Spec.Cluster.ClusterID, lo.ToPtr(fmt.Sprintf("unsupported action: %s", action.GetType())))
+			err := castaiClient.AckAction(ctx, action.ID, cluster.Spec.Cluster.ClusterID, lo.ToPtr(fmt.Sprintf("unsupported action: %s", action.GetType())))
 			if err != nil {
 				log.WithError(err).Error("Failed to ack action")
 			}
