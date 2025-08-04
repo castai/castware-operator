@@ -110,29 +110,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	log = log.WithField("cluster", component.Spec.Cluster)
 
 	if component.DeletionTimestamp != nil && !component.DeletionTimestamp.IsZero() {
-		log.Info("Component is being deleted")
-		if controllerutil.ContainsFinalizer(component, componentFinalizer) {
-			log.Info("Uninstalling Helm release")
-			_, err := r.HelmClient.Uninstall(helm.UninstallOptions{
-				Namespace:   component.Namespace,
-				ReleaseName: component.Spec.Component,
-				Wait:        true,
-				// If the helm release is not found there is nothing to uninstall,
-				// hence we can safely remove the finalizer.
-				IgnoreNotFound: true,
-			})
-			if err != nil {
-				log.WithError(err).Error("Failed to uninstall Helm release")
-				return ctrl.Result{}, err
-			}
-			// If the helm chart is successfully uninstalled the finalizer is removed and the CR deleted.
-			controllerutil.RemoveFinalizer(component, componentFinalizer)
-			if err := r.Update(ctx, component); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-		// Stop reconciliation, deletion in progress.
-		return ctrl.Result{}, nil
+		return r.deleteComponent(ctx, log.WithField("action", "delete"), component)
 	}
 
 	if !controllerutil.ContainsFinalizer(component, componentFinalizer) {
@@ -233,6 +211,32 @@ func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Compone
 	overrides["provider"] = cluster.Spec.Provider
 	overrides["createNamespace"] = "false"
 	return overrides, nil
+}
+
+func (r *ComponentReconciler) deleteComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
+	log.Info("Component is being deleted")
+	if controllerutil.ContainsFinalizer(component, componentFinalizer) {
+		log.Info("Uninstalling Helm release")
+		_, err := r.HelmClient.Uninstall(helm.UninstallOptions{
+			Namespace:   component.Namespace,
+			ReleaseName: component.Spec.Component,
+			Wait:        true,
+			// If the helm release is not found there is nothing to uninstall,
+			// hence we can safely remove the finalizer.
+			IgnoreNotFound: true,
+		})
+		if err != nil {
+			log.WithError(err).Error("Failed to uninstall Helm release")
+			return ctrl.Result{}, err
+		}
+		// If the helm chart is successfully uninstalled the finalizer is removed and the CR deleted.
+		controllerutil.RemoveFinalizer(component, componentFinalizer)
+		if err := r.Update(ctx, component); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	// Stop reconciliation, deletion in progress.
+	return ctrl.Result{}, nil
 }
 
 func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
