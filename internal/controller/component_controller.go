@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/castai/castware-operator/internal/castai"
+	"github.com/castai/castware-operator/internal/castai/auth"
 	"github.com/castai/castware-operator/internal/config"
 
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -51,6 +53,10 @@ const (
 	reasonRollbackStarted = "RollbackStarted"
 	reasonUpgradeFailed   = "UpgradeFailed"
 	reasonUpgradeStarted  = "UpgradeStarted"
+
+	actionInstall = "install"
+	actionUpgrade = "upgrade"
+	actionDelete  = "delete"
 )
 
 var ErrNothingToRollback = errors.New("nothing to rollback")
@@ -90,7 +96,7 @@ type ComponentReconciler struct {
 	Config     *config.Config
 }
 
-func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res ctrl.Result, retErr error) {
 	log := r.Log.WithField("component", req.NamespacedName.String())
 	log.Debug("Reconciling Component")
 
@@ -109,8 +115,16 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	log = log.WithField("cluster", component.Spec.Cluster)
 
+	var action string
+	defer func() {
+		if action != "" {
+			r.recordActionResult(ctx, log, component, action, retErr)
+		}
+	}()
+
 	if component.DeletionTimestamp != nil && !component.DeletionTimestamp.IsZero() {
-		return r.deleteComponent(ctx, log.WithField("action", "delete"), component)
+		action = actionDelete
+		return r.deleteComponent(ctx, log.WithField("action", action), component)
 	}
 
 	if !controllerutil.ContainsFinalizer(component, componentFinalizer) {
@@ -129,6 +143,13 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			// Helm install got stuck, try to rollback or mark component as failed.
 			log.Warn("Helm install timeout exceeded")
 			log := log.WithField("action", "rollback")
+
+			action := actionInstall
+			if progressingCondition.Reason == progressingReasonUpgrading {
+				action = actionUpgrade
+			}
+			r.recordActionResult(ctx, log, component, action, errors.New("helm install timeout exceeded"))
+
 			result, err := r.rollback(ctx, log, component)
 			if err != nil {
 				// TODO: (WIRE-1341) delete component if it's failed and there is nothing to rollback
@@ -184,14 +205,16 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// If CurrentVersion is empty the component has to be installed for the first time.
 	if component.Status.CurrentVersion == "" && !meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
 		log.Infof("Component is not installed, installing version %s", component.Spec.Version)
-		return r.installComponent(ctx, log.WithField("action", "install"), component)
+		action = actionInstall
+		return r.installComponent(ctx, log.WithField("action", action), component)
 	}
 
 	// If current version is not empty, but it's different from the one specified in the CRD the component
 	// must be upgraded or downgraded unless the controller is already performing another action
 	if component.Status.CurrentVersion != "" && component.Status.CurrentVersion != component.Spec.Version &&
 		!meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
-		return r.upgradeComponent(ctx, log.WithField("action", "upgrade"), component)
+		action = actionUpgrade
+		return r.upgradeComponent(ctx, log.WithField("action", action), component)
 	}
 
 	log.Debug("Component reconciled")
@@ -280,6 +303,7 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 		})
 		if err != nil {
 			log.WithError(err).Error("Failed to install chart")
+			//TODO: record failed install
 			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 		}
 	}
@@ -338,6 +362,7 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 		Recreate:             true,
 	})
 	if err != nil {
+		//TODO: record failed install
 		// If new version does not exist reset to the currently installed version.
 		if errors.Is(err, helm.ErrChartNotFound) {
 			log.Warnf("Helm release not found, reverting CRD version to %s", helmRelease.Chart.Metadata.Version)
@@ -522,4 +547,63 @@ func (r *ComponentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&castwarev1alpha1.Component{}).
 		Named("component").
 		Complete(r)
+}
+
+func (r *ComponentReconciler) recordActionResult(ctx context.Context, log *logrus.Entry, component *castwarev1alpha1.Component, action string, retErr error) {
+	cluster := &castwarev1alpha1.Cluster{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to get cluster")
+		return
+	}
+
+	castAiClient, err := r.getCastaiClient(ctx, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to get castaiClient")
+		return
+	}
+
+	actionEnum := castai.Action_ACTION_UNSPECIFIED
+	switch action {
+	case actionInstall:
+		actionEnum = castai.Action_ENABLE
+	case actionUpgrade:
+		actionEnum = castai.Action_UPDATE
+	case actionDelete:
+		actionEnum = castai.Action_DISABLE
+	}
+
+	status := castai.Status_OK
+	var message string
+	if retErr != nil {
+		status = castai.Status_ERROR
+		message = retErr.Error()
+	}
+
+	req := &castai.ComponentActionResult{
+		Name:           component.Spec.Component,
+		Action:         actionEnum,
+		CurrentVersion: component.Status.CurrentVersion,
+		Version:        component.Spec.Version,
+		Status:         status,
+		ReleaseName:    component.Spec.Component,
+		Message:        message,
+	}
+
+	if err = castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, req); err != nil {
+		log.WithError(err).Error("Failed to record action result")
+		return
+	}
+}
+
+func (r *ComponentReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
+	auth := auth.NewAuth(cluster.Namespace, cluster.Name)
+	if err := auth.LoadApiKey(ctx, r.Client); err != nil {
+		return nil, err
+	}
+	rest := castai.NewRestyClient(r.Config, cluster.Spec.API.APIURL, auth)
+
+	client := castai.NewClient(nil, rest)
+
+	return client, nil
 }

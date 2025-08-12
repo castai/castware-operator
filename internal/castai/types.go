@@ -70,6 +70,8 @@ const (
 	Action_UPDATE Action = "UPDATE"
 	// An enable component action.
 	Action_ENABLE Action = "ENABLE"
+	// A disable component action.
+	Action_DISABLE Action = "DISABLE"
 )
 
 // The status of an installed CASTware component.
