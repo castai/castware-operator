@@ -236,6 +236,7 @@ func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Compone
 	return overrides, nil
 }
 
+// nolint:unparam
 func (r *ComponentReconciler) deleteComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
 	log.Info("Component is being deleted")
 	if controllerutil.ContainsFinalizer(component, componentFinalizer) {
