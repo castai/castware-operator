@@ -595,6 +595,9 @@ func (r *ComponentReconciler) recordActionResult(ctx context.Context, log *logru
 		log.WithError(err).Error("Failed to record action result")
 		return
 	}
+
+	log.WithFields(logrus.Fields{"component": component.Name, "action": action, "status": status, "message": message}).
+		Debug("Recorded action result for component")
 }
 
 func (r *ComponentReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
