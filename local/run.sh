@@ -148,22 +148,28 @@ log "All done, starting operator."
 
 # -------- 10) Create sample cluster custom resource with api url --------
 mkdir -p ${LOCAL_DIR}/samples
-cp "${LOCAL_DIR}/../config/samples/castware_v1alpha1_cluster.yaml" "${LOCAL_DIR}/samples/castware_v1alpha1_cluster.yaml"
-yq -i '.spec.api.apiUrl = env(API_URL)' "${LOCAL_DIR}/samples/castware_v1alpha1_cluster.yaml"
-log "Sample cluster file patched"
+if [ ! -f "${LOCAL_DIR}/samples/castware_v1alpha1_cluster.yaml" ]; then
+    cp "${LOCAL_DIR}/../config/samples/castware_v1alpha1_cluster.yaml" "${LOCAL_DIR}/samples/castware_v1alpha1_cluster.yaml"
+    yq -i '.spec.api.apiUrl = env(API_URL)' "${LOCAL_DIR}/samples/castware_v1alpha1_cluster.yaml"
+    log "Sample cluster resource file copied and patched"
+else
+  log "Sample cluster resource file exists"
+fi
 
-cp "${LOCAL_DIR}/../config/samples/castware_v1alpha1_component.yaml" "${LOCAL_DIR}/samples/castware_v1alpha1_component.yaml"
-yq -i '
-  .spec.values.additionalEnv = {
-    "GKE_CLUSTER_NAME": env(GKE_CLUSTER_NAME),
-    "GKE_LOCATION": env(GKE_LOCATION),
-    "GKE_PROJECT_ID": env(GKE_PROJECT_ID),
-    "GKE_REGION": env(GKE_REGION)
-  }
-' "${LOCAL_DIR}/samples/castware_v1alpha1_component.yaml"
-
-log "Sample component file patched"
-
+if [ ! -f "${LOCAL_DIR}/samples/castware_v1alpha1_component.yaml" ]; then
+  cp "${LOCAL_DIR}/../config/samples/castware_v1alpha1_component.yaml" "${LOCAL_DIR}/samples/castware_v1alpha1_component.yaml"
+  yq -i '
+    .spec.values.additionalEnv = {
+      "GKE_CLUSTER_NAME": env(GKE_CLUSTER_NAME),
+      "GKE_LOCATION": env(GKE_LOCATION),
+      "GKE_PROJECT_ID": env(GKE_PROJECT_ID),
+      "GKE_REGION": env(GKE_REGION)
+    }
+  ' "${LOCAL_DIR}/samples/castware_v1alpha1_component.yaml"
+  log "Sample component resource file patched"
+else
+  log "Sample component resource file exists"
+fi
 
 # -------- 11) Create cert dir and start operator --------
 rm -rf ${CERTS_DIR}
