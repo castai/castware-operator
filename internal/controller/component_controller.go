@@ -221,8 +221,8 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{RequeueAfter: time.Minute * 15}, nil
 }
 
-func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]string, error) {
-	overrides := map[string]string{}
+func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]interface{}, error) {
+	overrides := map[string]interface{}{}
 	if component.Spec.Values != nil {
 		if err := json.Unmarshal(component.Spec.Values.Raw, &overrides); err != nil {
 			return nil, err

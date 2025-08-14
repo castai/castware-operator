@@ -71,6 +71,10 @@ func setupCertRotator(mgr manager.Manager, cfg *config.Config) (chan struct{}, e
 		return isReady, nil
 	}
 	webhooksCertName := fmt.Sprintf("%s-webhooks", cfg.ServiceName)
+	dnsName := fmt.Sprintf("%s-webhook-service.%s.svc", cfg.ServiceName, cfg.PodNamespace)
+	if os.Getenv("WEBHOOK_SERVICE_DNS_NAME") != "" {
+		dnsName = os.Getenv("WEBHOOK_SERVICE_DNS_NAME")
+	}
 	err := rotator.AddRotator(mgr, &rotator.CertRotator{
 		SecretKey: types.NamespacedName{
 			Name:      cfg.CertsSecret,
@@ -79,7 +83,7 @@ func setupCertRotator(mgr manager.Manager, cfg *config.Config) (chan struct{}, e
 		CertDir:                cfg.CertDir,
 		CAName:                 fmt.Sprintf("%v-ca", webhooksCertName),
 		CAOrganization:         webhooksCertName,
-		DNSName:                fmt.Sprintf("%s-webhook-service.%s.svc", cfg.ServiceName, cfg.PodNamespace),
+		DNSName:                dnsName,
 		IsReady:                isReady,
 		RestartOnSecretRefresh: true,
 		Webhooks: []rotator.WebhookInfo{

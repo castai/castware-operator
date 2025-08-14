@@ -10,7 +10,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/release"
-	"helm.sh/helm/v3/pkg/strvals"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/discovery"
 	memorycached "k8s.io/client-go/discovery/cached/memory"
@@ -33,7 +32,7 @@ type InstallOptions struct {
 	Namespace       string
 	CreateNamespace bool
 	ReleaseName     string
-	ValuesOverrides map[string]string
+	ValuesOverrides map[string]interface{}
 }
 
 type UninstallOptions struct {
@@ -46,7 +45,7 @@ type UninstallOptions struct {
 type UpgradeOptions struct {
 	ChartSource          *ChartSource
 	Release              *release.Release
-	ValuesOverrides      map[string]string
+	ValuesOverrides      map[string]interface{}
 	MaxHistory           int
 	ResetThenReuseValues bool
 	DryRun               bool
@@ -253,12 +252,10 @@ func (c *configurationGetter) debugFuncf(format string, v ...interface{}) {
 	}
 }
 
-func mergeValuesOverrides(values map[string]interface{}, overrides map[string]string) error {
+func mergeValuesOverrides(values map[string]interface{}, overrides map[string]interface{}) error {
 	for k, v := range overrides {
-		value := fmt.Sprintf("%s=%v", k, v)
-		if err := strvals.ParseInto(value, values); err != nil {
-			return fmt.Errorf("parsing value=%s: %w", value, err)
-		}
+		// TODO: recursive overrides
+		values[k] = v
 	}
 	return nil
 }
