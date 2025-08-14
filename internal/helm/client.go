@@ -252,14 +252,6 @@ func (c *configurationGetter) debugFuncf(format string, v ...interface{}) {
 	}
 }
 
-func mergeValuesOverrides(values map[string]interface{}, overrides map[string]interface{}) error {
-	for k, v := range overrides {
-		// TODO: recursive overrides
-		values[k] = v
-	}
-	return nil
-}
-
 type restClientGetter struct {
 	config    *rest.Config
 	namespace string
