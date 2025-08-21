@@ -116,11 +116,12 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	log = log.WithField("cluster", component.Spec.Cluster)
 
 	var action string
-	defer func() {
+	recordAction := func() {
 		if action != "" {
 			r.recordActionResult(ctx, log, component, action, retErr)
 		}
-	}()
+	}
+	defer recordAction()
 
 	if component.DeletionTimestamp != nil && !component.DeletionTimestamp.IsZero() {
 		action = actionDelete
@@ -139,16 +140,20 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		progressingCondition.Status == metav1.ConditionTrue {
 		log.WithField("action", progressingCondition.Reason).Info("Helm install in progress")
 
+		action = actionInstall
+		if progressingCondition.Reason == progressingReasonUpgrading {
+			action = actionUpgrade
+		}
+
 		if time.Now().After(progressingCondition.LastTransitionTime.Add(10 * time.Minute)) {
 			// Helm install got stuck, try to rollback or mark component as failed.
 			log.Warn("Helm install timeout exceeded")
 			log := log.WithField("action", "rollback")
 
-			action := actionInstall
-			if progressingCondition.Reason == progressingReasonUpgrading {
-				action = actionUpgrade
+			// override the defered recordAction to log the action failure
+			recordAction = func() {
+				r.recordActionResult(ctx, log, component, action, errors.New("helm install timeout exceeded"))
 			}
-			r.recordActionResult(ctx, log, component, action, errors.New("helm install timeout exceeded"))
 
 			result, err := r.rollback(ctx, log, component)
 			if err != nil {
@@ -453,6 +458,8 @@ func (r *ComponentReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 }
 
 func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
+	log.Debug("Checking helm install progress")
+
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
 		ReleaseName: component.Spec.Component,
