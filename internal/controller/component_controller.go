@@ -309,7 +309,7 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 		})
 		if err != nil {
 			log.WithError(err).Error("Failed to install chart")
-			//TODO: record failed install
+			//TODO: should this record failed install?
 			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 		}
 	}
