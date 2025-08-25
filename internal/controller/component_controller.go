@@ -116,12 +116,14 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	log = log.WithField("cluster", component.Spec.Cluster)
 
 	var action string
-	recordAction := func() {
+	recordActionFn := func() {
 		if action != "" {
 			r.recordActionResult(ctx, log, component, action, retErr)
 		}
 	}
-	defer recordAction()
+	defer func() {
+		recordActionFn()
+	}()
 
 	if component.DeletionTimestamp != nil && !component.DeletionTimestamp.IsZero() {
 		action = actionDelete
@@ -151,7 +153,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			log := log.WithField("action", "rollback")
 
 			// override the defered recordAction to log the action failure
-			recordAction = func() {
+			recordActionFn = func() {
 				r.recordActionResult(ctx, log, component, action, errors.New("helm install timeout exceeded"))
 			}
 
