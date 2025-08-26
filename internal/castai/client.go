@@ -31,6 +31,7 @@ type CastAIClient interface {
 	Me(ctx context.Context) (*User, error)
 	GetCluster(ctx context.Context, clusterID string) (*Cluster, error)
 	GetComponentByName(ctx context.Context, name string) (*Component, error)
+	RecordActionResult(ctx context.Context, clusterID string, req *ComponentActionResult) error
 }
 type Client struct {
 	log  logrus.FieldLogger
@@ -173,4 +174,24 @@ func (c *Client) GetComponentByName(ctx context.Context, name string) (*Componen
 		return nil, err
 	}
 	return component, nil
+}
+
+// RecordActionResult recors the results of an action performed on a component.
+func (c *Client) RecordActionResult(ctx context.Context, clusterID string, req *ComponentActionResult) error {
+	resp, err := c.rest.R().
+		SetContext(ctx).
+		SetPathParam("clusterId", clusterID).
+		SetBody(req).
+		Post("cluster-management/v1/clusters/{clusterId}/components:recordActionResult")
+	if err != nil {
+		return err
+	}
+	err = c.toError(resp)
+	if err != nil {
+		if resp.StatusCode() == http.StatusNotFound {
+			return ErrNotFound
+		}
+		return err
+	}
+	return nil
 }

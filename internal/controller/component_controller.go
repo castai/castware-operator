@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/castai/castware-operator/internal/castai"
+	"github.com/castai/castware-operator/internal/castai/auth"
 	"github.com/castai/castware-operator/internal/config"
 
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -51,6 +53,10 @@ const (
 	reasonRollbackStarted = "RollbackStarted"
 	reasonUpgradeFailed   = "UpgradeFailed"
 	reasonUpgradeStarted  = "UpgradeStarted"
+
+	actionInstall = "install"
+	actionUpgrade = "upgrade"
+	actionDelete  = "delete"
 )
 
 var ErrNothingToRollback = errors.New("nothing to rollback")
@@ -90,7 +96,7 @@ type ComponentReconciler struct {
 	Config     *config.Config
 }
 
-func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res ctrl.Result, retErr error) {
 	log := r.Log.WithField("component", req.NamespacedName.String())
 	log.Debug("Reconciling Component")
 
@@ -109,30 +115,19 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	log = log.WithField("cluster", component.Spec.Cluster)
 
-	if component.DeletionTimestamp != nil && !component.DeletionTimestamp.IsZero() {
-		log.Info("Component is being deleted")
-		if controllerutil.ContainsFinalizer(component, componentFinalizer) {
-			log.Info("Uninstalling Helm release")
-			_, err := r.HelmClient.Uninstall(helm.UninstallOptions{
-				Namespace:   component.Namespace,
-				ReleaseName: component.Spec.Component,
-				Wait:        true,
-				// If the helm release is not found there is nothing to uninstall,
-				// hence we can safely remove the finalizer.
-				IgnoreNotFound: true,
-			})
-			if err != nil {
-				log.WithError(err).Error("Failed to uninstall Helm release")
-				return ctrl.Result{}, err
-			}
-			// If the helm chart is successfully uninstalled the finalizer is removed and the CR deleted.
-			controllerutil.RemoveFinalizer(component, componentFinalizer)
-			if err := r.Update(ctx, component); err != nil {
-				return ctrl.Result{}, err
-			}
+	var action string
+	recordActionFn := func() {
+		if action != "" {
+			r.recordActionResult(ctx, log, component, action, retErr)
 		}
-		// Stop reconciliation, deletion in progress.
-		return ctrl.Result{}, nil
+	}
+	defer func() {
+		recordActionFn()
+	}()
+
+	if component.DeletionTimestamp != nil && !component.DeletionTimestamp.IsZero() {
+		action = actionDelete
+		return r.deleteComponent(ctx, log.WithField("action", action), component)
 	}
 
 	if !controllerutil.ContainsFinalizer(component, componentFinalizer) {
@@ -147,10 +142,21 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		progressingCondition.Status == metav1.ConditionTrue {
 		log.WithField("action", progressingCondition.Reason).Info("Helm install in progress")
 
+		action = actionInstall
+		if progressingCondition.Reason == progressingReasonUpgrading {
+			action = actionUpgrade
+		}
+
 		if time.Now().After(progressingCondition.LastTransitionTime.Add(10 * time.Minute)) {
 			// Helm install got stuck, try to rollback or mark component as failed.
 			log.Warn("Helm install timeout exceeded")
 			log := log.WithField("action", "rollback")
+
+			// override the defered recordAction to log the action failure
+			recordActionFn = func() {
+				r.recordActionResult(ctx, log, component, action, errors.New("helm install timeout exceeded"))
+			}
+
 			result, err := r.rollback(ctx, log, component)
 			if err != nil {
 				// TODO: (WIRE-1341) delete component if it's failed and there is nothing to rollback
@@ -206,14 +212,16 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// If CurrentVersion is empty the component has to be installed for the first time.
 	if component.Status.CurrentVersion == "" && !meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
 		log.Infof("Component is not installed, installing version %s", component.Spec.Version)
-		return r.installComponent(ctx, log.WithField("action", "install"), component)
+		action = actionInstall
+		return r.installComponent(ctx, log.WithField("action", action), component)
 	}
 
 	// If current version is not empty, but it's different from the one specified in the CRD the component
 	// must be upgraded or downgraded unless the controller is already performing another action
 	if component.Status.CurrentVersion != "" && component.Status.CurrentVersion != component.Spec.Version &&
 		!meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
-		return r.upgradeComponent(ctx, log.WithField("action", "upgrade"), component)
+		action = actionUpgrade
+		return r.upgradeComponent(ctx, log.WithField("action", action), component)
 	}
 
 	log.Debug("Component reconciled")
@@ -233,6 +241,33 @@ func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Compone
 	overrides["provider"] = cluster.Spec.Provider
 	overrides["createNamespace"] = "false"
 	return overrides, nil
+}
+
+// nolint:unparam
+func (r *ComponentReconciler) deleteComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
+	log.Info("Component is being deleted")
+	if controllerutil.ContainsFinalizer(component, componentFinalizer) {
+		log.Info("Uninstalling Helm release")
+		_, err := r.HelmClient.Uninstall(helm.UninstallOptions{
+			Namespace:   component.Namespace,
+			ReleaseName: component.Spec.Component,
+			Wait:        true,
+			// If the helm release is not found there is nothing to uninstall,
+			// hence we can safely remove the finalizer.
+			IgnoreNotFound: true,
+		})
+		if err != nil {
+			log.WithError(err).Error("Failed to uninstall Helm release")
+			return ctrl.Result{}, err
+		}
+		// If the helm chart is successfully uninstalled the finalizer is removed and the CR deleted.
+		controllerutil.RemoveFinalizer(component, componentFinalizer)
+		if err := r.Update(ctx, component); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	// Stop reconciliation, deletion in progress.
+	return ctrl.Result{}, nil
 }
 
 func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
@@ -276,6 +311,7 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 		})
 		if err != nil {
 			log.WithError(err).Error("Failed to install chart")
+			//TODO: should this record failed install?
 			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 		}
 	}
@@ -334,6 +370,7 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 		Recreate:             true,
 	})
 	if err != nil {
+		//TODO: record failed install
 		// If new version does not exist reset to the currently installed version.
 		if errors.Is(err, helm.ErrChartNotFound) {
 			log.Warnf("Helm release not found, reverting CRD version to %s", helmRelease.Chart.Metadata.Version)
@@ -423,6 +460,8 @@ func (r *ComponentReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 }
 
 func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
+	log.Debug("Checking helm install progress")
+
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
 		ReleaseName: component.Spec.Component,
@@ -518,4 +557,66 @@ func (r *ComponentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&castwarev1alpha1.Component{}).
 		Named("component").
 		Complete(r)
+}
+
+func (r *ComponentReconciler) recordActionResult(ctx context.Context, log *logrus.Entry, component *castwarev1alpha1.Component, action string, retErr error) {
+	cluster := &castwarev1alpha1.Cluster{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to get cluster")
+		return
+	}
+
+	castAiClient, err := r.getCastaiClient(ctx, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to get castaiClient")
+		return
+	}
+
+	actionEnum := castai.Action_ACTION_UNSPECIFIED
+	switch action {
+	case actionInstall:
+		actionEnum = castai.Action_ENABLE
+	case actionUpgrade:
+		actionEnum = castai.Action_UPDATE
+	case actionDelete:
+		actionEnum = castai.Action_DISABLE
+	}
+
+	status := castai.Status_OK
+	var message string
+	if retErr != nil {
+		status = castai.Status_ERROR
+		message = retErr.Error()
+	}
+
+	req := &castai.ComponentActionResult{
+		Name:           component.Spec.Component,
+		Action:         actionEnum,
+		CurrentVersion: component.Status.CurrentVersion,
+		Version:        component.Spec.Version,
+		Status:         status,
+		ReleaseName:    component.Spec.Component,
+		Message:        message,
+	}
+
+	if err = castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, req); err != nil {
+		log.WithError(err).Error("Failed to record action result")
+		return
+	}
+
+	log.WithFields(logrus.Fields{"component": component.Name, "action": action, "status": status, "message": message}).
+		Debug("Recorded action result for component")
+}
+
+func (r *ComponentReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
+	auth := auth.NewAuth(cluster.Namespace, cluster.Name)
+	if err := auth.LoadApiKey(ctx, r.Client); err != nil {
+		return nil, err
+	}
+	rest := castai.NewRestyClient(r.Config, cluster.Spec.API.APIURL, auth)
+
+	client := castai.NewClient(nil, rest)
+
+	return client, nil
 }
