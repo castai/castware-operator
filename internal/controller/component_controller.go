@@ -7,37 +7,32 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sirupsen/logrus"
+	"helm.sh/helm/v3/pkg/release"
+	"helm.sh/helm/v3/pkg/storage/driver"
+	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 	"github.com/castai/castware-operator/internal/castai"
 	"github.com/castai/castware-operator/internal/castai/auth"
 	"github.com/castai/castware-operator/internal/config"
-
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/tools/record"
-
-	"helm.sh/helm/v3/pkg/storage/driver"
-
-	"k8s.io/client-go/util/retry"
-
-	"helm.sh/helm/v3/pkg/release"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"github.com/castai/castware-operator/internal/helm"
-	"github.com/sirupsen/logrus"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/types"
-
-	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
-	"k8s.io/apimachinery/pkg/runtime"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // Definitions to manage status conditions
 const (
 	componentFinalizer = "castware.cast.ai/cleanup-helm"
+
 	// typeAvailableComponent represents the status when component resource is reconciled, installed and works as expected.
 	typeAvailableComponent = "Available"
 
@@ -111,7 +106,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		// Error reading the object - requeue the request.
 		log.WithError(err).Error("Failed to get component")
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 	}
 	log = log.WithField("cluster", component.Spec.Cluster)
 
@@ -193,14 +188,14 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// This should not happen as we set version in mutating webhook, just keeping it here as precaution.
 	if component.Spec.Version == "" {
-		return ctrl.Result{}, errors.New("version not set for component")
+		log.Error("Version not set for component")
+		return ctrl.Result{}, nil
 	}
 
 	// If component is not enabled in the crd and not installed we have nothing to do,
 	// if the component is installed we can patch the helm chart to set replicas to zero.
 	if !component.Spec.Enabled {
 		if !meta.IsStatusConditionTrue(component.Status.Conditions, typeAvailableComponent) {
-
 			log.Debug("Component not installed and not enabled, nothing to do")
 			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 		}
@@ -229,8 +224,8 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{RequeueAfter: time.Minute * 15}, nil
 }
 
-func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]interface{}, error) {
-	overrides := map[string]interface{}{}
+func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]any, error) {
+	overrides := map[string]any{}
 	if component.Spec.Values != nil {
 		if err := json.Unmarshal(component.Spec.Values.Raw, &overrides); err != nil {
 			return nil, err
@@ -275,14 +270,15 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 	err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
 	if err != nil {
 		log.WithError(err).Error("Failed to get cluster")
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+		// TODO: retry once after 5 min and if it still fails fail permanently
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 	}
 
 	// TODO: (after mvp) validate json overrides in webhook?
 	overrides, err := r.valueOverrides(component, cluster)
 	if err != nil {
 		log.WithError(err).Error("Failed to set helm value overrides")
-		return ctrl.Result{}, err
+		return ctrl.Result{}, nil
 	}
 
 	_, err = r.HelmClient.GetRelease(helm.GetReleaseOptions{
@@ -312,6 +308,7 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 		if err != nil {
 			log.WithError(err).Error("Failed to install chart")
 			//TODO: should this record failed install?
+			// TODO: retry once after 5 min and if it still fails fail permanently
 			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 		}
 	}
@@ -340,7 +337,8 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 	err = r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
 	if err != nil {
 		log.WithError(err).Error("Failed to get cluster")
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+		// TODO: retry once after 5 min and if it still fails fail permanently
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 	}
 
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
@@ -355,7 +353,7 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 	overrides, err := r.valueOverrides(component, cluster)
 	if err != nil {
 		log.WithError(err).Error("Failed to set helm value overrides")
-		return ctrl.Result{}, err
+		return ctrl.Result{}, nil
 	}
 
 	_, err = r.HelmClient.Upgrade(ctx, helm.UpgradeOptions{
@@ -380,7 +378,7 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 			// Patch failure is a recoverable error.
 			if err != nil {
 				log.WithError(err).Error("Failed to patch component")
-				return ctrl.Result{RequeueAfter: time.Minute}, err
+				return ctrl.Result{RequeueAfter: time.Minute}, nil
 			}
 			return ctrl.Result{RequeueAfter: time.Minute}, nil
 		}
@@ -468,7 +466,7 @@ func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logr
 	})
 	if err != nil {
 		log.WithError(err).Error("Failed to get helm release")
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 	}
 
 	progressingCondition := metav1.Condition{
@@ -519,18 +517,19 @@ func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logr
 		})
 	default:
 		// Install still in progress, wait and check again.
-		return ctrl.Result{RequeueAfter: time.Second * 30}, err
+		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
 
 	meta.SetStatusCondition(&component.Status.Conditions, progressingCondition)
 	err = r.updateStatus(ctx, component)
 	if err != nil {
 		log.WithError(err).Error("Failed to set component status")
+		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
 
 	// TODO: how to deal with degraded components/failed installs
 
-	return ctrl.Result{RequeueAfter: time.Second * 30}, err
+	return ctrl.Result{}, nil
 }
 
 func (r *ComponentReconciler) updateStatus(ctx context.Context, component *castwarev1alpha1.Component) error {
