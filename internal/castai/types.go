@@ -64,16 +64,14 @@ type ComponentActionResult struct {
 type ActionType string
 
 const (
-	// Unspecified action.
-	Action_ACTION_UNSPECIFIED ActionType = "ACTION_UNSPECIFIED"
-	// A fix component action.
-	Action_FIX ActionType = "FIX"
-	// An update component action.
-	Action_UPDATE ActionType = "UPDATE"
-	// An enable component action.
-	Action_ENABLE ActionType = "ENABLE"
-	// A disable component action.
-	Action_DISABLE ActionType = "DISABLE"
+	// An install component action.
+	Action_INSTALL ActionType = "ENABLE"
+	// An upgrade component action.
+	Action_UPGRADE ActionType = "UPDATE"
+	// A delete component action.
+	Action_DELETE ActionType = "DISABLE"
+	// A rollback component action.
+	Action_ROLLBACK ActionType = "ROLLBACK"
 )
 
 // The status of an installed CASTware component.
@@ -92,6 +90,8 @@ const (
 	Status_ERROR Status = "ERROR"
 	// A component which has an OK status.
 	Status_OK Status = "OK"
+	// A component which is currently being installed, updated, or deleted.
+	Status_PROGRESSING Status = "PROGRESSING"
 )
 
 // Response message with pending lifecycle actions

@@ -219,7 +219,7 @@ func TestClientRecordActionResult(t *testing.T) {
 
 		actionResult := &ComponentActionResult{
 			Name:           "test-component",
-			Action:         Action_UPDATE,
+			Action:         Action_UPGRADE,
 			CurrentVersion: "1.0.0",
 			Version:        "1.1.0",
 			Status:         Status_OK,
@@ -253,7 +253,7 @@ func TestClientRecordActionResult(t *testing.T) {
 
 		actionResult := &ComponentActionResult{
 			Name:   "test-component",
-			Action: Action_UPDATE,
+			Action: Action_UPGRADE,
 		}
 
 		err = client.RecordActionResult(ctx, "nonexistent-cluster", actionResult)
@@ -282,7 +282,7 @@ func TestClientRecordActionResult(t *testing.T) {
 
 		actionResult := &ComponentActionResult{
 			Name:   "test-component",
-			Action: Action_UPDATE,
+			Action: Action_UPGRADE,
 		}
 
 		err = client.RecordActionResult(ctx, "test-cluster", actionResult)
@@ -305,7 +305,7 @@ func TestClientRecordActionResult(t *testing.T) {
 
 		actionResult := &ComponentActionResult{
 			Name:   "test-component",
-			Action: Action_UPDATE,
+			Action: Action_UPGRADE,
 		}
 
 		err := client.RecordActionResult(ctx, "test-cluster", actionResult)
