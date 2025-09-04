@@ -124,7 +124,10 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 		if time.Now().After(progressingCondition.LastTransitionTime.Add(10 * time.Minute)) {
 			// Helm install got stuck, try to rollback or mark component as failed.
-			r.recordActionResult(ctx, log, component, actionFromProgressingReason(progressingCondition.Reason), errors.New("helm install timeout exceeded"))
+
+			// defer as we want this action to be recorded after rollback action has been recorded
+			defer r.recordActionResult(ctx, log, component, actionFromProgressingReason(progressingCondition.Reason), errors.New("helm install timeout exceeded"))
+
 			log.Warn("Helm install timeout exceeded")
 			log := log.WithField("action", "rollback")
 
@@ -486,7 +489,9 @@ func (r *ComponentReconciler) checkHelmProgress(ctx context.Context, log logrus.
 	switch helmRelease.Info.Status {
 	case release.StatusDeployed:
 		r.recordActionResult(ctx, log, component, actionFromProgressingReason(progressingCondition.Reason), nil)
+
 		log.WithField("component_version", component.Spec.Version).Info("Helm chart deployed")
+
 		progressingCondition.Reason = "Completed"
 		progressingCondition.Status = metav1.ConditionFalse
 		if progressingCondition.Reason == progressingReasonUpgrading {
@@ -507,9 +512,12 @@ func (r *ComponentReconciler) checkHelmProgress(ctx context.Context, log logrus.
 		component.Status.CurrentVersion = helmRelease.Chart.Metadata.Version
 		r.Recorder.Eventf(component, v1.EventTypeNormal, reasonInstalled, "Version %s installed successfully", component.Status.CurrentVersion)
 	case release.StatusFailed:
-		r.recordActionResult(ctx, log, component, actionFromProgressingReason(progressingCondition.Reason), fmt.Errorf("helm install failed: %s", helmRelease.Info.Description))
+		// defer as we want this action to be recorded after rollback action has been recorded
+		defer r.recordActionResult(ctx, log, component, actionFromProgressingReason(progressingCondition.Reason), fmt.Errorf("helm install failed: %s", helmRelease.Info.Description))
+
 		log.Warnf("Helm install failed: %s", helmRelease.Info.Description)
 		r.Recorder.Eventf(component, v1.EventTypeWarning, reasonInstallFailed, "Version %s install failed", component.Spec.Version)
+
 		if progressingCondition.Reason == progressingReasonUpgrading {
 			log.Warn("Helm chart upgrade failed, trying to rollback")
 			// If an upgrade attempt failed rollback to the previous version.
@@ -522,6 +530,7 @@ func (r *ComponentReconciler) checkHelmProgress(ctx context.Context, log logrus.
 		progressingCondition.Reason = "Failed"
 		progressingCondition.Status = metav1.ConditionFalse
 		progressingCondition.Message = fmt.Sprintf("Helm release install failed: %s - %s", component.Spec.Version, helmRelease.Info.Description)
+
 		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
 			Type:    typeAvailableComponent,
 			Status:  metav1.ConditionFalse,
