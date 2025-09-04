@@ -632,7 +632,7 @@ func (r *ComponentReconciler) recordActionResult(ctx context.Context, log logrus
 		return
 	}
 
-	log.WithFields(logrus.Fields{"request": req}).Info("Recording action result for component")
+	log.WithFields(logrus.Fields{"request": fmt.Sprintf("%+v", req)}).Info("Recorded action result for component")
 }
 
 func (r *ComponentReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
