@@ -5,10 +5,11 @@
 package mock_castai
 
 import (
+	castai "castai-agent/pkg/castai"
 	context "context"
 	reflect "reflect"
 
-	castai "github.com/castai/castware-operator/internal/castai"
+	castai0 "github.com/castai/castware-operator/internal/castai"
 	gomock "github.com/golang/mock/gomock"
 )
 
@@ -35,11 +36,70 @@ func (m *MockCastAIClient) EXPECT() *MockCastAIClientMockRecorder {
 	return m.recorder
 }
 
+// AckAction mocks base method.
+func (m *MockCastAIClient) AckAction(arg0 context.Context, arg1, arg2 string, arg3 error) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AckAction", arg0, arg1, arg2, arg3)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// AckAction indicates an expected call of AckAction.
+func (mr *MockCastAIClientMockRecorder) AckAction(arg0, arg1, arg2, arg3 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AckAction", reflect.TypeOf((*MockCastAIClient)(nil).AckAction), arg0, arg1, arg2, arg3)
+}
+
+// ExchangeAgentTelemetry mocks base method.
+func (m *MockCastAIClient) ExchangeAgentTelemetry(arg0 context.Context, arg1 string, arg2 *castai.AgentTelemetryRequest) (*castai.AgentTelemetryResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ExchangeAgentTelemetry", arg0, arg1, arg2)
+	ret0, _ := ret[0].(*castai.AgentTelemetryResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ExchangeAgentTelemetry indicates an expected call of ExchangeAgentTelemetry.
+func (mr *MockCastAIClientMockRecorder) ExchangeAgentTelemetry(arg0, arg1, arg2 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ExchangeAgentTelemetry", reflect.TypeOf((*MockCastAIClient)(nil).ExchangeAgentTelemetry), arg0, arg1, arg2)
+}
+
+// GetCluster mocks base method.
+func (m *MockCastAIClient) GetCluster(arg0 context.Context, arg1 string) (*castai0.Cluster, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetCluster", arg0, arg1)
+	ret0, _ := ret[0].(*castai0.Cluster)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetCluster indicates an expected call of GetCluster.
+func (mr *MockCastAIClientMockRecorder) GetCluster(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetCluster", reflect.TypeOf((*MockCastAIClient)(nil).GetCluster), arg0, arg1)
+}
+
+// GetComponentByName mocks base method.
+func (m *MockCastAIClient) GetComponentByName(arg0 context.Context, arg1 string) (*castai0.Component, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetComponentByName", arg0, arg1)
+	ret0, _ := ret[0].(*castai0.Component)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetComponentByName indicates an expected call of GetComponentByName.
+func (mr *MockCastAIClientMockRecorder) GetComponentByName(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetComponentByName", reflect.TypeOf((*MockCastAIClient)(nil).GetComponentByName), arg0, arg1)
+}
+
 // Me mocks base method.
-func (m *MockCastAIClient) Me(arg0 context.Context) (*castai.User, error) {
+func (m *MockCastAIClient) Me(arg0 context.Context) (*castai0.User, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Me", arg0)
-	ret0, _ := ret[0].(*castai.User)
+	ret0, _ := ret[0].(*castai0.User)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -48,4 +108,77 @@ func (m *MockCastAIClient) Me(arg0 context.Context) (*castai.User, error) {
 func (mr *MockCastAIClientMockRecorder) Me(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Me", reflect.TypeOf((*MockCastAIClient)(nil).Me), arg0)
+}
+
+// PollActions mocks base method.
+func (m *MockCastAIClient) PollActions(arg0 context.Context, arg1 string) (*castai0.PollActionsResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "PollActions", arg0, arg1)
+	ret0, _ := ret[0].(*castai0.PollActionsResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// PollActions indicates an expected call of PollActions.
+func (mr *MockCastAIClientMockRecorder) PollActions(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PollActions", reflect.TypeOf((*MockCastAIClient)(nil).PollActions), arg0, arg1)
+}
+
+// RecordActionResult mocks base method.
+func (m *MockCastAIClient) RecordActionResult(arg0 context.Context, arg1 string, arg2 *castai0.ComponentActionResult) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RecordActionResult", arg0, arg1, arg2)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RecordActionResult indicates an expected call of RecordActionResult.
+func (mr *MockCastAIClientMockRecorder) RecordActionResult(arg0, arg1, arg2 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecordActionResult", reflect.TypeOf((*MockCastAIClient)(nil).RecordActionResult), arg0, arg1, arg2)
+}
+
+// RegisterCluster mocks base method.
+func (m *MockCastAIClient) RegisterCluster(arg0 context.Context, arg1 *castai.RegisterClusterRequest) (*castai.RegisterClusterResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RegisterCluster", arg0, arg1)
+	ret0, _ := ret[0].(*castai.RegisterClusterResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// RegisterCluster indicates an expected call of RegisterCluster.
+func (mr *MockCastAIClientMockRecorder) RegisterCluster(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterCluster", reflect.TypeOf((*MockCastAIClient)(nil).RegisterCluster), arg0, arg1)
+}
+
+// SendDelta mocks base method.
+func (m *MockCastAIClient) SendDelta(arg0 context.Context, arg1 string, arg2 *castai.Delta) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SendDelta", arg0, arg1, arg2)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SendDelta indicates an expected call of SendDelta.
+func (mr *MockCastAIClientMockRecorder) SendDelta(arg0, arg1, arg2 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SendDelta", reflect.TypeOf((*MockCastAIClient)(nil).SendDelta), arg0, arg1, arg2)
+}
+
+// SendLogEvent mocks base method.
+func (m *MockCastAIClient) SendLogEvent(arg0 context.Context, arg1 string, arg2 *castai.IngestAgentLogsRequest) (*castai.IngestAgentLogsResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SendLogEvent", arg0, arg1, arg2)
+	ret0, _ := ret[0].(*castai.IngestAgentLogsResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SendLogEvent indicates an expected call of SendLogEvent.
+func (mr *MockCastAIClientMockRecorder) SendLogEvent(arg0, arg1, arg2 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SendLogEvent", reflect.TypeOf((*MockCastAIClient)(nil).SendLogEvent), arg0, arg1, arg2)
 }

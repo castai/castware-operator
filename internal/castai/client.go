@@ -32,6 +32,8 @@ type CastAIClient interface {
 	GetCluster(ctx context.Context, clusterID string) (*Cluster, error)
 	GetComponentByName(ctx context.Context, name string) (*Component, error)
 	RecordActionResult(ctx context.Context, clusterID string, req *ComponentActionResult) error
+	PollActions(ctx context.Context, clusterID string) (*PollActionsResponse, error)
+	AckAction(ctx context.Context, clusterID, actionID string, error error) error
 }
 type Client struct {
 	log  logrus.FieldLogger
@@ -191,6 +193,42 @@ func (c *Client) RecordActionResult(ctx context.Context, clusterID string, req *
 		if resp.StatusCode() == http.StatusNotFound {
 			return ErrNotFound
 		}
+		return err
+	}
+	return nil
+}
+
+func (c *Client) PollActions(ctx context.Context, clusterID string) (*PollActionsResponse, error) {
+	// TODO: max actions in config
+	result := &PollActionsResponse{}
+	resp, err := c.rest.R().
+		SetContext(ctx).
+		SetResult(result).
+		SetPathParam("clusterId", clusterID).
+		SetQueryParam("max_actions", "10").
+		Get("cluster-management/v1/clusters/{clusterId}/lifecycle-actions:poll")
+	if err != nil {
+		return nil, err
+	}
+	err = c.toError(resp)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (c *Client) AckAction(ctx context.Context, clusterID, actionID string, error error) error {
+	resp, err := c.rest.R().
+		SetContext(ctx).
+		SetPathParam("clusterId", clusterID).
+		SetPathParam("actionId", actionID).
+		SetQueryParam("max_actions", "10").
+		Get("/cluster-management/v1/clusters/{clusterId}/lifecycle-actions/{actionId}:ack")
+	if err != nil {
+		return err
+	}
+	err = c.toError(resp)
+	if err != nil {
 		return err
 	}
 	return nil

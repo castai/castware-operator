@@ -29,6 +29,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+var unknownActionError = fmt.Errorf("unknown action")
+
 // Definitions to manage status conditions
 const (
 	// typeAvailableCluster represents the status when cluster resource is reconciled and works as expected.
@@ -68,18 +70,18 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
+	castAiClient, err := r.getCastaiClient(ctx, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to get castaiClient")
+		return ctrl.Result{}, err
+	}
+
 	clusterMetadata := cluster.Spec.Cluster
 	if clusterMetadata == nil || clusterMetadata.ClusterID == "" {
 		p, err := GetProvider(ctx, r.Log, cluster)
 		if err != nil {
 			// TODO: handle error
 			log.WithError(err).Error("Failed to get provider")
-			return ctrl.Result{}, err
-		}
-
-		castAiClient, err := r.getCastaiClient(ctx, cluster)
-		if err != nil {
-			log.WithError(err).Error("Failed to get castaiClient")
 			return ctrl.Result{}, err
 		}
 
@@ -124,7 +126,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: time.Minute * 30}, nil
+	return r.pollActions(ctx, castAiClient, cluster)
 }
 
 func (r *ClusterReconciler) reconcileSecret(ctx context.Context, cluster *castwarev1alpha1.Cluster) error {
@@ -175,6 +177,39 @@ func (r *ClusterReconciler) reconcileSecret(ctx context.Context, cluster *castwa
 		}
 	}
 	return nil
+}
+
+func (r *ClusterReconciler) pollActions(ctx context.Context, castAiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster) (ctrl.Result, error) {
+	log := r.Log
+
+	actions, err := castAiClient.PollActions(ctx, cluster.Spec.Cluster.ClusterID)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	for _, action := range actions.Actions {
+		var actionErr error
+		switch a := action.Action().(type) {
+		case *castai.ActionInstall:
+			log.Infof("install action: %v", a.Component)
+		case *castai.ActionUpgrade:
+			log.Infof("upgrade action: %v", a.Component)
+		case *castai.ActionUninstall:
+			log.Infof("uninstall action: %v", a.Component)
+		case *castai.ActionRollback:
+			log.Infof("rollback action: %v", a.Component)
+		default:
+			actionErr = unknownActionError
+			log.Warnf("unknown action: %v", action)
+		}
+
+		err := castAiClient.AckAction(ctx, cluster.Spec.Cluster.ClusterID, action.Id, actionErr)
+		if err != nil {
+			// If action ack fails, we can't do anything about it, just process the next one.
+			log.WithError(err).Error("Failed to ack action")
+		}
+	}
+
+	return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 }
 
 func (r *ClusterReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
