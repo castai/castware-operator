@@ -12,6 +12,7 @@ import (
 	"github.com/castai/castware-operator/internal/castai/auth"
 	"github.com/castai/castware-operator/internal/config"
 	"github.com/go-resty/resty/v2"
+	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
 )
 
@@ -218,12 +219,16 @@ func (c *Client) PollActions(ctx context.Context, clusterID string) (*PollAction
 }
 
 func (c *Client) AckAction(ctx context.Context, clusterID, actionID string, error error) error {
+	req := &AckActionRequest{}
+	if error != nil {
+		req.Ack.Error = lo.ToPtr(error.Error())
+	}
 	resp, err := c.rest.R().
 		SetContext(ctx).
 		SetPathParam("clusterId", clusterID).
 		SetPathParam("actionId", actionID).
-		SetQueryParam("max_actions", "10").
-		Get("/cluster-management/v1/clusters/{clusterId}/lifecycle-actions/{actionId}:ack")
+		SetBody(req).
+		Post("/cluster-management/v1/clusters/{clusterId}/lifecycle-actions/{actionId}:ack")
 	if err != nil {
 		return err
 	}

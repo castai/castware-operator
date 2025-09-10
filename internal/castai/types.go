@@ -100,6 +100,12 @@ type PollActionsResponse struct {
 	Actions []*Action `json:"actions"`
 }
 
+type AckActionRequest struct {
+	Ack struct {
+		Error *string `json:"error"`
+	} `json:"ack"`
+}
+
 type Action struct {
 	// The ID of the action.
 	Id string `json:"id"`

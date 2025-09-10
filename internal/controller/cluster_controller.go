@@ -67,7 +67,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 		// Error reading the object - requeue the request.
 		log.WithError(err).Error("Failed to get cluster")
-		return ctrl.Result{}, err
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 	}
 
 	castAiClient, err := r.getCastaiClient(ctx, cluster)
@@ -122,26 +122,29 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	if err := r.reconcileSecret(ctx, cluster); err != nil {
-		return ctrl.Result{}, err
+	reconcile, err := r.reconcileSecret(ctx, cluster)
+	if err != nil {
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+	} else if reconcile {
+		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
 
 	return r.pollActions(ctx, castAiClient, cluster)
 }
 
-func (r *ClusterReconciler) reconcileSecret(ctx context.Context, cluster *castwarev1alpha1.Cluster) error {
+func (r *ClusterReconciler) reconcileSecret(ctx context.Context, cluster *castwarev1alpha1.Cluster) (bool, error) {
 	log := r.Log
 
 	// Can't reconcile api key if the cluster is not there.
 	if cluster.Spec.Cluster == nil {
-		return nil
+		return false, nil
 	}
 
 	// Check if api key secret changed.
 	secret := &corev1.Secret{}
 	secKey := types.NamespacedName{Namespace: cluster.Namespace, Name: cluster.Spec.APIKeySecret}
 	if err := r.Get(ctx, secKey, secret); err != nil && !apierrors.IsNotFound(err) {
-		return err
+		return false, err
 	}
 
 	// If api key changed validate the new one.
@@ -149,7 +152,7 @@ func (r *ClusterReconciler) reconcileSecret(ctx context.Context, cluster *castwa
 		castAiClient, err := r.getCastaiClient(ctx, cluster)
 		if err != nil {
 			log.WithError(err).Error("Failed to get api client")
-			return err
+			return false, err
 		}
 		if _, err := castAiClient.GetCluster(ctx, cluster.Spec.Cluster.ClusterID); err != nil {
 			log.WithError(err).WithField("clusterId", cluster.Spec.Cluster.ClusterID).Error("Failed to get cluster")
@@ -164,27 +167,30 @@ func (r *ClusterReconciler) reconcileSecret(ctx context.Context, cluster *castwa
 			err = r.Status().Update(ctx, cluster)
 			if err != nil {
 				log.WithError(err).Error("Failed to set available status to false")
-				return err
+				return false, err
 			}
 
-			return err
+			return false, err
 		}
 		log.Info("Api key updated")
 
 		cluster.Status.LastSecretVersion = secret.ResourceVersion
 		if err := r.Status().Update(ctx, cluster); err != nil {
-			return err
+			return true, err
 		}
 	}
-	return nil
+	return false, nil
 }
 
 func (r *ClusterReconciler) pollActions(ctx context.Context, castAiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster) (ctrl.Result, error) {
 	log := r.Log
 
+	log.Debug("Polling actions")
+
 	actions, err := castAiClient.PollActions(ctx, cluster.Spec.Cluster.ClusterID)
 	if err != nil {
-		return ctrl.Result{}, err
+		log.WithError(err).Error("Failed to poll actions")
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 	}
 	for _, action := range actions.Actions {
 		var actionErr error
@@ -209,7 +215,7 @@ func (r *ClusterReconciler) pollActions(ctx context.Context, castAiClient castai
 		}
 	}
 
-	return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 
 func (r *ClusterReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
@@ -232,7 +238,13 @@ func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			log := mgr.GetLogger()
 			switch newObj := e.ObjectNew.(type) {
 			case *castwarev1alpha1.Cluster:
-				return true
+				oldObj, ok := e.ObjectOld.(*castwarev1alpha1.Cluster)
+				if !ok {
+					log.Info("not updating", "name", e.ObjectOld.GetName())
+					return false
+				}
+				// Trigger reconcile when cluster CR changes.
+				return newObj.Generation != oldObj.Generation
 			case *corev1.Secret:
 				oldObj, ok := e.ObjectOld.(*corev1.Secret)
 				if !ok {
