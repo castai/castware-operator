@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -13,6 +14,12 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 var _ = Describe("Cluster Controller", func() {
@@ -54,7 +61,7 @@ func TestPollActions(t *testing.T) {
 			},
 		}
 
-		sut := &ClusterReconciler{Log: logrus.New()}
+		testOps := newClusterTestOps(t)
 		cluster := &castwarev1alpha1.Cluster{
 			Spec: castwarev1alpha1.ClusterSpec{
 				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
@@ -69,7 +76,7 @@ func TestPollActions(t *testing.T) {
 		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action1.Id, nil).Return(nil)
 		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action2.Id, nil).Return(nil)
 
-		_, err := sut.pollActions(ctx, mockClient, cluster)
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
 		r.NoError(err)
 	})
 
@@ -85,7 +92,7 @@ func TestPollActions(t *testing.T) {
 			CreateTime: &now,
 		}
 
-		sut := &ClusterReconciler{Log: logrus.New()}
+		testOps := newClusterTestOps(t)
 		cluster := &castwarev1alpha1.Cluster{
 			Spec: castwarev1alpha1.ClusterSpec{
 				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
@@ -99,7 +106,7 @@ func TestPollActions(t *testing.T) {
 		}, nil)
 		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, unknownActionError).Return(nil)
 
-		_, err := sut.pollActions(ctx, mockClient, cluster)
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
 		r.NoError(err)
 	})
 
@@ -109,7 +116,7 @@ func TestPollActions(t *testing.T) {
 		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 		ctx := context.Background()
 		clusterID := uuid.NewString()
-		sut := &ClusterReconciler{Log: logrus.New()}
+		testOps := newClusterTestOps(t)
 		cluster := &castwarev1alpha1.Cluster{
 			Spec: castwarev1alpha1.ClusterSpec{
 				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
@@ -122,7 +129,122 @@ func TestPollActions(t *testing.T) {
 			Actions: []*castai.Action{},
 		}, nil)
 
-		_, err := sut.pollActions(ctx, mockClient, cluster)
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
 		r.NoError(err)
 	})
+
+	t.Run("should create a new component CR when action is install", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		now := time.Now()
+		action := &castai.Action{
+			Id:         uuid.NewString(),
+			CreateTime: &now,
+			ActionInstall: &castai.ActionInstall{
+				Component: "test-component",
+			},
+		}
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: clusterID,
+				},
+			},
+		}
+
+		testOps := newClusterTestOps(t, cluster)
+
+		mockClient.EXPECT().PollActions(gomock.Any(), clusterID).Return(&castai.PollActionsResponse{
+			Actions: []*castai.Action{action},
+		}, nil)
+		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, nil).Return(nil)
+
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
+		r.NoError(err)
+
+		actualCR := &castwarev1alpha1.Component{}
+		r.NoError(testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualCR))
+		r.Equal(cluster.Namespace, actualCR.ObjectMeta.Namespace)
+		r.Equal(cluster.Name, actualCR.Spec.Cluster)
+		r.Equal("test-component", actualCR.Name)
+	})
+
+	t.Run("should ack with error when action is install and the component is already installed", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		now := time.Now()
+		action := &castai.Action{
+			Id:         uuid.NewString(),
+			CreateTime: &now,
+			ActionInstall: &castai.ActionInstall{
+				Component: "test-component",
+			},
+		}
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: clusterID,
+				},
+			},
+		}
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-component",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ComponentSpec{Cluster: cluster.Name},
+		}
+
+		testOps := newClusterTestOps(t, cluster, component)
+
+		mockClient.EXPECT().PollActions(gomock.Any(), clusterID).Return(&castai.PollActionsResponse{
+			Actions: []*castai.Action{action},
+		}, nil)
+		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, errors.New("component already exists")).Return(nil)
+
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
+		r.NoError(err)
+	})
+}
+
+type clusterTestOps struct {
+	sut *ClusterReconciler
+}
+
+func newClusterTestOps(t *testing.T, objs ...client.Object) *clusterTestOps {
+	t.Helper()
+	r := require.New(t)
+	scheme := runtime.NewScheme()
+
+	err := castwarev1alpha1.AddToScheme(scheme)
+	r.NoError(err)
+
+	err = corev1.AddToScheme(scheme)
+	r.NoError(err)
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).WithStatusSubresource(objs...).Build()
+
+	opts := &clusterTestOps{
+		sut: &ClusterReconciler{
+			Client: c,
+			Scheme: c.Scheme(),
+			Log:    logrus.New(),
+		},
+	}
+
+	return opts
 }
