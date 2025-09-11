@@ -1,6 +1,8 @@
 package castai
 
-import "time"
+import (
+	"time"
+)
 
 type ApiError struct {
 	Message         string        `json:"message"`
@@ -41,7 +43,7 @@ type ComponentActionResult struct {
 	// The name of the component.
 	Name string `json:"name,omitempty"`
 	// The action that has been performed on the component.
-	Action Action `json:"action,omitempty"`
+	Action ActionType `json:"action,omitempty"`
 	// The current version of the component installed on the cluster.
 	// An empty string means the component was not installed prior the performing the action.
 	CurrentVersion string `json:"current_version,omitempty"`
@@ -59,19 +61,19 @@ type ComponentActionResult struct {
 }
 
 // The action that can be performed on a CASTware component.
-type Action string
+type ActionType string
 
 const (
 	// Unspecified action.
-	Action_ACTION_UNSPECIFIED Action = "ACTION_UNSPECIFIED"
+	Action_ACTION_UNSPECIFIED ActionType = "ACTION_UNSPECIFIED"
 	// A fix component action.
-	Action_FIX Action = "FIX"
+	Action_FIX ActionType = "FIX"
 	// An update component action.
-	Action_UPDATE Action = "UPDATE"
+	Action_UPDATE ActionType = "UPDATE"
 	// An enable component action.
-	Action_ENABLE Action = "ENABLE"
+	Action_ENABLE ActionType = "ENABLE"
 	// A disable component action.
-	Action_DISABLE Action = "DISABLE"
+	Action_DISABLE ActionType = "DISABLE"
 )
 
 // The status of an installed CASTware component.
@@ -91,3 +93,79 @@ const (
 	// A component which has an OK status.
 	Status_OK Status = "OK"
 )
+
+// Response message with pending lifecycle actions
+type PollActionsResponse struct {
+	// List of pending actions sorted from the oldest one.
+	Actions []*Action `json:"actions"`
+}
+
+type AckActionRequest struct {
+	Error *string `json:"error"`
+}
+
+type Action struct {
+	// The ID of the action.
+	Id string `json:"id"`
+	// Creation date of the action.
+	CreateTime *time.Time `json:"createTime"`
+
+	ActionInstall   *ActionInstall   `json:"install"`
+	ActionUpgrade   *ActionUpgrade   `json:"upgrade"`
+	ActionRollback  *ActionRollback  `json:"rollback"`
+	ActionUninstall *ActionUninstall `json:"uninstall"`
+}
+
+func (a Action) Action() interface{} {
+	switch {
+	case a.ActionInstall != nil:
+		return a.ActionInstall
+	case a.ActionUpgrade != nil:
+		return a.ActionUpgrade
+	case a.ActionRollback != nil:
+		return a.ActionRollback
+	case a.ActionUninstall != nil:
+		return a.ActionUninstall
+	default:
+		return nil
+	}
+}
+
+// ActionInstall installs a new component on a cluster.
+type ActionInstall struct {
+	// Version of the component to install, if empty install the latest version.
+	Version string `json:"version"`
+	// Name of the component to install.
+	Component string `json:"component"`
+	// If true and the component is already installed the operator will attempt to reinstall it.
+	Upsert bool `json:"upsert"`
+	// Helm values overrides, use dot notation for nested values.
+	ValuesOverrides map[string]string `json:"valuesOverrides"`
+	// If true the component and upsert is true will be upgraded with
+	// helm flag reset-than-reuse-values instead of reuse-values.
+	ResetThenReuseValues bool `json:"resetThenReuseValues"`
+}
+
+// ActionUpgrade upgrades an existing component on a cluster.
+type ActionUpgrade struct {
+	// Version of the component to upgrade, if empty upgrade to the latest version.
+	Version string `json:"version"`
+	// Name of the component to upgrade.
+	Component string `json:"component"`
+	// Helm values overrides, use dot notation for nested values.
+	ValuesOverrides map[string]string `json:"valuesOverrides"`
+	// If true the component will be upgraded with helm flag reset-than-reuse-values instead of reuse-values.
+	ResetThenReuseValues bool `json:"resetThenReuseValues"`
+}
+
+// ActionRollback rolls back a component to the previously installed version.
+type ActionRollback struct {
+	// Name of the component to rollback.
+	Component string `json:"component"`
+}
+
+// ActionUninstall uninstalls a component from a cluster.
+type ActionUninstall struct {
+	// Name of the component to uninstall.
+	Component string `json:"component"`
+}

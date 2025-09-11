@@ -135,14 +135,14 @@ func main() {
 		GitRef:    GitRef,
 		Version:   Version,
 	}
-	log := logrus.New().WithField("gitCommit", version.GitCommit).WithField("version", version.Version)
 
 	cfg, err := config.GetFromEnvironment()
 	if err != nil {
-		log.Fatalf("failed to get config from environment: %v", err)
+		logrus.StandardLogger().Fatalf("failed to get config from environment: %v", err)
 	}
 
-	log.Level = cfg.LogLevel.Level()
+	logrus.StandardLogger().SetLevel(cfg.LogLevel.Level())
+	log := logrus.StandardLogger().WithField("gitCommit", version.GitCommit).WithField("version", version.Version)
 
 	castai.SetVersion(version)
 

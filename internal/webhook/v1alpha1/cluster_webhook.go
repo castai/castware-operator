@@ -133,6 +133,7 @@ func (v *ClusterCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 	v.log.WithField("api_url", cluster.Spec.API.APIURL).Info("validating api key")
 	err = v.validateApiKey(ctx, cluster)
 	if err != nil {
+		v.log.WithError(err).Error("failed to validate api key")
 		return nil, err
 	}
 
