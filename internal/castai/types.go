@@ -142,10 +142,10 @@ type ActionInstall struct {
 	// If true and the component is already installed the operator will attempt to reinstall it.
 	Upsert bool `json:"upsert"`
 	// Helm values overrides, use dot notation for nested values.
-	ValuesOverrides map[string]string `json:"values_overrides"`
+	ValuesOverrides map[string]string `json:"valuesOverrides"`
 	// If true the component and upsert is true will be upgraded with
 	// helm flag reset-than-reuse-values instead of reuse-values.
-	ResetThenReuseValues bool `json:"reset_then_reuse_values"`
+	ResetThenReuseValues bool `json:"resetThenReuseValues"`
 }
 
 // ActionUpgrade upgrades an existing component on a cluster.
@@ -155,9 +155,9 @@ type ActionUpgrade struct {
 	// Name of the component to upgrade.
 	Component string `json:"component"`
 	// Helm values overrides, use dot notation for nested values.
-	ValuesOverrides map[string]string `json:"values_overrides"`
+	ValuesOverrides map[string]string `json:"valuesOverrides"`
 	// If true the component will be upgraded with helm flag reset-than-reuse-values instead of reuse-values.
-	ResetThenReuseValues bool `json:"reset_then_reuse_values"`
+	ResetThenReuseValues bool `json:"resetThenReuseValues"`
 }
 
 // ActionRollback rolls back a component to the previously installed version.
