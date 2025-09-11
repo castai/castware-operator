@@ -101,9 +101,7 @@ type PollActionsResponse struct {
 }
 
 type AckActionRequest struct {
-	Ack struct {
-		Error *string `json:"error"`
-	} `json:"ack"`
+	Error *string `json:"error"`
 }
 
 type Action struct {

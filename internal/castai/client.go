@@ -221,7 +221,7 @@ func (c *Client) PollActions(ctx context.Context, clusterID string) (*PollAction
 func (c *Client) AckAction(ctx context.Context, clusterID, actionID string, error error) error {
 	req := &AckActionRequest{}
 	if error != nil {
-		req.Ack.Error = lo.ToPtr(error.Error())
+		req.Error = lo.ToPtr(error.Error())
 	}
 	resp, err := c.rest.R().
 		SetContext(ctx).
