@@ -6,9 +6,12 @@ import (
 	"castai-agent/pkg/services/providers/gke"
 	providers "castai-agent/pkg/services/providers/types"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
+	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	corev1 "k8s.io/api/core/v1"
@@ -197,6 +200,7 @@ func (r *ClusterReconciler) pollActions(ctx context.Context, castAiClient castai
 		switch a := action.Action().(type) {
 		case *castai.ActionInstall:
 			log.Infof("install action: %v", a.Component)
+			actionErr = r.handleInstall(ctx, cluster, a)
 		case *castai.ActionUpgrade:
 			log.Infof("upgrade action: %v", a.Component)
 		case *castai.ActionUninstall:
@@ -207,6 +211,9 @@ func (r *ClusterReconciler) pollActions(ctx context.Context, castAiClient castai
 			actionErr = unknownActionError
 			log.Warnf("unknown action: %v", action)
 		}
+		if actionErr != nil {
+			log.WithError(actionErr).Errorf("Failed to handle action: %v", action)
+		}
 
 		err := castAiClient.AckAction(ctx, cluster.Spec.Cluster.ClusterID, action.Id, actionErr)
 		if err != nil {
@@ -216,6 +223,49 @@ func (r *ClusterReconciler) pollActions(ctx context.Context, castAiClient castai
 	}
 
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+}
+
+func (r *ClusterReconciler) handleInstall(ctx context.Context, cluster *castwarev1alpha1.Cluster, action *castai.ActionInstall) error {
+	log := r.Log
+	namespacedName := types.NamespacedName{Namespace: cluster.Namespace, Name: action.Component}
+
+	component := &castwarev1alpha1.Component{}
+	err := r.Get(ctx, namespacedName, component)
+	if err == nil {
+		// TODO: support upsert parameter after implementing upgrades
+		return errors.New("component already exists")
+	} else if !apierrors.IsNotFound(err) {
+		log.WithError(err).Error("Failed to get component")
+		return err
+	}
+
+	component = &castwarev1alpha1.Component{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: cluster.Namespace,
+			Name:      action.Component,
+		},
+		Spec: castwarev1alpha1.ComponentSpec{
+			Component: action.Component,
+			Cluster:   cluster.Name,
+			Enabled:   true,
+			Version:   action.Version,
+		},
+	}
+
+	if action.ValuesOverrides != nil {
+		values, err := unflattenMap(action.ValuesOverrides)
+		if err != nil {
+			return err
+		}
+		b, err := json.Marshal(values)
+		if err != nil {
+			return err
+		}
+		component.Spec.Values = &v1.JSON{Raw: b}
+	}
+
+	log.Debugf("creating new component: %v", component)
+	return r.Create(ctx, component)
 }
 
 func (r *ClusterReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
