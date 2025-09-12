@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/castai/castware-operator/internal/utils"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -263,7 +264,7 @@ func (r *ClusterReconciler) handleInstall(ctx context.Context, cluster *castware
 	}
 
 	if action.ValuesOverrides != nil {
-		values, err := unflattenMap(action.ValuesOverrides)
+		values, err := utils.UnflattenMap(action.ValuesOverrides)
 		if err != nil {
 			return err
 		}
@@ -297,6 +298,12 @@ func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castware
 		return errors.New("component already up to date")
 	}
 
+	// TODO: handle value overrides
+	// unmarshal
+	// compare and merge
+	// marshal
+	// component.Spec.Values
+
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		var latestComponent castwarev1alpha1.Component
 		if err := r.Get(ctx, types.NamespacedName{
@@ -308,6 +315,32 @@ func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castware
 
 		updatedComponent := latestComponent.DeepCopy()
 		updatedComponent.Spec.Version = action.Version
+
+		if action.ValuesOverrides != nil {
+			values, err := utils.UnflattenMap(action.ValuesOverrides)
+			if err != nil {
+				return err
+			}
+			if latestComponent.Spec.Values != nil {
+				currentValues := map[string]interface{}{}
+				if err = json.Unmarshal(latestComponent.Spec.Values.Raw, &currentValues); err != nil {
+					return err
+				}
+				err = utils.MergeMaps(currentValues, values)
+				if err != nil {
+					return err
+				}
+				// MergeMaps merges the second map into the first one.
+				values = currentValues
+			}
+
+			b, err := json.Marshal(values)
+			if err != nil {
+				return err
+			}
+			updatedComponent.Spec.Values = &v1.JSON{Raw: b}
+		}
+
 		return r.Client.Patch(ctx, updatedComponent, client.MergeFrom(component))
 	})
 }

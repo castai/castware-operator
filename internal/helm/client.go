@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/castai/castware-operator/internal/utils"
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/release"
@@ -118,7 +119,7 @@ func (c *client) Install(ctx context.Context, opts InstallOptions) (*release.Rel
 
 	// Prepare user value overrides.
 	values := map[string]interface{}{}
-	if err := mergeValuesOverrides(values, opts.ValuesOverrides); err != nil {
+	if err := utils.MergeMaps(values, opts.ValuesOverrides); err != nil {
 		return nil, err
 	}
 
@@ -177,7 +178,7 @@ func (c *client) Upgrade(ctx context.Context, opts UpgradeOptions) (*release.Rel
 	if len(opts.Release.Config) > 0 {
 		values = opts.Release.Config
 	}
-	if err := mergeValuesOverrides(values, opts.ValuesOverrides); err != nil {
+	if err := utils.MergeMaps(values, opts.ValuesOverrides); err != nil {
 		return nil, err
 	}
 
