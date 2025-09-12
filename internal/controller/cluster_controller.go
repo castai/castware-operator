@@ -13,6 +13,7 @@ import (
 
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -203,6 +204,7 @@ func (r *ClusterReconciler) pollActions(ctx context.Context, castAiClient castai
 			actionErr = r.handleInstall(ctx, cluster, a)
 		case *castai.ActionUpgrade:
 			log.Infof("upgrade action: %v", a.Component)
+			actionErr = r.handleUpgrade(ctx, cluster, a)
 		case *castai.ActionUninstall:
 			log.Infof("uninstall action: %v", a.Component)
 		case *castai.ActionRollback:
@@ -232,7 +234,15 @@ func (r *ClusterReconciler) handleInstall(ctx context.Context, cluster *castware
 	component := &castwarev1alpha1.Component{}
 	err := r.Get(ctx, namespacedName, component)
 	if err == nil {
-		// TODO: support upsert parameter after implementing upgrades
+		if action.Upsert {
+			upgradeAction := &castai.ActionUpgrade{
+				Version:              action.Version,
+				Component:            action.Component,
+				ValuesOverrides:      action.ValuesOverrides,
+				ResetThenReuseValues: action.ResetThenReuseValues,
+			}
+			return r.handleUpgrade(ctx, cluster, upgradeAction)
+		}
 		return errors.New("component already exists")
 	} else if !apierrors.IsNotFound(err) {
 		log.WithError(err).Error("Failed to get component")
@@ -266,6 +276,40 @@ func (r *ClusterReconciler) handleInstall(ctx context.Context, cluster *castware
 
 	log.Debugf("creating new component: %v", component)
 	return r.Create(ctx, component)
+}
+
+func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castwarev1alpha1.Cluster, action *castai.ActionUpgrade) error {
+	log := r.Log
+	namespacedName := types.NamespacedName{Namespace: cluster.Namespace, Name: action.Component}
+
+	component := &castwarev1alpha1.Component{}
+	err := r.Get(ctx, namespacedName, component)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			log.WithError(err).Error("Failed to get component")
+			return errors.New("component not found")
+		}
+		log.WithError(err).Error("Failed to get component")
+		return fmt.Errorf("failed to get component: %w", err)
+	}
+
+	if component.Spec.Version == action.Version {
+		return errors.New("component already up to date")
+	}
+
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		var latestComponent castwarev1alpha1.Component
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      component.Name,
+			Namespace: component.Namespace,
+		}, &latestComponent); err != nil {
+			return err
+		}
+
+		updatedComponent := latestComponent.DeepCopy()
+		updatedComponent.Spec.Version = action.Version
+		return r.Client.Patch(ctx, updatedComponent, client.MergeFrom(component))
+	})
 }
 
 func (r *ClusterReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {

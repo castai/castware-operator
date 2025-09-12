@@ -40,6 +40,7 @@ var _ = Describe("Cluster Controller", func() {
 func TestPollActions(t *testing.T) {
 
 	t.Run("should poll and ack a valid action with no error", func(t *testing.T) {
+		t.Parallel()
 		r := require.New(t)
 		ctrl := gomock.NewController(t)
 		mockClient := mock_castai.NewMockCastAIClient(ctrl)
@@ -51,6 +52,7 @@ func TestPollActions(t *testing.T) {
 			CreateTime: &now,
 			ActionInstall: &castai.ActionInstall{
 				Component: "test-component",
+				Version:   "0.1",
 			},
 		}
 		action2 := &castai.Action{
@@ -58,6 +60,7 @@ func TestPollActions(t *testing.T) {
 			CreateTime: &now,
 			ActionUpgrade: &castai.ActionUpgrade{
 				Component: "test-component",
+				Version:   "0.2",
 			},
 		}
 
@@ -81,6 +84,7 @@ func TestPollActions(t *testing.T) {
 	})
 
 	t.Run("should poll and ack an invalid action with error", func(t *testing.T) {
+		t.Parallel()
 		r := require.New(t)
 		ctrl := gomock.NewController(t)
 		mockClient := mock_castai.NewMockCastAIClient(ctrl)
@@ -111,6 +115,7 @@ func TestPollActions(t *testing.T) {
 	})
 
 	t.Run("should poll and do nothing when there are no actions", func(t *testing.T) {
+		t.Parallel()
 		r := require.New(t)
 		ctrl := gomock.NewController(t)
 		mockClient := mock_castai.NewMockCastAIClient(ctrl)
@@ -134,6 +139,7 @@ func TestPollActions(t *testing.T) {
 	})
 
 	t.Run("should create a new component CR when action is install", func(t *testing.T) {
+		t.Parallel()
 		r := require.New(t)
 		ctrl := gomock.NewController(t)
 		mockClient := mock_castai.NewMockCastAIClient(ctrl)
@@ -177,6 +183,7 @@ func TestPollActions(t *testing.T) {
 	})
 
 	t.Run("should ack with error when action is install and the component is already installed", func(t *testing.T) {
+		t.Parallel()
 		r := require.New(t)
 		ctrl := gomock.NewController(t)
 		mockClient := mock_castai.NewMockCastAIClient(ctrl)
@@ -218,6 +225,196 @@ func TestPollActions(t *testing.T) {
 
 		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
 		r.NoError(err)
+	})
+
+	t.Run("should change component CR version action is upgrade", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		now := time.Now()
+		action := &castai.Action{
+			Id:         uuid.NewString(),
+			CreateTime: &now,
+			ActionUpgrade: &castai.ActionUpgrade{
+				Component: "test-component",
+				Version:   "0.2",
+			},
+		}
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: clusterID,
+				},
+			},
+		}
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-component",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ComponentSpec{Cluster: cluster.Name, Version: "0.1"},
+		}
+
+		testOps := newClusterTestOps(t, cluster, component)
+
+		mockClient.EXPECT().PollActions(gomock.Any(), clusterID).Return(&castai.PollActionsResponse{
+			Actions: []*castai.Action{action},
+		}, nil)
+		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, nil).Return(nil)
+
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
+		r.NoError(err)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
+		r.NoError(err)
+
+		r.Equal("0.2", actualComponent.Spec.Version)
+	})
+
+	t.Run("should ack with error when action is upgrade and the component is not installed", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		now := time.Now()
+		action := &castai.Action{
+			Id:         uuid.NewString(),
+			CreateTime: &now,
+			ActionUpgrade: &castai.ActionUpgrade{
+				Component: "test-component",
+				Version:   "0.1",
+			},
+		}
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: clusterID,
+				},
+			},
+		}
+
+		testOps := newClusterTestOps(t, cluster)
+
+		mockClient.EXPECT().PollActions(gomock.Any(), clusterID).Return(&castai.PollActionsResponse{
+			Actions: []*castai.Action{action},
+		}, nil)
+		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, errors.New("component not found")).Return(nil)
+
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
+		r.NoError(err)
+	})
+
+	t.Run("should ack with error when action is upgrade and the component already up to date", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		now := time.Now()
+		action := &castai.Action{
+			Id:         uuid.NewString(),
+			CreateTime: &now,
+			ActionUpgrade: &castai.ActionUpgrade{
+				Component: "test-component",
+				Version:   "0.1",
+			},
+		}
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: clusterID,
+				},
+			},
+		}
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-component",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ComponentSpec{Cluster: cluster.Name, Version: "0.1"},
+		}
+
+		testOps := newClusterTestOps(t, cluster, component)
+
+		mockClient.EXPECT().PollActions(gomock.Any(), clusterID).Return(&castai.PollActionsResponse{
+			Actions: []*castai.Action{action},
+		}, nil)
+		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, errors.New("component already up to date")).Return(nil)
+
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
+		r.NoError(err)
+	})
+
+	t.Run("should ack with no error when action is install, the component exists and upsert is enabled", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		now := time.Now()
+		action := &castai.Action{
+			Id:         uuid.NewString(),
+			CreateTime: &now,
+			ActionInstall: &castai.ActionInstall{
+				Component: "test-component",
+				Upsert:    true,
+				Version:   "0.2",
+			},
+		}
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: clusterID,
+				},
+			},
+		}
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-component",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ComponentSpec{Cluster: cluster.Name},
+		}
+
+		testOps := newClusterTestOps(t, cluster, component)
+
+		mockClient.EXPECT().PollActions(gomock.Any(), clusterID).Return(&castai.PollActionsResponse{
+			Actions: []*castai.Action{action},
+		}, nil)
+		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, nil).Return(nil)
+
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
+		r.NoError(err)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
+		r.NoError(err)
+
+		r.Equal("0.2", actualComponent.Spec.Version)
 	})
 }
 
