@@ -299,15 +299,14 @@ func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castware
 	}
 
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		var latestComponent castwarev1alpha1.Component
 		if err := r.Get(ctx, types.NamespacedName{
 			Name:      component.Name,
 			Namespace: component.Namespace,
-		}, &latestComponent); err != nil {
+		}, component); err != nil {
 			return err
 		}
 
-		updatedComponent := latestComponent.DeepCopy()
+		updatedComponent := component.DeepCopy()
 		updatedComponent.Spec.Version = action.Version
 
 		if action.ValuesOverrides != nil {
@@ -315,9 +314,9 @@ func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castware
 			if err != nil {
 				return err
 			}
-			if latestComponent.Spec.Values != nil {
+			if component.Spec.Values != nil {
 				currentValues := map[string]interface{}{}
-				if err = json.Unmarshal(latestComponent.Spec.Values.Raw, &currentValues); err != nil {
+				if err = json.Unmarshal(component.Spec.Values.Raw, &currentValues); err != nil {
 					return err
 				}
 				err = utils.MergeMaps(currentValues, values)
