@@ -298,12 +298,6 @@ func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castware
 		return errors.New("component already up to date")
 	}
 
-	// TODO: handle value overrides
-	// unmarshal
-	// compare and merge
-	// marshal
-	// component.Spec.Values
-
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		var latestComponent castwarev1alpha1.Component
 		if err := r.Get(ctx, types.NamespacedName{
