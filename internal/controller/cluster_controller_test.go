@@ -10,11 +10,14 @@ import (
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 	"github.com/castai/castware-operator/internal/castai"
 	mock_castai "github.com/castai/castware-operator/internal/castai/mock"
+	"github.com/castai/castware-operator/internal/helm"
+	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
 	"github.com/golang/mock/gomock"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
+	"helm.sh/helm/v3/pkg/release"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -447,6 +450,63 @@ func TestPollActions(t *testing.T) {
 		r.True(apierrors.IsNotFound(err))
 	})
 
+	t.Run("should set rollback status in component CR version action is rollback", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		now := time.Now()
+		action := &castai.Action{
+			Id:         uuid.NewString(),
+			CreateTime: &now,
+			ActionRollback: &castai.ActionRollback{
+				Component: "test-component",
+			},
+		}
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: clusterID,
+				},
+			},
+		}
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-component",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ComponentSpec{Cluster: cluster.Name, Version: "0.1"},
+		}
+
+		testOps := newClusterTestOps(t, cluster, component)
+
+		mockClient.EXPECT().PollActions(gomock.Any(), clusterID).Return(&castai.PollActionsResponse{
+			Actions: []*castai.Action{action},
+		}, nil)
+		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, nil).Return(nil)
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   component.Namespace,
+			ReleaseName: component.Spec.Component,
+		}).Return(&release.Release{
+			Name:    "test-component",
+			Version: 2,
+		}, nil)
+
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
+		r.NoError(err)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
+		r.NoError(err)
+		r.True(actualComponent.Status.Rollback)
+	})
+
 	t.Run("should ack with error when action is upgrade and the component is not installed", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
@@ -570,6 +630,63 @@ func TestPollActions(t *testing.T) {
 		r.NoError(err)
 	})
 
+	t.Run("should ack with error when action action is rollback and the component was never upgraded", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		now := time.Now()
+		action := &castai.Action{
+			Id:         uuid.NewString(),
+			CreateTime: &now,
+			ActionRollback: &castai.ActionRollback{
+				Component: "test-component",
+			},
+		}
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: clusterID,
+				},
+			},
+		}
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-component",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ComponentSpec{Cluster: cluster.Name, Version: "0.1"},
+		}
+
+		testOps := newClusterTestOps(t, cluster, component)
+
+		mockClient.EXPECT().PollActions(gomock.Any(), clusterID).Return(&castai.PollActionsResponse{
+			Actions: []*castai.Action{action},
+		}, nil)
+		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, ErrNothingToRollback).Return(nil)
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   component.Namespace,
+			ReleaseName: component.Spec.Component,
+		}).Return(&release.Release{
+			Name:    "test-component",
+			Version: 1,
+		}, nil)
+
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
+		r.NoError(err)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
+		r.NoError(err)
+		r.False(actualComponent.Status.Rollback)
+	})
+
 	t.Run("should ack with no error when action is install, the component exists and upsert is enabled", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
@@ -625,7 +742,8 @@ func TestPollActions(t *testing.T) {
 }
 
 type clusterTestOps struct {
-	sut *ClusterReconciler
+	sut      *ClusterReconciler
+	mockHelm *mock_helm.MockClient
 }
 
 func newClusterTestOps(t *testing.T, objs ...client.Object) *clusterTestOps {
@@ -641,11 +759,16 @@ func newClusterTestOps(t *testing.T, objs ...client.Object) *clusterTestOps {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).WithStatusSubresource(objs...).Build()
 
+	ctrl := gomock.NewController(t)
+	mockHelm := mock_helm.NewMockClient(ctrl)
+
 	opts := &clusterTestOps{
+		mockHelm: mockHelm,
 		sut: &ClusterReconciler{
-			Client: c,
-			Scheme: c.Scheme(),
-			Log:    logrus.New(),
+			Client:     c,
+			Scheme:     c.Scheme(),
+			Log:        logrus.New(),
+			HelmClient: mockHelm,
 		},
 	}
 

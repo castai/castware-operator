@@ -261,6 +261,7 @@ func main() {
 	log.Info("Manager started")
 
 	chartLoader := helm.NewChartLoader(log)
+	helmClient := helm.NewClient(log, chartLoader, restConfig)
 
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
@@ -286,8 +287,6 @@ func main() {
 		log.Warn("webhooks disabled")
 	}
 
-	helmClient := helm.NewClient(log, chartLoader, restConfig)
-
 	if err = (&controller.ComponentReconciler{
 		Client:     mgr.GetClient(),
 		Scheme:     mgr.GetScheme(),
@@ -300,10 +299,11 @@ func main() {
 	}
 
 	if err = (&controller.ClusterReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Config: cfg,
-		Log:    log,
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		Config:     cfg,
+		Log:        log,
+		HelmClient: helmClient,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Cluster")
 		os.Exit(1)
