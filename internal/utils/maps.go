@@ -1,11 +1,33 @@
-package helm
+package utils
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 )
 
-// mergeValuesOverrides merges `overrides` into `values` with rules:
+func UnflattenMap(m map[string]string) (map[string]interface{}, error) {
+	var ok bool
+	values := map[string]interface{}{}
+	for path, value := range m {
+		keys := strings.Split(path, ".")
+		selectedMap := values
+		for _, key := range keys[:len(keys)-1] {
+			if _, ok := selectedMap[key]; !ok {
+				selectedMap[key] = map[string]interface{}{}
+			}
+			selectedMap, ok = selectedMap[key].(map[string]interface{})
+			if !ok {
+				return nil, errors.New("invalid map")
+			}
+		}
+		selectedMap[keys[len(keys)-1]] = value
+	}
+	return values, nil
+}
+
+// MergeMaps merges `overrides` into `values` with rules:
 //   - If both sides are map[string]interface{}, merge recursively.
 //   - If key does not exist in values, set it.
 //   - If either side is nil, simple override.
@@ -14,7 +36,7 @@ import (
 //   - If values is a map and overrides is a non-map (non-nil), return error.
 //     (Overriding a map with a non-map is disallowed; overriding with nil is allowed.)
 //   - If both sides are maps of the SAME non-MSI type, simple override (no recursion).
-func mergeValuesOverrides(values map[string]interface{}, overrides map[string]interface{}) error {
+func MergeMaps(values map[string]interface{}, overrides map[string]interface{}) error {
 	return mergeRecursive(values, overrides, "")
 }
 
