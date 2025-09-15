@@ -48,10 +48,6 @@ const (
 	reasonRollbackStarted = "RollbackStarted"
 	reasonUpgradeFailed   = "UpgradeFailed"
 	reasonUpgradeStarted  = "UpgradeStarted"
-
-	actionInstall = "install"
-	actionUpgrade = "upgrade"
-	actionDelete  = "delete"
 )
 
 var ErrNothingToRollback = errors.New("nothing to rollback")
@@ -110,19 +106,8 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	log = log.WithField("cluster", component.Spec.Cluster)
 
-	var action string
-	recordActionFn := func() {
-		if action != "" {
-			r.recordActionResult(ctx, log, component, action, retErr)
-		}
-	}
-	defer func() {
-		recordActionFn()
-	}()
-
 	if component.DeletionTimestamp != nil && !component.DeletionTimestamp.IsZero() {
-		action = actionDelete
-		return r.deleteComponent(ctx, log.WithField("action", action), component)
+		return r.deleteComponent(ctx, log.WithField("action", "delete"), component)
 	}
 
 	if !controllerutil.ContainsFinalizer(component, componentFinalizer) {
@@ -137,20 +122,14 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		progressingCondition.Status == metav1.ConditionTrue {
 		log.WithField("action", progressingCondition.Reason).Info("Helm install in progress")
 
-		action = actionInstall
-		if progressingCondition.Reason == progressingReasonUpgrading {
-			action = actionUpgrade
-		}
-
 		if time.Now().After(progressingCondition.LastTransitionTime.Add(10 * time.Minute)) {
 			// Helm install got stuck, try to rollback or mark component as failed.
+
+			// defer as we want this action to be recorded after rollback action has been recorded
+			defer r.recordActionResult(ctx, log, component, actionFromProgressingReason(progressingCondition.Reason), errors.New("helm install timeout exceeded"))
+
 			log.Warn("Helm install timeout exceeded")
 			log := log.WithField("action", "rollback")
-
-			// override the defered recordAction to log the action failure
-			recordActionFn = func() {
-				r.recordActionResult(ctx, log, component, action, errors.New("helm install timeout exceeded"))
-			}
 
 			result, err := r.rollback(ctx, log, component)
 			if err != nil {
@@ -183,7 +162,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return result, nil
 		}
 
-		return r.checkInstallProgress(ctx, log, component)
+		return r.checkHelmProgress(ctx, log, component)
 	}
 
 	// This should not happen as we set version in mutating webhook, just keeping it here as precaution.
@@ -207,16 +186,14 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// If CurrentVersion is empty the component has to be installed for the first time.
 	if component.Status.CurrentVersion == "" && !meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
 		log.Infof("Component is not installed, installing version %s", component.Spec.Version)
-		action = actionInstall
-		return r.installComponent(ctx, log.WithField("action", action), component)
+		return r.installComponent(ctx, log.WithField("action", "install"), component)
 	}
 
 	// If current version is not empty, but it's different from the one specified in the CRD the component
 	// must be upgraded or downgraded unless the controller is already performing another action
 	if component.Status.CurrentVersion != "" && component.Status.CurrentVersion != component.Spec.Version &&
 		!meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
-		action = actionUpgrade
-		return r.upgradeComponent(ctx, log.WithField("action", action), component)
+		return r.upgradeComponent(ctx, log.WithField("action", "upgrade"), component)
 	}
 
 	log.Debug("Component reconciled")
@@ -239,7 +216,11 @@ func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Compone
 }
 
 // nolint:unparam
-func (r *ComponentReconciler) deleteComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
+func (r *ComponentReconciler) deleteComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (_ ctrl.Result, err error) {
+	defer func() {
+		r.recordActionResult(ctx, log, component, castai.Action_DELETE, err)
+	}()
+
 	log.Info("Component is being deleted")
 	if controllerutil.ContainsFinalizer(component, componentFinalizer) {
 		log.Info("Uninstalling Helm release")
@@ -265,10 +246,19 @@ func (r *ComponentReconciler) deleteComponent(ctx context.Context, log logrus.Fi
 	return ctrl.Result{}, nil
 }
 
-func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
+func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (_ ctrl.Result, err error) {
+	var recordErr error
+	defer func() {
+		if recordErr != nil {
+			recordErr = err
+		}
+		r.recordActionResult(ctx, log, component, castai.Action_INSTALL, recordErr, withDefaultStatus(castai.Status_PROGRESSING))
+	}()
+
 	cluster := &castwarev1alpha1.Cluster{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
+	err = r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
 	if err != nil {
+		recordErr = fmt.Errorf("failed to get cluster: %w", err)
 		log.WithError(err).Error("Failed to get cluster")
 		// TODO: retry once after 5 min and if it still fails fail permanently
 		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
@@ -277,6 +267,7 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 	// TODO: (after mvp) validate json overrides in webhook?
 	overrides, err := r.valueOverrides(component, cluster)
 	if err != nil {
+		recordErr = fmt.Errorf("failed to set value overrides: %w", err)
 		log.WithError(err).Error("Failed to set helm value overrides")
 		return ctrl.Result{}, nil
 	}
@@ -306,8 +297,8 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 			ValuesOverrides: overrides,
 		})
 		if err != nil {
+			recordErr = fmt.Errorf("failed to install chart: %w", err)
 			log.WithError(err).Error("Failed to install chart")
-			//TODO: should this record failed install?
 			// TODO: retry once after 5 min and if it still fails fail permanently
 			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 		}
@@ -328,14 +319,21 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 }
 
 func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (_ ctrl.Result, err error) {
+	var recordErr error
 	defer func() {
 		if err != nil {
 			r.Recorder.Eventf(component, v1.EventTypeWarning, reasonUpgradeFailed, "Upgrade failed: %v", err)
 		}
+		if recordErr != nil {
+			recordErr = err
+		}
+		r.recordActionResult(ctx, log, component, castai.Action_UPGRADE, recordErr, withDefaultStatus(castai.Status_PROGRESSING))
 	}()
+
 	cluster := &castwarev1alpha1.Cluster{}
 	err = r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
 	if err != nil {
+		recordErr = fmt.Errorf("failed to get cluster: %w", err)
 		log.WithError(err).Error("Failed to get cluster")
 		// TODO: retry once after 5 min and if it still fails fail permanently
 		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
@@ -352,6 +350,7 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 
 	overrides, err := r.valueOverrides(component, cluster)
 	if err != nil {
+		recordErr = fmt.Errorf("failed to set value overrides: %w", err)
 		log.WithError(err).Error("Failed to set helm value overrides")
 		return ctrl.Result{}, nil
 	}
@@ -368,7 +367,7 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 		Recreate:             true,
 	})
 	if err != nil {
-		//TODO: record failed install
+		recordErr = fmt.Errorf("failed to upgrade chart: %w", err)
 		// If new version does not exist reset to the currently installed version.
 		if errors.Is(err, helm.ErrChartNotFound) {
 			log.Warnf("Helm release not found, reverting CRD version to %s", helmRelease.Chart.Metadata.Version)
@@ -377,6 +376,7 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 			err = r.Client.Patch(ctx, updatedComponent, client.MergeFrom(component))
 			// Patch failure is a recoverable error.
 			if err != nil {
+				recordErr = fmt.Errorf("failed to reset component CRD version: %w", err)
 				log.WithError(err).Error("Failed to patch component")
 				return ctrl.Result{RequeueAfter: time.Minute}, nil
 			}
@@ -403,12 +403,22 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 
+// TODO: this should set progressing status and we should check if it succeeded or not in next loops
 func (r *ComponentReconciler) rollback(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (_ ctrl.Result, err error) {
 	defer func() {
 		if err != nil {
 			r.Recorder.Eventf(component, v1.EventTypeWarning, reasonRollbackFailed, "Rollback failed: %v", err)
+
+			if errors.Is(err, ErrNothingToRollback) {
+				// if there is nothing to rollback we don't want to mark the action as failed
+				r.recordActionResult(ctx, log, component, castai.Action_ROLLBACK, nil, withDefaultMessage("nothing to rollback"))
+				return
+			}
 		}
+
+		r.recordActionResult(ctx, log, component, castai.Action_ROLLBACK, err)
 	}()
+
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
 		ReleaseName: component.Spec.Component,
@@ -457,7 +467,13 @@ func (r *ComponentReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 
-func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
+// TODO: it should consider install/upgrade/rollback and log/raise events accordingly
+func (r *ComponentReconciler) checkHelmProgress(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (_ ctrl.Result, err error) {
+	progressingCondition := meta.FindStatusCondition(component.Status.Conditions, typeProgressingComponent)
+	if progressingCondition == nil {
+		// this should not happen
+		return ctrl.Result{}, errors.New("progressing condition not found")
+	}
 	log.Debug("Checking helm install progress")
 
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
@@ -465,19 +481,19 @@ func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logr
 		ReleaseName: component.Spec.Component,
 	})
 	if err != nil {
+		r.recordActionResult(ctx, log, component, actionFromProgressingReason(progressingCondition.Reason), fmt.Errorf("failed to get helm release: %v", err))
 		log.WithError(err).Error("Failed to get helm release")
 		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 	}
 
-	progressingCondition := metav1.Condition{
-		Type:   typeProgressingComponent,
-		Status: metav1.ConditionFalse,
-	}
-
 	switch helmRelease.Info.Status {
 	case release.StatusDeployed:
+		r.recordActionResult(ctx, log, component, actionFromProgressingReason(progressingCondition.Reason), nil)
+
 		log.WithField("component_version", component.Spec.Version).Info("Helm chart deployed")
+
 		progressingCondition.Reason = "Completed"
+		progressingCondition.Status = metav1.ConditionFalse
 		if progressingCondition.Reason == progressingReasonUpgrading {
 			progressingCondition.Message = "Helm release upgrade successful"
 		} else {
@@ -496,8 +512,12 @@ func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logr
 		component.Status.CurrentVersion = helmRelease.Chart.Metadata.Version
 		r.Recorder.Eventf(component, v1.EventTypeNormal, reasonInstalled, "Version %s installed successfully", component.Status.CurrentVersion)
 	case release.StatusFailed:
+		// defer as we want this action to be recorded after rollback action has been recorded
+		defer r.recordActionResult(ctx, log, component, actionFromProgressingReason(progressingCondition.Reason), fmt.Errorf("helm install failed: %s", helmRelease.Info.Description))
+
 		log.Warnf("Helm install failed: %s", helmRelease.Info.Description)
 		r.Recorder.Eventf(component, v1.EventTypeWarning, reasonInstallFailed, "Version %s install failed", component.Spec.Version)
+
 		if progressingCondition.Reason == progressingReasonUpgrading {
 			log.Warn("Helm chart upgrade failed, trying to rollback")
 			// If an upgrade attempt failed rollback to the previous version.
@@ -508,7 +528,9 @@ func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logr
 		// If the component was installed for the first time we can't roll back,
 		// the only thing we can do is setting available and progressing status conditions to false.
 		progressingCondition.Reason = "Failed"
+		progressingCondition.Status = metav1.ConditionFalse
 		progressingCondition.Message = fmt.Sprintf("Helm release install failed: %s - %s", component.Spec.Version, helmRelease.Info.Description)
+
 		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
 			Type:    typeAvailableComponent,
 			Status:  metav1.ConditionFalse,
@@ -520,7 +542,7 @@ func (r *ComponentReconciler) checkInstallProgress(ctx context.Context, log logr
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
 
-	meta.SetStatusCondition(&component.Status.Conditions, progressingCondition)
+	meta.SetStatusCondition(&component.Status.Conditions, *progressingCondition)
 	err = r.updateStatus(ctx, component)
 	if err != nil {
 		log.WithError(err).Error("Failed to set component status")
@@ -558,7 +580,21 @@ func (r *ComponentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *ComponentReconciler) recordActionResult(ctx context.Context, log *logrus.Entry, component *castwarev1alpha1.Component, action string, retErr error) {
+type componentActionResultOption func(*castai.ComponentActionResult)
+
+func withDefaultStatus(status castai.Status) componentActionResultOption {
+	return func(r *castai.ComponentActionResult) {
+		r.Status = status
+	}
+}
+
+func withDefaultMessage(message string) componentActionResultOption {
+	return func(r *castai.ComponentActionResult) {
+		r.Message = message
+	}
+}
+
+func (r *ComponentReconciler) recordActionResult(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, action castai.ActionType, actionErr error, opts ...componentActionResultOption) {
 	cluster := &castwarev1alpha1.Cluster{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
 	if err != nil {
@@ -572,40 +608,31 @@ func (r *ComponentReconciler) recordActionResult(ctx context.Context, log *logru
 		return
 	}
 
-	actionEnum := castai.Action_ACTION_UNSPECIFIED
-	switch action {
-	case actionInstall:
-		actionEnum = castai.Action_ENABLE
-	case actionUpgrade:
-		actionEnum = castai.Action_UPDATE
-	case actionDelete:
-		actionEnum = castai.Action_DISABLE
-	}
-
-	status := castai.Status_OK
-	var message string
-	if retErr != nil {
-		status = castai.Status_ERROR
-		message = retErr.Error()
-	}
-
 	req := &castai.ComponentActionResult{
 		Name:           component.Spec.Component,
-		Action:         actionEnum,
+		Action:         action,
 		CurrentVersion: component.Status.CurrentVersion,
 		Version:        component.Spec.Version,
-		Status:         status,
+		Status:         castai.Status_OK,
 		ReleaseName:    component.Spec.Component,
-		Message:        message,
+		Message:        "",
 	}
 
-	if err = castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, req); err != nil {
+	for _, opt := range opts {
+		opt(req)
+	}
+
+	if actionErr != nil {
+		req.Status = castai.Status_ERROR
+		req.Message = actionErr.Error()
+	}
+
+	if err := castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, req); err != nil {
 		log.WithError(err).Error("Failed to record action result")
 		return
 	}
 
-	log.WithFields(logrus.Fields{"component": component.Name, "action": action, "status": status, "message": message}).
-		Debug("Recorded action result for component")
+	log.WithFields(logrus.Fields{"request": fmt.Sprintf("%+v", req)}).Info("Recorded action result for component")
 }
 
 func (r *ComponentReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
@@ -618,4 +645,15 @@ func (r *ComponentReconciler) getCastaiClient(ctx context.Context, cluster *cast
 	client := castai.NewClient(nil, rest)
 
 	return client, nil
+}
+
+func actionFromProgressingReason(reason string) castai.ActionType {
+	switch reason {
+	case progressingReasonInstalling:
+		return castai.Action_INSTALL
+	case progressingReasonUpgrading:
+		return castai.Action_UPGRADE
+	default:
+		return ""
+	}
 }
