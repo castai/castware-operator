@@ -34,7 +34,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-var unknownActionError = fmt.Errorf("unknown action")
+var (
+	errUnknownAction     = errors.New("unknown action")
+	errComponentNotFount = errors.New("component not found")
+)
 
 // Definitions to manage status conditions
 const (
@@ -208,10 +211,11 @@ func (r *ClusterReconciler) pollActions(ctx context.Context, castAiClient castai
 			actionErr = r.handleUpgrade(ctx, cluster, a)
 		case *castai.ActionUninstall:
 			log.Infof("uninstall action: %v", a.Component)
+			actionErr = r.handleUninstall(ctx, cluster, a)
 		case *castai.ActionRollback:
 			log.Infof("rollback action: %v", a.Component)
 		default:
-			actionErr = unknownActionError
+			actionErr = errUnknownAction
 			log.Warnf("unknown action: %v", action)
 		}
 		if actionErr != nil {
@@ -288,7 +292,7 @@ func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castware
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			log.WithError(err).Error("Failed to get component")
-			return errors.New("component not found")
+			return errComponentNotFount
 		}
 		log.WithError(err).Error("Failed to get component")
 		return fmt.Errorf("failed to get component: %w", err)
@@ -335,6 +339,33 @@ func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castware
 		}
 
 		return r.Client.Patch(ctx, updatedComponent, client.MergeFrom(component))
+	})
+}
+
+func (r *ClusterReconciler) handleUninstall(ctx context.Context, cluster *castwarev1alpha1.Cluster, action *castai.ActionUninstall) error {
+	log := r.Log
+	namespacedName := types.NamespacedName{Namespace: cluster.Namespace, Name: action.Component}
+
+	component := &castwarev1alpha1.Component{}
+	err := r.Get(ctx, namespacedName, component)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			log.WithError(err).Error("Failed to get component")
+			return errComponentNotFount
+		}
+		log.WithError(err).Error("Failed to get component")
+		return fmt.Errorf("failed to get component: %w", err)
+	}
+
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      component.Name,
+			Namespace: component.Namespace,
+		}, component); err != nil {
+			return err
+		}
+
+		return r.Client.Delete(ctx, component)
 	})
 }
 
