@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -110,7 +111,7 @@ func TestPollActions(t *testing.T) {
 		mockClient.EXPECT().PollActions(gomock.Any(), clusterID).Return(&castai.PollActionsResponse{
 			Actions: []*castai.Action{action},
 		}, nil)
-		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, unknownActionError).Return(nil)
+		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, errUnknownAction).Return(nil)
 
 		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
 		r.NoError(err)
@@ -396,6 +397,56 @@ func TestPollActions(t *testing.T) {
 		r.Equal("value3-value", actualValues["value3"])
 	})
 
+	t.Run("should delete component CR version action is uninstall", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		now := time.Now()
+		action := &castai.Action{
+			Id:         uuid.NewString(),
+			CreateTime: &now,
+			ActionUninstall: &castai.ActionUninstall{
+				Component: "test-component",
+			},
+		}
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: clusterID,
+				},
+			},
+		}
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-component",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ComponentSpec{Cluster: cluster.Name, Version: "0.1"},
+		}
+
+		testOps := newClusterTestOps(t, cluster, component)
+
+		mockClient.EXPECT().PollActions(gomock.Any(), clusterID).Return(&castai.PollActionsResponse{
+			Actions: []*castai.Action{action},
+		}, nil)
+		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, nil).Return(nil)
+
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
+		r.NoError(err)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
+		r.Error(err)
+		r.True(apierrors.IsNotFound(err))
+	})
+
 	t.Run("should ack with error when action is upgrade and the component is not installed", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
@@ -430,6 +481,44 @@ func TestPollActions(t *testing.T) {
 			Actions: []*castai.Action{action},
 		}, nil)
 		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, errors.New("component not found")).Return(nil)
+
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
+		r.NoError(err)
+	})
+
+	t.Run("should ack with error when action is uninstall and the component is not installed", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		now := time.Now()
+		action := &castai.Action{
+			Id:         uuid.NewString(),
+			CreateTime: &now,
+			ActionUninstall: &castai.ActionUninstall{
+				Component: "test-component",
+			},
+		}
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: clusterID,
+				},
+			},
+		}
+
+		testOps := newClusterTestOps(t, cluster)
+
+		mockClient.EXPECT().PollActions(gomock.Any(), clusterID).Return(&castai.PollActionsResponse{
+			Actions: []*castai.Action{action},
+		}, nil)
+		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, errComponentNotFount).Return(nil)
 
 		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
 		r.NoError(err)
