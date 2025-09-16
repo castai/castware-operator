@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/castai/castware-operator/internal/helm"
 	"github.com/castai/castware-operator/internal/utils"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -50,9 +51,10 @@ const (
 // ClusterReconciler reconciles a Cluster object
 type ClusterReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Log    logrus.FieldLogger
-	Config *config.Config
+	Scheme     *runtime.Scheme
+	Log        logrus.FieldLogger
+	Config     *config.Config
+	HelmClient helm.Client
 }
 
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=clusters,verbs=get;list;watch;create;update;patch;delete
@@ -214,6 +216,7 @@ func (r *ClusterReconciler) pollActions(ctx context.Context, castAiClient castai
 			actionErr = r.handleUninstall(ctx, cluster, a)
 		case *castai.ActionRollback:
 			log.Infof("rollback action: %v", a.Component)
+			actionErr = r.handleRollback(ctx, cluster, a)
 		default:
 			actionErr = errUnknownAction
 			log.Warnf("unknown action: %v", action)
@@ -339,6 +342,50 @@ func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castware
 		}
 
 		return r.Client.Patch(ctx, updatedComponent, client.MergeFrom(component))
+	})
+}
+
+func (r *ClusterReconciler) handleRollback(ctx context.Context, cluster *castwarev1alpha1.Cluster, action *castai.ActionRollback) error {
+	log := r.Log
+	namespacedName := types.NamespacedName{Namespace: cluster.Namespace, Name: action.Component}
+
+	component := &castwarev1alpha1.Component{}
+	err := r.Get(ctx, namespacedName, component)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			log.WithError(err).Error("Failed to get component")
+			return errComponentNotFount
+		}
+		log.WithError(err).Error("Failed to get component")
+		return fmt.Errorf("failed to get component: %w", err)
+	}
+
+	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+		Namespace:   component.Namespace,
+		ReleaseName: component.Spec.Component,
+	})
+	if err != nil {
+		log.WithError(err).Error("Failed to get helm release")
+		return err
+	}
+	// Helm release version start from 1 for the first install, if version is lower than 2
+	// the component has never been upgrade, hence nothing to rollback
+	if helmRelease.Version < 2 {
+		return ErrNothingToRollback
+	}
+
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		var latestComponent castwarev1alpha1.Component
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      component.Name,
+			Namespace: component.Namespace,
+		}, &latestComponent); err != nil {
+			return err
+		}
+
+		latestComponent.Status.Rollback = true
+
+		return r.Status().Update(ctx, &latestComponent)
 	})
 }
 

@@ -131,6 +131,11 @@ spec:
                 type: array
               currentVersion:
                 type: string
+              rollback:
+                description: |-
+                  Set it to true if the component should be rolled back to the previous version,
+                  the reconcile loop will set it to false when the rollback starts.
+                type: boolean
             type: object
         type: object
     served: true

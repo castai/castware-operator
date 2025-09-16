@@ -45,6 +45,9 @@ type ComponentStatus struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=status
 	Conditions     []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
 	CurrentVersion string             `json:"currentVersion,omitempty" protobuf:"string,2,rep,name=currentVersion"`
+	// Set it to true if the component should be rolled back to the previous version,
+	// the reconcile loop will set it to false when the rollback starts.
+	Rollback bool `json:"rollback,omitempty" protobuf:"bool,3,rep,name=rollback"`
 }
 
 //+kubebuilder:object:root=true

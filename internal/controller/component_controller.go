@@ -196,6 +196,19 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.upgradeComponent(ctx, log.WithField("action", "upgrade"), component)
 	}
 
+	// If the component is in rollback mode we disable it and try to rollback.
+	if component.Status.Rollback {
+		log.Info("Component is in rollback mode, rolling back")
+		updatedComponent := component.DeepCopy()
+		updatedComponent.Status.Rollback = false
+		err = r.updateStatus(ctx, updatedComponent)
+		if err != nil {
+			log.WithError(err).Error("Failed to reset component CRD version")
+			return ctrl.Result{}, err
+		}
+		return r.rollback(ctx, log, updatedComponent)
+	}
+
 	log.Debug("Component reconciled")
 
 	return ctrl.Result{RequeueAfter: time.Minute * 15}, nil
