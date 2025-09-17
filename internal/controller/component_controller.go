@@ -91,6 +91,8 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	log := r.Log.WithField("component", req.NamespacedName.String())
 	log.Debug("Reconciling Component")
 
+	// TODO: (agent only) check if cluster ID exists
+
 	component := &castwarev1alpha1.Component{}
 	err := r.Get(ctx, req.NamespacedName, component)
 	if err != nil {
@@ -117,9 +119,29 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
+	progressingCondition := meta.FindStatusCondition(component.Status.Conditions, typeProgressingComponent)
+	if progressingCondition == nil && component.Spec.Migration != nil && *component.Spec.Migration == "helm" {
+		// set progressing to migrate
+		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+			Type:    typeProgressingComponent,
+			Status:  metav1.ConditionTrue,
+			Reason:  progressingReasonInstalling,
+			Message: fmt.Sprintf("Migrating component from %s", *component.Spec.Migration),
+		})
+		if err := r.updateStatus(ctx, component); err != nil {
+			log.WithError(err).Error("Failed to update status")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, err
+	}
+
+	if progressingCondition == nil && component.Spec.Migration != nil && *component.Spec.Migration == "yaml" {
+		log.Infof("Migrating component from yaml, version: %s", component.Spec.Version)
+		return r.installComponent(ctx, log.WithField("action", "migrate"), component)
+	}
+
 	// If installation/upgrade is in progress we wait for completion or timeout.
-	if progressingCondition := meta.FindStatusCondition(component.Status.Conditions, typeProgressingComponent); progressingCondition != nil &&
-		progressingCondition.Status == metav1.ConditionTrue {
+	if progressingCondition != nil && progressingCondition.Status == metav1.ConditionTrue {
 		log.WithField("action", progressingCondition.Reason).Info("Helm install in progress")
 
 		if time.Now().After(progressingCondition.LastTransitionTime.Add(10 * time.Minute)) {
@@ -184,7 +206,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// If CurrentVersion is empty the component has to be installed for the first time.
-	if component.Status.CurrentVersion == "" && !meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
+	if component.Status.CurrentVersion == "" && !meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) && component.Spec.Migration == nil {
 		log.Infof("Component is not installed, installing version %s", component.Spec.Version)
 		return r.installComponent(ctx, log.WithField("action", "install"), component)
 	}

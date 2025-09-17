@@ -32,6 +32,15 @@ type ComponentSpec struct {
 	//+optional
 	Version string `json:"version"`
 
+	// Migration tells the operator to perform a migration of an existing component if set.
+	//+optional
+	//+kubebuilder:validation:Enum=helm;yaml
+	Migration *string `json:"migration,omitempty"`
+
+	// Readonly tells the operator to not perform any changes to the component until the value is set to false.
+	//+kubebuilder:default:=false
+	Readonly bool `json:"readonly,omitempty"`
+
 	// Values is a free-form map of Helm values (exactly like a values.yaml block).
 	// The operator will pass these to `helm install/upgrade --values`.
 	// +kubebuilder:pruning:PreserveUnknownFields

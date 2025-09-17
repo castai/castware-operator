@@ -9,11 +9,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/castai/castware-operator/internal/helm"
 	"github.com/castai/castware-operator/internal/utils"
+	"github.com/samber/lo"
+	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 
@@ -86,6 +90,8 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
+	// TODO: check for existing agent before onboarding cluster
+
 	clusterMetadata := cluster.Spec.Cluster
 	if clusterMetadata == nil || clusterMetadata.ClusterID == "" {
 		p, err := GetProvider(ctx, r.Log, cluster)
@@ -137,6 +143,77 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
 	} else if reconcile {
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+	}
+
+	agentRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+		Namespace:   cluster.Namespace,
+		ReleaseName: "castai-agent",
+	})
+	if err == nil {
+		// Release found, create agent CR
+		log.Infof("Agent release found: %v", agentRelease)
+		// Check if component CR exists
+		component := &castwarev1alpha1.Component{}
+		err = r.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, component)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				log.Info("component resource not found, creating it")
+				values, err := json.Marshal(agentRelease.Config)
+				if err != nil {
+					return ctrl.Result{}, err
+				}
+				component.Namespace = cluster.Namespace
+				component.Name = "castai-agent"
+				component.Spec.Component = "castai-agent"
+				component.Spec.Cluster = cluster.Name
+				component.Spec.Enabled = true
+				component.Spec.Version = agentRelease.Chart.Metadata.Version
+				component.Spec.Values = &v1.JSON{Raw: values}
+				component.Spec.Migration = lo.ToPtr("helm")
+				component.Status.Conditions = []metav1.Condition{}
+				err = r.Create(ctx, component)
+				if err != nil {
+					return ctrl.Result{}, err
+				}
+				log.Info("component resource created")
+				return ctrl.Result{RequeueAfter: time.Minute * 30}, nil
+			}
+			return ctrl.Result{}, err
+		}
+		log.Infof("component resource found: %v", component)
+		return ctrl.Result{RequeueAfter: time.Minute * 30}, nil
+	}
+	if !apierrors.IsNotFound(err) {
+		// TODO: release not found, check for yaml deployment3
+		var deploymentList appsv1.DeploymentList
+		err = r.List(ctx, &deploymentList, &client.ListOptions{Namespace: cluster.Namespace, LabelSelector: labels.SelectorFromSet(labels.Set{"app.kubernetes.io/name": "castai-agent"})})
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if len(deploymentList.Items) > 0 {
+			versionLabel := deploymentList.Items[0].Labels["helm.sh/chart"]
+			log.Infof("Deployment found: %v", deploymentList.Items[0])
+			component := &castwarev1alpha1.Component{}
+			component.Namespace = cluster.Namespace
+			component.Name = "castai-agent"
+			component.Spec.Component = "castai-agent"
+			component.Spec.Cluster = cluster.Name
+			component.Spec.Enabled = true
+			// component.Spec.Version = agentRelease.Chart.Metadata.Version
+			// component.Spec.Values = &v1.JSON{Raw: values}
+			component.Spec.Migration = lo.ToPtr("yaml")
+			component.Status.Conditions = []metav1.Condition{}
+			if versionLabel != "" {
+				component.Spec.Version = strings.TrimPrefix(versionLabel, "castai-agent-")
+			}
+			err = r.Create(ctx, component)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			log.Info("component resource created")
+			return ctrl.Result{RequeueAfter: time.Minute * 30}, nil
+		}
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
 	}
 
 	return r.pollActions(ctx, castAiClient, cluster)
