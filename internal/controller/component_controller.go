@@ -262,7 +262,7 @@ func (r *ComponentReconciler) deleteComponent(ctx context.Context, log logrus.Fi
 func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (_ ctrl.Result, err error) {
 	var recordErr error
 	defer func() {
-		if recordErr != nil {
+		if recordErr == nil {
 			recordErr = err
 		}
 		r.recordActionResult(ctx, log, component, castai.Action_INSTALL, recordErr, withDefaultStatus(castai.Status_PROGRESSING))
@@ -337,7 +337,7 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 		if err != nil {
 			r.Recorder.Eventf(component, v1.EventTypeWarning, reasonUpgradeFailed, "Upgrade failed: %v", err)
 		}
-		if recordErr != nil {
+		if recordErr == nil {
 			recordErr = err
 		}
 		r.recordActionResult(ctx, log, component, castai.Action_UPGRADE, recordErr, withDefaultStatus(castai.Status_PROGRESSING))
