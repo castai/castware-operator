@@ -27,6 +27,9 @@ spec:
   provider: {{ .Values.defaultCluster.provider | quote }}
   {{- end }}
   helmRepoURL: {{ .Values.defaultCluster.helmRepoURL | quote }}
+  {{- if .Values.defaultCluster.migrationMode}}
+  migrationMode: {{ .Values.defaultCluster.migrationMode | quote }}
+  {{-end}}
   {{- if .Values.defaultCluster.cluster }}
   cluster:
     {{- toYaml .Values.defaultCluster.cluster | nindent 4 }}
