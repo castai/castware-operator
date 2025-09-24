@@ -29,7 +29,7 @@ spec:
   helmRepoURL: {{ .Values.defaultCluster.helmRepoURL | quote }}
   {{- if .Values.defaultCluster.migrationMode}}
   migrationMode: {{ .Values.defaultCluster.migrationMode | quote }}
-  {{-end}}
+  {{- end}}
   {{- if .Values.defaultCluster.cluster }}
   cluster:
     {{- toYaml .Values.defaultCluster.cluster | nindent 4 }}
