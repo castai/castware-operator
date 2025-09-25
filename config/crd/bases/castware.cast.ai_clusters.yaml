@@ -96,6 +96,15 @@ spec:
                 description: HelmRepoURL is the url of the Helm repository containing
                   components charts.
                 type: string
+              migrationMode:
+                default: write
+                description: |-
+                  MigrationMode tells the operator if existing components should be migrated
+                  to operator-managed components (write) or just detected (read).
+                enum:
+                - write
+                - read
+                type: string
               provider:
                 description: Provider is the cloud provider where Castware is installed.
                 type: string

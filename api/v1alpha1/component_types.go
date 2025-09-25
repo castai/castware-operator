@@ -37,6 +37,16 @@ type ComponentSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +optional
 	Values *apiextensionsv1.JSON `json:"values,omitempty"`
+
+	// Migration tells the operator if there is an existing component to migrate
+	// or just a new component to install.
+	//+kubebuilder:validation:Enum=yaml;helm;""
+	//+kubebuilder:default:=""
+	Migration string `json:"migration,omitempty"`
+
+	// Readonly tells the operator if the component can be modified.
+	//+kubebuilder:default:=false
+	Readonly bool `json:"readonly,omitempty"`
 }
 
 // ComponentStatus defines the observed state of Component

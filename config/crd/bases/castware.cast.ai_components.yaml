@@ -53,6 +53,20 @@ spec:
                 description: Enabled is set to false if this component should be scaled
                   to zero replicas.
                 type: boolean
+              migration:
+                default: ""
+                description: |-
+                  Migration tells the operator if there is an existing component to migrate
+                  or just a new component to install.
+                enum:
+                - yaml
+                - helm
+                - ""
+                type: string
+              readonly:
+                default: false
+                description: Readonly tells the operator if the component can be modified.
+                type: boolean
               values:
                 description: |-
                   Values is a free-form map of Helm values (exactly like a values.yaml block).

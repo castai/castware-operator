@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"sort"
 	"strings"
 
@@ -174,7 +175,33 @@ func countLeadingSpaces(s string) int {
 	return count
 }
 
+func updateCRDs(crdBasePath, outFilePath string) error {
+	outF, err := os.Create(outFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to open helm CRDs file: %w", err)
+	}
+	crdFiles := []string{"castware.cast.ai_clusters.yaml", "castware.cast.ai_components.yaml"}
+	for i, fileName := range crdFiles {
+		f, err := os.ReadFile(path.Join(crdBasePath, fileName))
+		if err != nil {
+			return fmt.Errorf("failed to open %s: %w", fileName, err)
+		}
+		if _, err := outF.WriteString(strings.TrimPrefix(string(f), "---\n")); err != nil {
+			return fmt.Errorf("failed to write %s: %w", fileName, err)
+		}
+		if i < len(crdFiles)-1 {
+			if _, err := outF.WriteString("---\n"); err != nil {
+				return fmt.Errorf("failed to write separator: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
 func main() {
+	if err := updateCRDs("./config/crd/bases/", "./charts/castai-castware-operator/crds/crds.yaml"); err != nil {
+		panic(fmt.Errorf("failed to update CRDs: %w", err))
+	}
 	f, err := os.Open("./dist/install.yaml")
 	if err != nil {
 		panic(err)

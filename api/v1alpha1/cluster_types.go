@@ -35,6 +35,12 @@ type ClusterSpec struct {
 	// +optional
 	// +kubebuilder:default:="https://castai.github.io/helm-charts"
 	HelmRepoURL string `json:"helmRepoURL"`
+
+	// MigrationMode tells the operator if existing components should be migrated
+	// to operator-managed components (write) or just detected (read).
+	//+kubebuilder:validation:Enum=write;read
+	//+kubebuilder:default:="write"
+	MigrationMode string `json:"migrationMode,omitempty"`
 }
 
 // APISpec groups HTTP/gRPC endpoints for Mothership and related services.
