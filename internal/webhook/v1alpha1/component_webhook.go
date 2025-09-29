@@ -8,6 +8,7 @@ import (
 	"github.com/castai/castware-operator/internal/helm"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"helm.sh/helm/v3/pkg/release"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -32,14 +33,14 @@ var componentlog = logf.Log.WithName("component-resource")
 var errComponentReadonly = errors.New("readonly components cannot be modified")
 
 // SetupComponentWebhookWithManager registers the webhook for Component in the manager.
-func SetupComponentWebhookWithManager(mgr ctrl.Manager, log logrus.FieldLogger, chartLoader helm.ChartLoader) error {
+func SetupComponentWebhookWithManager(mgr ctrl.Manager, log logrus.FieldLogger, chartLoader helm.ChartLoader, helmClient helm.Client) error {
 	cfg, err := config.GetFromEnvironment()
 	if err != nil {
 		return fmt.Errorf("unable to load config from environment: %w", err)
 	}
 
 	return ctrl.NewWebhookManagedBy(mgr).For(&castwarev1alpha1.Component{}).
-		WithValidator(&ComponentCustomValidator{client: mgr.GetClient(), config: cfg, log: log, chartLoader: chartLoader}).
+		WithValidator(&ComponentCustomValidator{client: mgr.GetClient(), config: cfg, log: log, chartLoader: chartLoader, helmClient: helmClient}).
 		WithDefaulter(&ComponentCustomDefaulter{client: mgr.GetClient(), log: log}).
 		Complete()
 }
@@ -137,6 +138,7 @@ type ComponentCustomValidator struct {
 	client      client.Client
 	config      *config.Config
 	chartLoader helm.ChartLoader
+	helmClient  helm.Client
 	log         logrus.FieldLogger
 }
 
@@ -170,6 +172,13 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 	// check that the version exists
 	if err := v.validateVersion(ctx, castComponent.HelmChart, c); err != nil {
 		return nil, fmt.Errorf("failed to validate version %s for chart '%s': %w", c.Spec.Version, castComponent.HelmChart, err)
+	}
+
+	// check that the helm chart for the component to migrate is already installed.
+	if c.Spec.Migration == castwarev1alpha1.ComponentMigrationHelm {
+		if err := v.validateHelmRelease(c); err != nil {
+			return nil, fmt.Errorf("failed to validate existing helm release: %w", err)
+		}
 	}
 
 	return nil, nil
@@ -216,6 +225,9 @@ func (v *ComponentCustomValidator) ValidateUpdate(ctx context.Context, oldObj, n
 	}
 	if oldComponent.Spec.Cluster != component.Spec.Cluster {
 		return nil, fmt.Errorf("referenced cluster CRD cannot be modified")
+	}
+	if oldComponent.Spec.Migration != component.Spec.Migration {
+		return nil, fmt.Errorf("migration cannot be modified")
 	}
 
 	cluster := &castwarev1alpha1.Cluster{}
@@ -281,4 +293,25 @@ func (v *ComponentCustomValidator) getComponentByName(ctx context.Context, clust
 	}
 
 	return resp, nil
+}
+
+// validateHelmRelease checks that the given component has a valid helm release installed.
+func (v *ComponentCustomValidator) validateHelmRelease(component *castwarev1alpha1.Component) error {
+	helmRelease, err := v.helmClient.GetRelease(helm.GetReleaseOptions{
+		Namespace:   component.Namespace,
+		ReleaseName: component.Spec.Component,
+	})
+	if err != nil {
+		return err
+	}
+	switch helmRelease.Info.Status {
+	case release.StatusUninstalled:
+		return errors.New("component is not installed")
+	case release.StatusUninstalling:
+		return errors.New("component is uninstalling")
+	case release.StatusFailed:
+		return errors.New("helm chart is in failed status")
+
+	}
+	return nil
 }

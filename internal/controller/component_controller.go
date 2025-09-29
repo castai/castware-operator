@@ -41,6 +41,7 @@ const (
 
 	progressingReasonInstalling = "Installing"
 	progressingReasonUpgrading  = "Upgrading"
+	progressingReasonMigrating  = "Migrating"
 
 	reasonInstalled       = "Installed"
 	reasonInstallFailed   = "InstallFailed"
@@ -117,9 +118,26 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
+	progressingCondition := meta.FindStatusCondition(component.Status.Conditions, typeProgressingComponent)
+	if progressingCondition == nil && component.Spec.Migration == castwarev1alpha1.ComponentMigrationHelm {
+		// Component was migrated from an existing helm chart, we set progressing condition to true
+		// and in the next reconcile loop we check the helm chart status and ser CR status accordingly.
+		log.Info("Migrating component from an existing helm chart")
+		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+			Type:    typeProgressingComponent,
+			Status:  metav1.ConditionTrue,
+			Reason:  progressingReasonMigrating,
+			Message: fmt.Sprintf("Migrating component from %s", component.Spec.Migration),
+		})
+		if err := r.updateStatus(ctx, component); err != nil {
+			log.WithError(err).Error("Failed to update status")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, err
+	}
+
 	// If installation/upgrade is in progress we wait for completion or timeout.
-	if progressingCondition := meta.FindStatusCondition(component.Status.Conditions, typeProgressingComponent); progressingCondition != nil &&
-		progressingCondition.Status == metav1.ConditionTrue {
+	if progressingCondition != nil && progressingCondition.Status == metav1.ConditionTrue {
 		log.WithField("action", progressingCondition.Reason).Info("Helm install in progress")
 
 		if time.Now().After(progressingCondition.LastTransitionTime.Add(10 * time.Minute)) {
@@ -128,6 +146,21 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			// defer as we want this action to be recorded after rollback action has been recorded
 			defer r.recordActionResult(ctx, log, component, actionFromProgressingReason(progressingCondition.Reason), errors.New("helm install timeout exceeded"))
 
+			// If migration times out something was already wrong with the helm chart before starting,
+			// we set the custom resource as readonly to allow the user to fix the chart without
+			// interference from the operator.
+			if progressingCondition.Reason == progressingReasonMigrating {
+				log.Warn("Migration timeout exceeded, the component will be set as readonly")
+				updatedComponent := component.DeepCopy()
+				updatedComponent.Spec.Readonly = true
+				err = r.Client.Patch(ctx, updatedComponent, client.MergeFrom(component))
+				// Patch failure is a recoverable error.
+				if err != nil {
+					log.WithError(err).Error("Failed to patch component")
+					return ctrl.Result{RequeueAfter: time.Minute}, nil
+				}
+				return ctrl.Result{RequeueAfter: time.Minute}, nil
+			}
 			log.Warn("Helm install timeout exceeded")
 			log := log.WithField("action", "rollback")
 
@@ -135,7 +168,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			if err != nil {
 				// TODO: (WIRE-1341) delete component if it's failed and there is nothing to rollback
 				if errors.Is(err, ErrNothingToRollback) {
-					// Nothing to rollback, marking component as unavailable and progressing as false
+					// Nothing to rollback, marking the component as unavailable and progressing as false
 					progressingCondition = &metav1.Condition{
 						Type:    typeProgressingComponent,
 						Status:  metav1.ConditionFalse,
@@ -184,7 +217,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// If CurrentVersion is empty the component has to be installed for the first time.
-	if component.Status.CurrentVersion == "" && !meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
+	if component.Status.CurrentVersion == "" && !meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) && component.Spec.Migration == "" {
 		log.Infof("Component is not installed, installing version %s", component.Spec.Version)
 		return r.installComponent(ctx, log.WithField("action", "install"), component)
 	}
@@ -507,9 +540,12 @@ func (r *ComponentReconciler) checkHelmProgress(ctx context.Context, log logrus.
 
 		progressingCondition.Reason = "Completed"
 		progressingCondition.Status = metav1.ConditionFalse
-		if progressingCondition.Reason == progressingReasonUpgrading {
+		switch progressingCondition.Reason {
+		case progressingReasonUpgrading:
 			progressingCondition.Message = "Helm release upgrade successful"
-		} else {
+		case progressingReasonMigrating:
+			progressingCondition.Message = "Component migration successful"
+		default:
 			progressingCondition.Message = "Helm release install successful"
 		}
 
@@ -662,7 +698,7 @@ func (r *ComponentReconciler) getCastaiClient(ctx context.Context, cluster *cast
 
 func actionFromProgressingReason(reason string) castai.ActionType {
 	switch reason {
-	case progressingReasonInstalling:
+	case progressingReasonInstalling, progressingReasonMigrating:
 		return castai.Action_INSTALL
 	case progressingReasonUpgrading:
 		return castai.Action_UPGRADE
