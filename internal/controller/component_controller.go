@@ -257,7 +257,7 @@ func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Compone
 	overrides["apiURL"] = cluster.Spec.API.APIURL
 	overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
 	overrides["provider"] = cluster.Spec.Provider
-	overrides["createNamespace"] = "false"
+	overrides["createNamespace"] = false
 	return overrides, nil
 }
 

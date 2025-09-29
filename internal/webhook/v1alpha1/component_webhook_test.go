@@ -278,12 +278,12 @@ var _ = Describe("Component Webhook", func() {
 			Expect(err).Error().To(MatchError(errComponentReadonly))
 		})
 
-		It("Should deny update if migration has changed", func() {
+		It("Should deny update if migration has changed and the new value is not empty", func() {
 			By("simulating an invalid update scenario")
 			oldObj.Spec.Migration = ""
 			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
-			Expect(err).Error().To(MatchError("migration cannot be modified"))
+			Expect(err).Error().To(MatchError("components can be migrated only during resource creation"))
 		})
 
 		It("Should admit update", func() {

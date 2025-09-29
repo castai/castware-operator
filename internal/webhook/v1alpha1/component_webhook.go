@@ -226,8 +226,8 @@ func (v *ComponentCustomValidator) ValidateUpdate(ctx context.Context, oldObj, n
 	if oldComponent.Spec.Cluster != component.Spec.Cluster {
 		return nil, fmt.Errorf("referenced cluster CRD cannot be modified")
 	}
-	if oldComponent.Spec.Migration != component.Spec.Migration {
-		return nil, fmt.Errorf("migration cannot be modified")
+	if component.Spec.Migration != "" && oldComponent.Spec.Migration != component.Spec.Migration {
+		return nil, fmt.Errorf("components can be migrated only during resource creation")
 	}
 
 	cluster := &castwarev1alpha1.Cluster{}
