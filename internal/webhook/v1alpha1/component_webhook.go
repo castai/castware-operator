@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/castai/castware-operator/internal/helm"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -26,6 +28,8 @@ import (
 // nolint:unused
 // log is for logging in this package.
 var componentlog = logf.Log.WithName("component-resource")
+
+var errComponentReadonly = errors.New("readonly components cannot be modified")
 
 // SetupComponentWebhookWithManager registers the webhook for Component in the manager.
 func SetupComponentWebhookWithManager(mgr ctrl.Manager, log logrus.FieldLogger, chartLoader helm.ChartLoader) error {
@@ -57,7 +61,6 @@ var _ webhook.CustomDefaulter = &ComponentCustomDefaulter{}
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind Component.
 func (d *ComponentCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
 	component, ok := obj.(*castwarev1alpha1.Component)
-
 	if !ok {
 		return fmt.Errorf("expected an Component object but got %T", obj)
 	}
@@ -181,6 +184,31 @@ func (v *ComponentCustomValidator) ValidateUpdate(ctx context.Context, oldObj, n
 	oldComponent, ok := oldObj.(*castwarev1alpha1.Component)
 	if !ok {
 		return nil, fmt.Errorf("expected a Component object for the oldObj but got %T", newObj)
+	}
+
+	// Component is readonly, no changes allowed until the readonly flag is set to false.
+	if component.Spec.Readonly && oldComponent.Spec.Readonly {
+		// Component was already readonly, no changes allowed except for the readonly flag.
+		return nil, errComponentReadonly
+	} else if component.Spec.Readonly && !oldComponent.Spec.Readonly {
+		// Component was not readonly, now it is, check that version didn't change.
+
+		// Readonly changed, but for the sake of comparing with the old spec,
+		// we need to make a copy of the new spec with readonly false.
+		newSpecCopy := component.Spec.DeepCopy()
+		newSpecCopy.Readonly = false
+
+		diff := cmp.Diff(
+			oldComponent.Spec,
+			*newSpecCopy,
+			// common & useful options:
+			cmpopts.EquateEmpty(), // nil vs empty slice/map treated equal
+		)
+		if diff != "" {
+			return nil, errComponentReadonly
+		}
+
+		return nil, nil
 	}
 
 	if oldComponent.Spec.Component != component.Spec.Component {

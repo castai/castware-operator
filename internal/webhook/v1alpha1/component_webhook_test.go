@@ -9,6 +9,7 @@ import (
 	"github.com/castai/castware-operator/internal/helm"
 	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
 	"github.com/golang/mock/gomock"
+	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
 	"github.com/sirupsen/logrus"
 
@@ -28,6 +29,28 @@ var _ = Describe("Component Webhook", func() {
 		componentName = "castai-agent"
 		clusterName   = "castai"
 	)
+	newTestComponent := func(t GinkgoTInterface) *castwarev1alpha1.Component {
+		t.Helper()
+		return &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      componentName,
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ComponentSpec{
+				Component: componentName,
+				Cluster:   clusterName,
+				Enabled:   true,
+				Version:   "",
+				Values: &v1.JSON{
+					Raw: []byte(`{"key": "value"}`),
+				},
+				Migration: "helm",
+				Readonly:  false,
+			},
+			Status: castwarev1alpha1.ComponentStatus{},
+		}
+	}
+
 	var (
 		obj         *castwarev1alpha1.Component
 		oldObj      *castwarev1alpha1.Component
@@ -37,11 +60,12 @@ var _ = Describe("Component Webhook", func() {
 	)
 
 	BeforeEach(func() {
+		t := GinkgoT()
 		cfg, _ := config.GetFromEnvironment()
-		obj = &castwarev1alpha1.Component{}
-		oldObj = &castwarev1alpha1.Component{}
+		obj = newTestComponent(t)
+		oldObj = newTestComponent(t)
 		log := logrus.New()
-		chartLoader = mock_helm.NewMockChartLoader(gomock.NewController(GinkgoT()))
+		chartLoader = mock_helm.NewMockChartLoader(gomock.NewController(t))
 		validator = ComponentCustomValidator{
 			client:      k8sClient,
 			config:      cfg,
@@ -169,6 +193,25 @@ var _ = Describe("Component Webhook", func() {
 			obj.Spec.Cluster = "changed"
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
 			Expect(err).Error().To(MatchError("referenced cluster CRD cannot be modified"))
+		})
+
+		It("Should deny update if the component is readonly and was already readonly", func() {
+			By("simulating an invalid update scenario")
+			oldObj.Spec.Component = componentName
+			oldObj.Spec.Readonly = true
+			obj.Spec.Readonly = true
+			obj.Spec.Version = "0.0.3"
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).Error().To(MatchError(errComponentReadonly))
+		})
+
+		It("Should deny update if the component is readonly and was not readonly before", func() {
+			By("simulating an invalid update scenario")
+			oldObj.Spec.Component = componentName
+			obj.Spec.Readonly = true
+			obj.Spec.Version = "0.0.3"
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).Error().To(MatchError(errComponentReadonly))
 		})
 
 		It("Should admit update", func() {
