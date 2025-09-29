@@ -23,7 +23,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -155,17 +154,7 @@ func TestPollActions(t *testing.T) {
 				Component: "test-component",
 			},
 		}
-		cluster := &castwarev1alpha1.Cluster{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-cluster",
-				Namespace: "test-namespace",
-			},
-			Spec: castwarev1alpha1.ClusterSpec{
-				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
-					ClusterID: clusterID,
-				},
-			},
-		}
+		cluster := newTestCluster(t, clusterID)
 
 		testOps := newClusterTestOps(t, cluster)
 
@@ -199,17 +188,7 @@ func TestPollActions(t *testing.T) {
 				Component: "test-component",
 			},
 		}
-		cluster := &castwarev1alpha1.Cluster{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-cluster",
-				Namespace: "test-namespace",
-			},
-			Spec: castwarev1alpha1.ClusterSpec{
-				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
-					ClusterID: clusterID,
-				},
-			},
-		}
+		cluster := newTestCluster(t, clusterID)
 		component := &castwarev1alpha1.Component{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-component",
@@ -245,17 +224,7 @@ func TestPollActions(t *testing.T) {
 				Version:   "0.2",
 			},
 		}
-		cluster := &castwarev1alpha1.Cluster{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-cluster",
-				Namespace: "test-namespace",
-			},
-			Spec: castwarev1alpha1.ClusterSpec{
-				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
-					ClusterID: clusterID,
-				},
-			},
-		}
+		cluster := newTestCluster(t, clusterID)
 		component := &castwarev1alpha1.Component{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-component",
@@ -312,17 +281,7 @@ func TestPollActions(t *testing.T) {
 				ValuesOverrides: map[string]string{"value2.test": "value2-value", "value3": "value3-value"},
 			},
 		}
-		cluster := &castwarev1alpha1.Cluster{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-cluster",
-				Namespace: "test-namespace",
-			},
-			Spec: castwarev1alpha1.ClusterSpec{
-				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
-					ClusterID: clusterID,
-				},
-			},
-		}
+		cluster := newTestCluster(t, clusterID)
 		component1 := &castwarev1alpha1.Component{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-component-1",
@@ -411,17 +370,7 @@ func TestPollActions(t *testing.T) {
 				Component: "test-component",
 			},
 		}
-		cluster := &castwarev1alpha1.Cluster{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-cluster",
-				Namespace: "test-namespace",
-			},
-			Spec: castwarev1alpha1.ClusterSpec{
-				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
-					ClusterID: clusterID,
-				},
-			},
-		}
+		cluster := newTestCluster(t, clusterID)
 		component := &castwarev1alpha1.Component{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-component",
@@ -461,17 +410,7 @@ func TestPollActions(t *testing.T) {
 				Component: "test-component",
 			},
 		}
-		cluster := &castwarev1alpha1.Cluster{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-cluster",
-				Namespace: "test-namespace",
-			},
-			Spec: castwarev1alpha1.ClusterSpec{
-				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
-					ClusterID: clusterID,
-				},
-			},
-		}
+		cluster := newTestCluster(t, clusterID)
 		component := &castwarev1alpha1.Component{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-component",
@@ -519,17 +458,7 @@ func TestPollActions(t *testing.T) {
 				Version:   "0.1",
 			},
 		}
-		cluster := &castwarev1alpha1.Cluster{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-cluster",
-				Namespace: "test-namespace",
-			},
-			Spec: castwarev1alpha1.ClusterSpec{
-				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
-					ClusterID: clusterID,
-				},
-			},
-		}
+		cluster := newTestCluster(t, clusterID)
 
 		testOps := newClusterTestOps(t, cluster)
 
@@ -557,17 +486,7 @@ func TestPollActions(t *testing.T) {
 				Component: "test-component",
 			},
 		}
-		cluster := &castwarev1alpha1.Cluster{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-cluster",
-				Namespace: "test-namespace",
-			},
-			Spec: castwarev1alpha1.ClusterSpec{
-				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
-					ClusterID: clusterID,
-				},
-			},
-		}
+		cluster := newTestCluster(t, clusterID)
 
 		testOps := newClusterTestOps(t, cluster)
 
@@ -596,17 +515,7 @@ func TestPollActions(t *testing.T) {
 				Version:   "0.1",
 			},
 		}
-		cluster := &castwarev1alpha1.Cluster{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-cluster",
-				Namespace: "test-namespace",
-			},
-			Spec: castwarev1alpha1.ClusterSpec{
-				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
-					ClusterID: clusterID,
-				},
-			},
-		}
+		cluster := newTestCluster(t, clusterID)
 		component := &castwarev1alpha1.Component{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-component",
@@ -641,17 +550,7 @@ func TestPollActions(t *testing.T) {
 				Component: "test-component",
 			},
 		}
-		cluster := &castwarev1alpha1.Cluster{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-cluster",
-				Namespace: "test-namespace",
-			},
-			Spec: castwarev1alpha1.ClusterSpec{
-				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
-					ClusterID: clusterID,
-				},
-			},
-		}
+		cluster := newTestCluster(t, clusterID)
 		component := &castwarev1alpha1.Component{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-component",
@@ -700,17 +599,7 @@ func TestPollActions(t *testing.T) {
 				Version:   "0.2",
 			},
 		}
-		cluster := &castwarev1alpha1.Cluster{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-cluster",
-				Namespace: "test-namespace",
-			},
-			Spec: castwarev1alpha1.ClusterSpec{
-				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
-					ClusterID: clusterID,
-				},
-			},
-		}
+		cluster := newTestCluster(t, clusterID)
 		component := &castwarev1alpha1.Component{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-component",
@@ -769,4 +658,19 @@ func newClusterTestOps(t *testing.T, objs ...client.Object) *clusterTestOps {
 	}
 
 	return opts
+}
+
+func newTestCluster(t *testing.T, clusterID string) *castwarev1alpha1.Cluster {
+	t.Helper()
+	return &castwarev1alpha1.Cluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster",
+			Namespace: "test-namespace",
+		},
+		Spec: castwarev1alpha1.ClusterSpec{
+			Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+				ClusterID: clusterID,
+			},
+		},
+	}
 }

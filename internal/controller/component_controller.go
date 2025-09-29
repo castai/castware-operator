@@ -555,7 +555,7 @@ func (r *ComponentReconciler) checkHelmProgress(ctx context.Context, log logrus.
 		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
 			Type:    typeAvailableComponent,
 			Status:  metav1.ConditionTrue,
-			Reason:  "Installed",
+			Reason:  reasonInstalled,
 			Message: progressingCondition.Message,
 		})
 		component.Status.CurrentVersion = helmRelease.Chart.Metadata.Version
