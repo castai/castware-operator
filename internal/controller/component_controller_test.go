@@ -34,7 +34,7 @@ func TestReconcile(t *testing.T) {
 
 			testCluster := newTestCluster(t, uuid.NewString())
 			testComponent := newTestComponent(t, testCluster.Name, "test-component")
-			testComponent.Spec.Migration = "helm"
+			testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
 
 			testOps := newComponentTestOps(t, testCluster, testComponent)
 
@@ -62,7 +62,7 @@ func TestReconcile(t *testing.T) {
 
 			testCluster := newTestCluster(t, uuid.NewString())
 			testComponent := newTestComponent(t, testCluster.Name, "test-component")
-			testComponent.Spec.Migration = "helm"
+			testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
 
 			testOps := newComponentTestOps(t, testCluster, testComponent)
 
@@ -98,10 +98,81 @@ func TestReconcile(t *testing.T) {
 			r.NotNil(progressingCondition)
 			r.Equal(metav1.ConditionFalse, progressingCondition.Status)
 			r.Equal("Completed", progressingCondition.Reason)
+			r.Equal("Component migration successful", progressingCondition.Message)
 
 			availableCondition := meta.FindStatusCondition(actualComponent.Status.Conditions, typeAvailableComponent)
+			r.NotNil(availableCondition)
 			r.Equal(metav1.ConditionTrue, availableCondition.Status)
 			r.Equal(reasonInstalled, availableCondition.Reason)
+		})
+
+		t.Run("should handle migration from different helm chart version", func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			r := require.New(t)
+
+			testCluster := newTestCluster(t, uuid.NewString())
+			testComponent := newTestComponent(t, testCluster.Name, "test-component")
+			testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
+			testComponent.Spec.Version = "0.2.5" // CRD specifies v0.1.1
+
+			testOps := newComponentTestOps(t, testCluster, testComponent)
+
+			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+
+			// First reconcile should set progressing condition to true
+			_, err := testOps.sut.Reconcile(ctx, req)
+			r.NoError(err)
+
+			// Mock existing helm release with different version than CRD
+			testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+				Namespace:   testComponent.Namespace,
+				ReleaseName: testComponent.Spec.Component,
+			}).Return(&release.Release{
+				Name: testComponent.Spec.Component,
+				Info: &release.Info{Status: release.StatusDeployed},
+				Chart: &chart.Chart{
+					Metadata: &chart.Metadata{
+						Version: "0.1.1", // Different version than CRD (0.2.5)
+					},
+				},
+			}, nil).Times(2)
+
+			// Second reconcile should detect version mismatch and set current version from helm
+			_, err = testOps.sut.Reconcile(ctx, req)
+			r.NoError(err)
+
+			var actualComponent castwarev1alpha1.Component
+			err = testOps.sut.Client.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+			r.NoError(err)
+
+			// Should set current version to what's actually installed in helm
+			r.Equal("0.1.1", actualComponent.Status.CurrentVersion)
+			r.Len(actualComponent.Status.Conditions, 2)
+
+			progressingCondition := meta.FindStatusCondition(actualComponent.Status.Conditions, typeProgressingComponent)
+			r.NotNil(progressingCondition)
+			r.Equal(metav1.ConditionFalse, progressingCondition.Status)
+			r.Equal("Completed", progressingCondition.Reason)
+			r.Equal("Component migration successful", progressingCondition.Message)
+
+			availableCondition := meta.FindStatusCondition(actualComponent.Status.Conditions, typeAvailableComponent)
+			r.NotNil(availableCondition)
+			r.Equal(metav1.ConditionTrue, availableCondition.Status)
+			r.Equal(reasonInstalled, availableCondition.Reason)
+
+			// Third reconcile should upgrade the component
+			testOps.mockHelm.EXPECT().Upgrade(gomock.Any(), gomock.Any()).Return(&release.Release{
+				Name: testComponent.Spec.Component,
+				Info: &release.Info{Status: release.StatusDeployed},
+				Chart: &chart.Chart{
+					Metadata: &chart.Metadata{
+						Version: "0.2.5", // Different version than CRD (0.2.5)
+					},
+				},
+			}, nil)
+			_, err = testOps.sut.Reconcile(ctx, req)
+			r.NoError(err)
 		})
 	})
 

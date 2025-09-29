@@ -538,8 +538,6 @@ func (r *ComponentReconciler) checkHelmProgress(ctx context.Context, log logrus.
 
 		log.WithField("component_version", component.Spec.Version).Info("Helm chart deployed")
 
-		progressingCondition.Reason = "Completed"
-		progressingCondition.Status = metav1.ConditionFalse
 		switch progressingCondition.Reason {
 		case progressingReasonUpgrading:
 			progressingCondition.Message = "Helm release upgrade successful"
@@ -548,6 +546,9 @@ func (r *ComponentReconciler) checkHelmProgress(ctx context.Context, log logrus.
 		default:
 			progressingCondition.Message = "Helm release install successful"
 		}
+
+		progressingCondition.Reason = "Completed"
+		progressingCondition.Status = metav1.ConditionFalse
 
 		// TODO: (after mvp) check component logs for known errors and rollback
 
