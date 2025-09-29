@@ -27,7 +27,7 @@ import (
 
 func TestReconcile(t *testing.T) {
 	t.Run("when migrating from helm", func(t *testing.T) {
-		t.Run("should set status condition to progressing on the first reconcile loop", func(t *testing.T) {
+		t.Run("should set status condition to progressing and finalizer on the first reconcile loop", func(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
 			r := require.New(t)
@@ -46,6 +46,9 @@ func TestReconcile(t *testing.T) {
 			var actualComponent castwarev1alpha1.Component
 			err = testOps.sut.Client.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
 			r.NoError(err)
+
+			r.Len(actualComponent.Finalizers, 1)
+			r.Equal(componentFinalizer, actualComponent.Finalizers[0])
 
 			r.Len(actualComponent.Status.Conditions, 1)
 			actualCondition := actualComponent.Status.Conditions[0]
