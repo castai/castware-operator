@@ -22,6 +22,10 @@ func UnflattenMap(m map[string]string) (map[string]interface{}, error) {
 				return nil, errors.New("invalid map")
 			}
 		}
+		_, exists := selectedMap[keys[len(keys)-1]]
+		if exists && selectedMap[keys[len(keys)-1]].(map[string]interface{}) != nil {
+			return nil, errors.New("invalid map")
+		}
 		selectedMap[keys[len(keys)-1]] = value
 	}
 	return values, nil
