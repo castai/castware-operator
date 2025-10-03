@@ -112,9 +112,11 @@ var _ = BeforeSuite(func() {
 	err = SetupClusterWebhookWithManager(mgr, logrus.New())
 	Expect(err).NotTo(HaveOccurred())
 
-	chartLoader := mock_helm.NewMockChartLoader(gomock.NewController(GinkgoT()))
+	ctrl := gomock.NewController(GinkgoT())
+	chartLoader := mock_helm.NewMockChartLoader(ctrl)
+	helmClient := mock_helm.NewMockClient(ctrl)
 
-	err = SetupComponentWebhookWithManager(mgr, logrus.New(), chartLoader)
+	err = SetupComponentWebhookWithManager(mgr, logrus.New(), chartLoader, helmClient)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:webhook

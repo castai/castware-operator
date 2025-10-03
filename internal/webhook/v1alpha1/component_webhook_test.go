@@ -9,6 +9,7 @@ import (
 	"github.com/castai/castware-operator/internal/helm"
 	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
 	"github.com/golang/mock/gomock"
+	"helm.sh/helm/v3/pkg/release"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
 	"github.com/sirupsen/logrus"
@@ -44,7 +45,7 @@ var _ = Describe("Component Webhook", func() {
 				Values: &v1.JSON{
 					Raw: []byte(`{"key": "value"}`),
 				},
-				Migration: "helm",
+				Migration: "",
 				Readonly:  false,
 			},
 			Status: castwarev1alpha1.ComponentStatus{},
@@ -56,6 +57,7 @@ var _ = Describe("Component Webhook", func() {
 		oldObj      *castwarev1alpha1.Component
 		validator   ComponentCustomValidator
 		chartLoader *mock_helm.MockChartLoader
+		helmClient  *mock_helm.MockClient
 		defaulter   ComponentCustomDefaulter
 	)
 
@@ -65,11 +67,14 @@ var _ = Describe("Component Webhook", func() {
 		obj = newTestComponent(t)
 		oldObj = newTestComponent(t)
 		log := logrus.New()
-		chartLoader = mock_helm.NewMockChartLoader(gomock.NewController(t))
+		ctrl := gomock.NewController(t)
+		chartLoader = mock_helm.NewMockChartLoader(ctrl)
+		helmClient = mock_helm.NewMockClient(ctrl)
 		validator = ComponentCustomValidator{
 			client:      k8sClient,
 			config:      cfg,
 			chartLoader: chartLoader,
+			helmClient:  helmClient,
 			log:         log,
 		}
 		Expect(validator).NotTo(BeNil(), "Expected validator to be initialized")
@@ -166,6 +171,46 @@ var _ = Describe("Component Webhook", func() {
 			Expect(err).Error().To(MatchError("cluster 'invalid' does not exist"))
 		})
 
+		It("Should deny creation if migration is helm and helm chart is not installed", func() {
+			By("simulating an invalid update scenario")
+			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = clusterName
+			obj.SetNamespace("default")
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: "",
+			})
+			helmClient.EXPECT().GetRelease(helm.GetReleaseOptions{
+				Namespace:   obj.Namespace,
+				ReleaseName: obj.Spec.Component,
+			}).Return(nil, fmt.Errorf("helm release not found"))
+
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).Error().To(MatchError("failed to validate existing helm release: helm release not found"))
+		})
+
+		It("Should deny creation if migration is helm and helm chart is failed", func() {
+			By("simulating an invalid update scenario")
+			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = clusterName
+			obj.SetNamespace("default")
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: "",
+			})
+			helmClient.EXPECT().GetRelease(helm.GetReleaseOptions{
+				Namespace:   obj.Namespace,
+				ReleaseName: obj.Spec.Component,
+			}).Return(&release.Release{Info: &release.Info{Status: release.StatusFailed}}, nil)
+
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).Error().To(MatchError("failed to validate existing helm release: helm chart is in failed status"))
+		})
+
 		It("Should admit creation", func() {
 			By("simulating a valid creation scenario")
 			obj.Spec.Component = componentName
@@ -176,6 +221,25 @@ var _ = Describe("Component Webhook", func() {
 				Name:    "test-helm-chart",
 				Version: "",
 			})
+			Expect(validator.ValidateCreate(ctx, obj)).To(BeNil())
+		})
+
+		It("Should admit creation if migration is helm and helm chart is valid", func() {
+			By("simulating a valid creation scenario")
+			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = clusterName
+			obj.SetNamespace("default")
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: "",
+			})
+			helmClient.EXPECT().GetRelease(helm.GetReleaseOptions{
+				Namespace:   obj.Namespace,
+				ReleaseName: obj.Spec.Component,
+			}).Return(&release.Release{Info: &release.Info{Status: release.StatusDeployed}}, nil)
+
 			Expect(validator.ValidateCreate(ctx, obj)).To(BeNil())
 		})
 
@@ -212,6 +276,14 @@ var _ = Describe("Component Webhook", func() {
 			obj.Spec.Version = "0.0.3"
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
 			Expect(err).Error().To(MatchError(errComponentReadonly))
+		})
+
+		It("Should deny update if migration has changed and the new value is not empty", func() {
+			By("simulating an invalid update scenario")
+			oldObj.Spec.Migration = ""
+			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).Error().To(MatchError("components can be migrated only during resource creation"))
 		})
 
 		It("Should admit update", func() {

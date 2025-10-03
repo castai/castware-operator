@@ -148,8 +148,8 @@ func TestUnflattenMap(t *testing.T) {
 		r := require.New(t)
 
 		in := map[string]string{
-			"a.b":   "1",
 			"a.b.c": "2", // tries to descend into a string at a.b
+			"a.b":   "1",
 		}
 
 		out, err := UnflattenMap(in)
