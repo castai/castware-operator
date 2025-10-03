@@ -6,6 +6,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const (
+	ClusterMigrationModeRead        = "read"
+	ClusterMigrationModeWrite       = "write"
+	ClusterMigrationModeAutoupgrade = "autoUpgrade"
+)
+
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
@@ -37,8 +43,9 @@ type ClusterSpec struct {
 	HelmRepoURL string `json:"helmRepoURL"`
 
 	// MigrationMode tells the operator if existing components should be migrated
-	// to operator-managed components (write) or just detected (read).
-	//+kubebuilder:validation:Enum=write;read
+	// to operator-managed components (write), migrated and upgraded (autoUpgrade)
+	// or just detected (read).
+	//+kubebuilder:validation:Enum=write;read;autoUpgrade
 	//+kubebuilder:default:="write"
 	MigrationMode string `json:"migrationMode,omitempty"`
 }

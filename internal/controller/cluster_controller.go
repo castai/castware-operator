@@ -139,7 +139,76 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
 
+	reconcile, err = r.scanExistingComponents(ctx, cluster)
+	// If an error occurred while scanning existing components, we just poll actions for a minute and then retry.
+	// This is to avoid that the controller gets stuck on component scanning and stops executing actions.
+	if err != nil {
+		log.WithError(err).Error("Failed to scan existing components")
+	}
+	if reconcile {
+		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+	}
+
 	return r.pollActions(ctx, castAiClient, cluster)
+}
+
+func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, cluster *castwarev1alpha1.Cluster) (bool, error) {
+	// Now only the agent is supported, so we can scan for it and return the result directly.
+	return r.scanExistingComponent(ctx, cluster, "castai-agent")
+}
+
+// scanExistingComponent Checks if helm release or deployment exist for a given component, and if they do but
+// there is no corresponding component CR, it creates the component CR with migration parameter configured accordingly.
+func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, cluster *castwarev1alpha1.Cluster, componentName string) (bool, error) {
+	log := r.Log
+
+	component := &castwarev1alpha1.Component{}
+	err := r.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: componentName}, component)
+	if err != nil {
+		// Component not found, check if it's installed with helm or yaml manifests.
+		if apierrors.IsNotFound(err) {
+			agentRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+				Namespace:   cluster.Namespace,
+				ReleaseName: componentName,
+			})
+			if err != nil {
+				log.Debugf("Failed to get helm release: %v", err)
+				// TODO: WIRE-1624 check if deployment exist for yaml migration
+				return false, nil
+			}
+			// Release found, create agent CR
+			log.Infof("Helm release found, creating new component resource: %v", agentRelease.Name)
+			values, err := json.Marshal(agentRelease.Config)
+			if err != nil {
+				return false, err
+			}
+			component = &castwarev1alpha1.Component{}
+			component.Namespace = cluster.Namespace
+			component.Name = componentName
+			component.Spec.Component = componentName
+			component.Spec.Cluster = cluster.Name
+			component.Spec.Enabled = true
+			component.Spec.Readonly = cluster.Spec.MigrationMode == castwarev1alpha1.ClusterMigrationModeRead
+			// If the cluster is in autoupgrade mode, we don't specify the version in the component CR so that
+			// the controller will upgrade the agent to the latest version.
+			if cluster.Spec.MigrationMode != castwarev1alpha1.ClusterMigrationModeAutoupgrade {
+				component.Spec.Version = agentRelease.Chart.Metadata.Version
+			}
+			component.Spec.Values = &v1.JSON{Raw: values}
+			component.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
+			component.Status.Conditions = []metav1.Condition{}
+			err = r.Create(ctx, component)
+			if err != nil {
+				return false, err
+			}
+			log.Info("component resource created")
+			return true, nil
+		}
+		log.WithError(err).Error("Failed to get component")
+		return false, err
+	}
+
+	return false, nil
 }
 
 func (r *ClusterReconciler) reconcileSecret(ctx context.Context, cluster *castwarev1alpha1.Cluster) (bool, error) {

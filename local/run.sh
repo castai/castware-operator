@@ -10,6 +10,13 @@ err() { printf "\033[1;31m[✖]\033[0m %s\n" "$*" >&2; }
 require_cmd() { command -v "$1" >/dev/null 2>&1 || { err "Required command '$1' not found."; exit 1; }; }
 
 # -------- 1 & 2) Load secret.env if exists and check env vars --------
+LOCAL_ENV_FILE="${LOCAL_DIR}/.env.local"
+if [ -f "$LOCAL_ENV_FILE" ]; then
+  log "Loading local environment variables from $LOCAL_ENV_FILE"
+  # shellcheck disable=SC1090
+  source "$LOCAL_ENV_FILE"
+fi
+
 SECRET_ENV_FILE="${LOCAL_DIR}/secret.env"
 if [ -f "$SECRET_ENV_FILE" ]; then
   log "Loading secret environment variables from $SECRET_ENV_FILE"
@@ -147,6 +154,7 @@ fi
 SECRET_FILE="${LOCAL_DIR}/secret.yaml"
 KUSTOMIZATION_FILE="${LOCAL_DIR}/kustomization.yaml"
 
+echo "API_URL=$API_URL" > "${LOCAL_ENV_FILE}"
 echo "API_KEY=$API_KEY" > "${LOCAL_DIR}/secret.env"
 kubectl apply -k "$LOCAL_DIR"
 log "Applied kustomization from $LOCAL_DIR."
