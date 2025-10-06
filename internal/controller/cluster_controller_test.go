@@ -17,6 +17,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
+	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/release"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -623,6 +624,100 @@ func TestPollActions(t *testing.T) {
 		r.NoError(err)
 
 		r.Equal("0.2", actualComponent.Spec.Version)
+	})
+}
+
+func TestScanExistingComponent(t *testing.T) {
+	t.Run("should return no error and not reconcile when the component CR exists", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: clusterID,
+				},
+			},
+		}
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-component",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ComponentSpec{Cluster: cluster.Name, Version: "0.1"},
+		}
+		testOps := newClusterTestOps(t, cluster, component)
+
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, cluster, "test-component")
+		r.NoError(err)
+		r.False(reconcile)
+	})
+
+	t.Run("should create a new component CR when it does not exist but the helm chart is installed", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: clusterID,
+				},
+				MigrationMode: castwarev1alpha1.ClusterMigrationModeRead,
+			},
+		}
+		testOps := newClusterTestOps(t, cluster)
+
+		helmValues := map[string]interface{}{
+			"image": map[string]interface{}{
+				"repository": "castai/agent",
+				"tag":        "v1.2.3",
+			},
+		}
+		helmValuesJSON, err := json.Marshal(helmValues)
+		r.NoError(err)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   cluster.Namespace,
+			ReleaseName: "test-component",
+		}).Return(&release.Release{
+			Name: "test-component",
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "1.2.3",
+				},
+			},
+			Config: helmValues,
+		}, nil)
+
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, cluster, "test-component")
+		r.NoError(err)
+		r.True(reconcile)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
+		r.NoError(err)
+		r.Equal("test-component", actualComponent.Name)
+		r.Equal(cluster.Namespace, actualComponent.Namespace)
+		r.Equal(cluster.Name, actualComponent.Spec.Cluster)
+		r.Equal("test-component", actualComponent.Spec.Component)
+		r.True(actualComponent.Spec.Enabled)
+		r.True(actualComponent.Spec.Readonly)
+		r.Equal("1.2.3", actualComponent.Spec.Version)
+		r.Equal(castwarev1alpha1.ComponentMigrationHelm, actualComponent.Spec.Migration)
+		r.NotNil(actualComponent.Spec.Values)
+		r.Equal(helmValuesJSON, actualComponent.Spec.Values.Raw)
 	})
 }
 

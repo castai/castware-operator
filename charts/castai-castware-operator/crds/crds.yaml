@@ -99,10 +99,12 @@ spec:
                 default: write
                 description: |-
                   MigrationMode tells the operator if existing components should be migrated
-                  to operator-managed components (write) or just detected (read).
+                  to operator-managed components (write), migrated and upgraded (autoUpgrade)
+                  or just detected (read).
                 enum:
                 - write
                 - read
+                - autoUpgrade
                 type: string
               provider:
                 description: Provider is the cloud provider where Castware is installed.
