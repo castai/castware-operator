@@ -323,6 +323,7 @@ func (r *ComponentReconciler) deleteComponent(ctx context.Context, log logrus.Fi
 }
 
 func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, dryRun bool) (_ ctrl.Result, err error) {
+	log = log.WithField("dryRun", dryRun)
 	var recordErr error
 	defer func() {
 		if !dryRun {
