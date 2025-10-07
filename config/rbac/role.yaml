@@ -128,6 +128,7 @@ rules:
   resources:
   - machines
   - nodeclaims
+  - nodeoverlays
   - nodepools
   - provisioners
   verbs:
@@ -189,6 +190,18 @@ rules:
   - get
   - list
   - patch
+  - watch
+- apiGroups:
+  - resource.k8s.io
+  resources:
+  - deviceclasses
+  - devicetaintrules
+  - resourceclaims
+  - resourceclaimtemplates
+  - resourceslices
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - runbooks.cast.ai
