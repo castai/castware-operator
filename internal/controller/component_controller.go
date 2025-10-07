@@ -67,7 +67,7 @@ var ErrNothingToRollback = errors.New("nothing to rollback")
 // +kubebuilder:rbac:groups=batch,resources=cronjobs;jobs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=datadoghq.com,resources=extendeddaemonsetreplicasets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=karpenter.k8s.aws,resources=awsnodetemplates;ec2nodeclasses,verbs=get;list;watch
-// +kubebuilder:rbac:groups=karpenter.sh,resources=machines;nodeclaims;nodepools;provisioners,verbs=get;list;watch
+// +kubebuilder:rbac:groups=karpenter.sh,resources=machines;nodeclaims;nodepools;provisioners;nodeoverlays,verbs=get;list;watch
 // +kubebuilder:rbac:groups=metrics.k8s.io,resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses;networkpolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch
@@ -77,6 +77,7 @@ var ErrNothingToRollback = errors.New("nothing to rollback")
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=create;patch;get;list;watch
 // +kubebuilder:rbac:groups=pod-mutations.cast.ai,resources=podmutations,verbs=create;update;get;list;watch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=delete,resourceNames=castai-agent
+// +kubebuilder:rbac:groups=resource.k8s.io,resources=deviceclasses;devicetaintrules;resourceclaims;resourceclaimtemplates;resourceslices,verbs=get;list;watch
 
 // ComponentReconciler reconciles a Component object
 type ComponentReconciler struct {
