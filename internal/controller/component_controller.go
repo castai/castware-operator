@@ -49,6 +49,7 @@ const (
 	reasonRollbackStarted = "RollbackStarted"
 	reasonUpgradeFailed   = "UpgradeFailed"
 	reasonUpgradeStarted  = "UpgradeStarted"
+	reasonMigrationFailed = "MigrationFailed"
 )
 
 var ErrNothingToRollback = errors.New("nothing to rollback")
@@ -88,6 +89,7 @@ type ComponentReconciler struct {
 	Config     *config.Config
 }
 
+// nolint:gocyclo
 func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res ctrl.Result, retErr error) {
 	log := r.Log.WithField("component", req.NamespacedName.String())
 	log.Debug("Reconciling Component")
@@ -134,6 +136,34 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, err
+	}
+
+	if progressingCondition == nil && component.Spec.Migration == castwarev1alpha1.ComponentMigrationYaml {
+		// yaml migration is supported only for the agent (validation is in webhooks).
+		// running "helm install" takes over the existing resources that become managed by helm
+		// and tied to the component custom resource.
+		log.Infof("Migrating component from yaml, version: %s", component.Spec.Version)
+
+		// Before migrating the resources we try a dry run to check if the migration is possible.
+		_, err = r.installComponent(ctx, log.WithField("action", "migrate"), component, true)
+		if err != nil {
+			log.WithError(err).Error("Failed to dry run migration from yaml")
+			meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+				Type:    typeAvailableComponent,
+				Status:  metav1.ConditionFalse,
+				Reason:  reasonMigrationFailed,
+				Message: fmt.Sprintf("Failed migration: %v", err),
+			})
+
+			err = r.updateStatus(ctx, component)
+			if err != nil {
+				log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
+			}
+
+			return ctrl.Result{RequeueAfter: time.Minute * 30}, err
+		}
+
+		return r.installComponent(ctx, log.WithField("action", "migrate"), component, false)
 	}
 
 	// If installation/upgrade is in progress we wait for completion or timeout.
@@ -219,7 +249,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// If CurrentVersion is empty the component has to be installed for the first time.
 	if component.Status.CurrentVersion == "" && !meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) && component.Spec.Migration == "" {
 		log.Infof("Component is not installed, installing version %s", component.Spec.Version)
-		return r.installComponent(ctx, log.WithField("action", "install"), component)
+		return r.installComponent(ctx, log.WithField("action", "install"), component, false)
 	}
 
 	// If current version is not empty, but it's different from the one specified in the CRD the component
@@ -292,13 +322,15 @@ func (r *ComponentReconciler) deleteComponent(ctx context.Context, log logrus.Fi
 	return ctrl.Result{}, nil
 }
 
-func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (_ ctrl.Result, err error) {
+func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, dryRun bool) (_ ctrl.Result, err error) {
 	var recordErr error
 	defer func() {
-		if recordErr == nil {
-			recordErr = err
+		if !dryRun {
+			if recordErr == nil {
+				recordErr = err
+			}
+			r.recordActionResult(ctx, log, component, castai.Action_INSTALL, recordErr, withDefaultStatus(castai.Status_PROGRESSING))
 		}
-		r.recordActionResult(ctx, log, component, castai.Action_INSTALL, recordErr, withDefaultStatus(castai.Status_PROGRESSING))
 	}()
 
 	cluster := &castwarev1alpha1.Cluster{}
@@ -341,24 +373,31 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 			CreateNamespace: false,
 			ReleaseName:     component.Spec.Component,
 			ValuesOverrides: overrides,
+			DryRun:          dryRun,
 		})
 		if err != nil {
 			recordErr = fmt.Errorf("failed to install chart: %w", err)
 			log.WithError(err).Error("Failed to install chart")
 			// TODO: retry once after 5 min and if it still fails fail permanently
+			if dryRun {
+				// For dry run we just return the error and let the caller handle it.
+				return ctrl.Result{}, err
+			}
 			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 		}
 	}
 
-	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
-		Type:    typeProgressingComponent,
-		Status:  metav1.ConditionTrue,
-		Reason:  progressingReasonInstalling,
-		Message: fmt.Sprintf("Installing component: %s", component.Spec.Version),
-	})
-	err = r.updateStatus(ctx, component)
-	if err != nil {
-		log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
+	if !dryRun {
+		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+			Type:    typeProgressingComponent,
+			Status:  metav1.ConditionTrue,
+			Reason:  progressingReasonInstalling,
+			Message: fmt.Sprintf("Installing component: %s", component.Spec.Version),
+		})
+		err = r.updateStatus(ctx, component)
+		if err != nil {
+			log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
+		}
 	}
 
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
