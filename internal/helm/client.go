@@ -34,6 +34,7 @@ type InstallOptions struct {
 	CreateNamespace bool
 	ReleaseName     string
 	ValuesOverrides map[string]interface{}
+	DryRun          bool
 }
 
 type UninstallOptions struct {
@@ -116,6 +117,7 @@ func (c *client) Install(ctx context.Context, opts InstallOptions) (*release.Rel
 	install.ReleaseName = opts.ReleaseName
 	install.Timeout = 10 * time.Minute
 	install.TakeOwnership = true
+	install.DryRun = opts.DryRun
 
 	// Prepare user value overrides.
 	values := map[string]interface{}{}

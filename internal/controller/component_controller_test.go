@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/release"
+	"helm.sh/helm/v3/pkg/storage/driver"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -178,9 +180,184 @@ func TestReconcile(t *testing.T) {
 			r.NoError(err)
 		})
 	})
+	t.Run("when migrating from yaml", func(t *testing.T) {
+		t.Run("should set status condition to progressing and finalizer on the first reconcile loop", func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			r := require.New(t)
 
+			testCluster := newTestCluster(t, uuid.NewString())
+			testComponent := newTestComponent(t, testCluster.Name, "test-component")
+			testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationYaml
+
+			testOps := newComponentTestOps(t, testCluster, testComponent)
+
+			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+
+			overrides := map[string]interface{}{}
+			overrides["apiURL"] = testCluster.Spec.API.APIURL
+			overrides["apiKeySecretRef"] = testCluster.Spec.APIKeySecret
+			overrides["provider"] = testCluster.Spec.Provider
+			overrides["createNamespace"] = false
+
+			helmRelease := &release.Release{
+				Name: testComponent.Spec.Component,
+				Info: &release.Info{Status: release.StatusDeployed},
+				Chart: &chart.Chart{
+					Metadata: &chart.Metadata{
+						Version: "0.1.2",
+					},
+				},
+			}
+
+			testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+				Namespace:   testComponent.Namespace,
+				ReleaseName: testComponent.Spec.Component,
+			}).Return(nil, driver.ErrReleaseNotFound).Times(2)
+
+			testOps.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, options helm.InstallOptions) (*release.Release, error) {
+				r.True(options.DryRun)
+				return helmRelease, nil
+			})
+
+			testOps.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, options helm.InstallOptions) (*release.Release, error) {
+				r.False(options.DryRun)
+				return helmRelease, nil
+			})
+
+			_, err := testOps.sut.Reconcile(ctx, req)
+			r.NoError(err)
+
+			var actualComponent castwarev1alpha1.Component
+			err = testOps.sut.Client.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+			r.NoError(err)
+
+			r.Len(actualComponent.Finalizers, 1)
+			r.Equal(componentFinalizer, actualComponent.Finalizers[0])
+
+			r.Len(actualComponent.Status.Conditions, 1)
+			actualCondition := actualComponent.Status.Conditions[0]
+
+			r.Equal(typeProgressingComponent, actualCondition.Type)
+			r.Equal(metav1.ConditionTrue, actualCondition.Status)
+			r.Equal(progressingReasonInstalling, actualCondition.Reason)
+		})
+
+		t.Run("should set available condition to false and not install the component if dry run fails", func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			r := require.New(t)
+
+			testCluster := newTestCluster(t, uuid.NewString())
+			testComponent := newTestComponent(t, testCluster.Name, "test-component")
+			testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationYaml
+
+			testOps := newComponentTestOps(t, testCluster, testComponent)
+
+			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+
+			overrides := map[string]interface{}{}
+			overrides["apiURL"] = testCluster.Spec.API.APIURL
+			overrides["apiKeySecretRef"] = testCluster.Spec.APIKeySecret
+			overrides["provider"] = testCluster.Spec.Provider
+			overrides["createNamespace"] = false
+
+			testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+				Namespace:   testComponent.Namespace,
+				ReleaseName: testComponent.Spec.Component,
+			}).Return(nil, driver.ErrReleaseNotFound)
+
+			testOps.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, options helm.InstallOptions) {
+				r.True(options.DryRun)
+			}).Return(nil, errors.New("dry run failed"))
+
+			_, err := testOps.sut.Reconcile(ctx, req)
+			r.NoError(err)
+
+			var actualComponent castwarev1alpha1.Component
+			err = testOps.sut.Client.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+			r.NoError(err)
+
+			r.Len(actualComponent.Status.Conditions, 1)
+			actualCondition := actualComponent.Status.Conditions[0]
+
+			r.Equal(typeAvailableComponent, actualCondition.Type)
+			r.Equal(metav1.ConditionFalse, actualCondition.Status)
+		})
+
+		t.Run("should set available status condition and component current version on the second reconcile loop", func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			r := require.New(t)
+
+			testCluster := newTestCluster(t, uuid.NewString())
+			testComponent := newTestComponent(t, testCluster.Name, "test-component")
+			testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationYaml
+
+			testOps := newComponentTestOps(t, testCluster, testComponent)
+
+			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+
+			overrides := map[string]interface{}{}
+			overrides["apiURL"] = testCluster.Spec.API.APIURL
+			overrides["apiKeySecretRef"] = testCluster.Spec.APIKeySecret
+			overrides["provider"] = testCluster.Spec.Provider
+			overrides["createNamespace"] = false
+
+			helmRelease := &release.Release{
+				Name: testComponent.Spec.Component,
+				Info: &release.Info{Status: release.StatusDeployed},
+				Chart: &chart.Chart{
+					Metadata: &chart.Metadata{
+						Version: "0.1.2",
+					},
+				},
+			}
+
+			testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+				Namespace:   testComponent.Namespace,
+				ReleaseName: testComponent.Spec.Component,
+			}).Return(nil, driver.ErrReleaseNotFound).Times(2)
+
+			testOps.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, options helm.InstallOptions) (*release.Release, error) {
+				r.True(options.DryRun)
+				return helmRelease, nil
+			})
+
+			testOps.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, options helm.InstallOptions) (*release.Release, error) {
+				r.False(options.DryRun)
+				return helmRelease, nil
+			})
+
+			_, err := testOps.sut.Reconcile(ctx, req)
+			r.NoError(err)
+
+			testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+				Namespace:   testComponent.Namespace,
+				ReleaseName: testComponent.Spec.Component,
+			}).Return(helmRelease, nil)
+
+			_, err = testOps.sut.Reconcile(ctx, req)
+			r.NoError(err)
+
+			var actualComponent castwarev1alpha1.Component
+			err = testOps.sut.Client.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+			r.NoError(err)
+
+			r.Equal("0.1.2", actualComponent.Status.CurrentVersion)
+
+			r.Len(actualComponent.Status.Conditions, 2)
+
+			progressingCondition := meta.FindStatusCondition(actualComponent.Status.Conditions, typeProgressingComponent)
+			r.Equal(metav1.ConditionFalse, progressingCondition.Status)
+
+			availableCondition := meta.FindStatusCondition(actualComponent.Status.Conditions, typeAvailableComponent)
+			r.Equal(metav1.ConditionTrue, availableCondition.Status)
+		})
+	})
 }
 
+// nolint: unparam
 func newTestComponent(t *testing.T, clusterName, name string) *castwarev1alpha1.Component {
 	t.Helper()
 	return &castwarev1alpha1.Component{
