@@ -145,7 +145,8 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		log.Infof("Migrating component from yaml, version: %s", component.Spec.Version)
 
 		// Before migrating the resources we try a dry run to check if the migration is possible.
-		_, err = r.installComponent(ctx, log.WithField("action", "migrate"), component, true)
+		isDryRun := true
+		_, err = r.installComponent(ctx, log.WithField("action", "migrate"), component, isDryRun)
 		if err != nil {
 			log.WithError(err).Error("Failed to dry run migration from yaml")
 			meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
@@ -163,7 +164,8 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{RequeueAfter: time.Minute * 30}, err
 		}
 
-		return r.installComponent(ctx, log.WithField("action", "migrate"), component, false)
+		isDryRun = false
+		return r.installComponent(ctx, log.WithField("action", "migrate"), component, isDryRun)
 	}
 
 	// If installation/upgrade is in progress we wait for completion or timeout.
