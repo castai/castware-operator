@@ -715,7 +715,6 @@ func (r *ClusterReconciler) readLogBytes(ctx context.Context, logReq *rest.Reque
 	}()
 	logBytes, err := io.ReadAll(logStream)
 	if err != nil {
-		// log.WithError(err).WithField("pod", pod.Name).Warn("failed to read logs from agent container")
 		return nil, fmt.Errorf("failed to read logs from container: %w", err)
 	}
 	return logBytes, nil
