@@ -7,6 +7,8 @@ import (
 )
 
 func newUpgradeCmd() *cobra.Command {
+	var targetVersion string
+
 	upgradeCmd := &cobra.Command{
 		Use:   "upgrade",
 		Short: "Upgrade Cast AI components",
@@ -24,6 +26,8 @@ func newUpgradeCmd() *cobra.Command {
 			return nil
 		},
 	}
+	upgradeCmd.Flags().StringVar(&targetVersion, "version", "",
+		"The new version to upgrade to, if empty the latest version will be used")
 
 	return upgradeCmd
 }
