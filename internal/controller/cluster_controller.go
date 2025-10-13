@@ -48,6 +48,7 @@ import (
 var (
 	errUnknownAction     = errors.New("unknown action")
 	errComponentNotFount = errors.New("component not found")
+	clusterIDRegexp      = regexp.MustCompile(`cluster_id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`)
 )
 
 // Definitions to manage status conditions
@@ -218,7 +219,10 @@ func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, cluster *
 			return false, nil
 		}
 		var deploymentList appsv1.DeploymentList
-		err = r.List(ctx, &deploymentList, &client.ListOptions{Namespace: cluster.Namespace, LabelSelector: labels.SelectorFromSet(labels.Set{"app.kubernetes.io/name": "castai-agent"})})
+		err = r.List(ctx, &deploymentList, &client.ListOptions{
+			Namespace:     cluster.Namespace,
+			LabelSelector: labels.SelectorFromSet(labels.Set{"app.kubernetes.io/name": components.ComponentNameAgent}),
+		})
 		if err != nil {
 			return false, err
 		}
@@ -234,7 +238,7 @@ func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, cluster *
 
 			err = r.Create(ctx, component)
 			if err != nil {
-				return true, err
+				return false, err
 			}
 			log.Info("component resource created")
 			return true, nil
@@ -676,20 +680,12 @@ func (r *ClusterReconciler) extractClusterIDFromAgentLogs(ctx context.Context, n
 		logReq := r.Clientset.CoreV1().Pods(namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
 			Container: "agent",
 			TailLines: lo.ToPtr(int64(1000)),
+			// Retrieve only logs for the last minute, the agent sends snapshots every 15 seconds
+			// so it should be a safe interval.
+			SinceSeconds: lo.ToPtr(int64(60)),
 		})
 
-		logStream, err := logReq.Stream(ctx)
-		if err != nil {
-			log.WithError(err).WithField("pod", pod.Name).Warn("failed to get logs from agent container")
-			continue
-		}
-		defer func() {
-			if err := logStream.Close(); err != nil {
-				log.WithError(err).WithField("pod", pod.Name).Warn("failed to close logs stream")
-			}
-		}()
-
-		logBytes, err := io.ReadAll(logStream)
+		logBytes, err := r.readLogBytes(ctx, logReq)
 		if err != nil {
 			log.WithError(err).WithField("pod", pod.Name).Warn("failed to read logs from agent container")
 			continue
@@ -707,11 +703,28 @@ func (r *ClusterReconciler) extractClusterIDFromAgentLogs(ctx context.Context, n
 	return "", nil
 }
 
+func (r *ClusterReconciler) readLogBytes(ctx context.Context, logReq *rest.Request) ([]byte, error) {
+	logStream, err := logReq.Stream(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get log stream from container: %w", err)
+	}
+	defer func() {
+		if err := logStream.Close(); err != nil {
+			r.Log.WithError(err).Warn("failed to close logs stream")
+		}
+	}()
+	logBytes, err := io.ReadAll(logStream)
+	if err != nil {
+		// log.WithError(err).WithField("pod", pod.Name).Warn("failed to read logs from agent container")
+		return nil, fmt.Errorf("failed to read logs from container: %w", err)
+	}
+	return logBytes, nil
+}
+
 // extractClusterIDFromLogs parses logs and extracts cluster_id UUID
 func extractClusterIDFromLogs(logs string) string {
 	// Match cluster_id=<uuid> pattern
-	re := regexp.MustCompile(`cluster_id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`)
-	matches := re.FindStringSubmatch(logs)
+	matches := clusterIDRegexp.FindStringSubmatch(logs)
 	if len(matches) > 1 {
 		return matches[1]
 	}
