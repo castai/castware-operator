@@ -57,6 +57,8 @@ const (
 	typeAvailableCluster = "Available"
 	// typeDegradedCastware represents the status used when something went wrong with cluster reconciliation.
 	typeDegradedCluster = "Degraded"
+	// nameLabelKey represents the label key used to identify "name" label in a Kubernetes resource.
+	nameLabelKey = "app.kubernetes.io/name"
 )
 
 // ClusterReconciler reconciles a Cluster object
@@ -221,7 +223,7 @@ func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, cluster *
 		var deploymentList appsv1.DeploymentList
 		err = r.List(ctx, &deploymentList, &client.ListOptions{
 			Namespace:     cluster.Namespace,
-			LabelSelector: labels.SelectorFromSet(labels.Set{"app.kubernetes.io/name": components.ComponentNameAgent}),
+			LabelSelector: labels.SelectorFromSet(labels.Set{nameLabelKey: components.ComponentNameAgent}),
 		})
 		if err != nil {
 			return false, err
