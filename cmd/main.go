@@ -10,6 +10,7 @@ import (
 
 	"github.com/open-policy-agent/cert-controller/pkg/rotator"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/castai/castware-operator/internal/helm"
@@ -226,6 +227,14 @@ func main() {
 
 	log.Info("Starting manager")
 	restConfig := ctrl.GetConfigOrDie()
+
+	// Create Kubernetes clientset for direct API access
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		setupLog.Error(err, "unable to create Kubernetes clientset")
+		os.Exit(1)
+	}
+
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Logger:                 ctrl.Log,
 		Scheme:                 scheme,
@@ -299,11 +308,14 @@ func main() {
 	}
 
 	if err = (&controller.ClusterReconciler{
-		Client:     mgr.GetClient(),
-		Scheme:     mgr.GetScheme(),
-		Config:     cfg,
-		Log:        log,
-		HelmClient: helmClient,
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Config:      cfg,
+		Log:         log,
+		HelmClient:  helmClient,
+		ChartLoader: chartLoader,
+		RestConfig:  restConfig,
+		Clientset:   clientset,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Cluster")
 		os.Exit(1)

@@ -21,7 +21,7 @@ import (
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 	"github.com/castai/castware-operator/internal/castai"
 	"github.com/castai/castware-operator/internal/castai/auth"
-	"github.com/castai/castware-operator/internal/component"
+	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/internal/config"
 	"github.com/sirupsen/logrus"
 )
@@ -152,7 +152,7 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 	}
 
 	// validate that config supports the component
-	if !component.IsSupported(c.Spec.Component) {
+	if !components.IsSupported(c.Spec.Component) {
 		return nil, fmt.Errorf("component '%s' is not supported", c.Spec.Component)
 	}
 

@@ -1,15 +1,22 @@
 package controller
 
 import (
+	"castai-agent/pkg/services/providers/gke"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 	"github.com/castai/castware-operator/internal/castai"
 	mock_castai "github.com/castai/castware-operator/internal/castai/mock"
+	castaitest "github.com/castai/castware-operator/internal/castai/test"
+	"github.com/castai/castware-operator/internal/config"
 	"github.com/castai/castware-operator/internal/helm"
 	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
 	"github.com/golang/mock/gomock"
@@ -22,10 +29,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 var _ = Describe("Cluster Controller", func() {
@@ -721,9 +730,77 @@ func TestScanExistingComponent(t *testing.T) {
 	})
 }
 
+func TestReconcileCluster(t *testing.T) {
+	r := require.New(t)
+
+	r.NoError(os.Setenv("GKE_CLUSTER_NAME", "castware-operator-test"))
+	r.NoError(os.Setenv("GKE_LOCATION", "local"))
+	r.NoError(os.Setenv("GKE_PROJECT_ID", "local-testenv"))
+	r.NoError(os.Setenv("GKE_REGION", "local1"))
+	apiServer := newTestApiServer(t)
+
+	t.Cleanup(func() {
+		r.NoError(os.Unsetenv("GKE_CLUSTER_NAME"))
+		r.NoError(os.Unsetenv("GKE_LOCATION"))
+		r.NoError(os.Unsetenv("GKE_PROJECT_ID"))
+		r.NoError(os.Unsetenv("GKE_REGION"))
+		apiServer.Close()
+	})
+
+	t.Run("should register a new cluster", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		// clusterID := uuid.NewString()
+
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				MigrationMode: castwarev1alpha1.ClusterMigrationModeWrite,
+				Provider:      gke.Name,
+				APIKeySecret:  "api-key-secret",
+				API: castwarev1alpha1.APISpec{
+					APIURL: apiServer.URL,
+				},
+			},
+		}
+		apiKeySecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "api-key-secret",
+				Namespace: "test-namespace",
+			},
+			Data: map[string][]byte{"API_KEY": []byte("api-key")},
+		}
+
+		testOps := newClusterTestOps(t, cluster, apiKeySecret)
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: cluster.Name, Namespace: cluster.Namespace}}
+
+		_, err := testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+
+		actualCluster := &castwarev1alpha1.Cluster{}
+		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
+		r.NoError(err)
+		r.NotEmpty(actualCluster.Spec.Cluster.ClusterID)
+
+		_, err = testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
+		r.NoError(err)
+
+		availableCondition := meta.FindStatusCondition(actualCluster.Status.Conditions, typeAvailableCluster)
+		r.NotNil(availableCondition)
+		r.Equal(metav1.ConditionTrue, availableCondition.Status)
+	})
+}
+
 type clusterTestOps struct {
-	sut      *ClusterReconciler
-	mockHelm *mock_helm.MockClient
+	sut             *ClusterReconciler
+	mockHelm        *mock_helm.MockClient
+	mockChartLoader *mock_helm.MockChartLoader
 }
 
 func newClusterTestOps(t *testing.T, objs ...client.Object) *clusterTestOps {
@@ -740,15 +817,21 @@ func newClusterTestOps(t *testing.T, objs ...client.Object) *clusterTestOps {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).WithStatusSubresource(objs...).Build()
 
 	ctrl := gomock.NewController(t)
+	mockChartLoader := mock_helm.NewMockChartLoader(ctrl)
 	mockHelm := mock_helm.NewMockClient(ctrl)
 
 	opts := &clusterTestOps{
-		mockHelm: mockHelm,
+		mockHelm:        mockHelm,
+		mockChartLoader: mockChartLoader,
 		sut: &ClusterReconciler{
-			Client:     c,
-			Scheme:     c.Scheme(),
-			Log:        logrus.New(),
-			HelmClient: mockHelm,
+			Client:      c,
+			Scheme:      c.Scheme(),
+			Log:         logrus.New(),
+			Config:      &config.Config{RequestTimeout: time.Second},
+			HelmClient:  mockHelm,
+			ChartLoader: mockChartLoader,
+			Clientset:   nil,
+			RestConfig:  nil,
 		},
 	}
 
@@ -768,4 +851,32 @@ func newTestCluster(t *testing.T, clusterID string) *castwarev1alpha1.Cluster {
 			},
 		},
 	}
+}
+
+func newTestApiServer(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	dummyUser, _ := json.Marshal(castaitest.CreateUserObject())
+
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/me":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(dummyUser)
+			return
+		case "/v1/kubernetes/external-clusters":
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"id": "%s", "organizationId": "%s"}`, uuid.NewString(), uuid.NewString())))
+
+			w.WriteHeader(http.StatusOK)
+			return
+		default:
+			Fail(fmt.Sprintf("Unexpected request path: %s", r.URL.Path))
+		}
+	}))
+	return apiServer
 }
