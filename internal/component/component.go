@@ -1,11 +1,15 @@
-package component
+package components
 
 import "github.com/samber/lo"
+
+const (
+	ComponentNameAgent = "castai-agent"
+)
 
 func IsSupported(name string) bool {
 	// List of supported components
 	supportedComponents := []string{
-		"castai-agent",
+		ComponentNameAgent,
 	}
 	return lo.Contains(supportedComponents, name)
 }
