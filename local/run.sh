@@ -190,7 +190,8 @@ fi
 rm -rf ${CERTS_DIR}
 mkdir -p ${CERTS_DIR}
 cd ${LOCAL_DIR}/..
-go run cmd/main.go
+
+go run github.com/castai/castware-operator/cmd
 log "Webhook certificates configured, restarting."
 
 # -------- 12) Load certs from secret and restart --------
@@ -210,5 +211,5 @@ kubectl get secret "$CERTS_SECRET_NAME" -n "$NAMESPACE" -o yaml \
   done
 
 log "Restarting operator"
-go run cmd/main.go
+go run github.com/castai/castware-operator/cmd
 
