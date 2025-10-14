@@ -80,6 +80,7 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 		Release:              helmRelease,
 		ResetThenReuseValues: true,
 		DryRun:               true,
+		Recreate:             true,
 	}
 	_, err = s.helmClient.Upgrade(ctx, upgradeOptions)
 	if err != nil {
@@ -148,6 +149,7 @@ func (s *Service) checkReleaseStatus(ctx context.Context, log *logrus.Entry, get
 			switch helmRelease.Info.Status {
 			case release.StatusDeployed:
 				log.Info("Upgrade successful")
+				// TODO: p4 - check pod readiness
 				return nil
 			case release.StatusFailed:
 				return fmt.Errorf("helm is in failed status: %s", helmRelease.Info.Description)

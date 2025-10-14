@@ -13,6 +13,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	controllerruntime "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 )
 
 func newUpgradeCmd() *cobra.Command {
@@ -44,24 +45,29 @@ func newUpgradeCmd() *cobra.Command {
 			}
 
 			restConfig := controllerruntime.GetConfigOrDie()
-			mgr, err := controllerruntime.NewManager(restConfig, controllerruntime.Options{
-				Logger: controllerruntime.Log,
-				Scheme: scheme,
+			client, err := cluster.New(restConfig, func(options *cluster.Options) {
+				options.Scheme = scheme
 			})
 			if err != nil {
-				log.WithError(err).Error("unable to start manager")
-				return fmt.Errorf("unable to start manager: %w", err)
+				return fmt.Errorf("failed to create cluster client: %w", err)
 			}
+
+			ctx, cancel := context.WithTimeout(controllerruntime.SetupSignalHandler(), time.Minute*10)
+			defer cancel()
+
+			go func() {
+				err = client.Start(ctx)
+				if err != nil {
+					log.WithError(err).Error("failed to start cluster client")
+					cancel()
+				}
+			}()
 
 			chartLoader := helm.NewChartLoader(log)
 			helmClient := helm.NewClient(log, chartLoader, restConfig)
 
-			svc := selfupgrade.NewService(mgr.GetClient(), helmClient, cfg, log, clusterCrName, clusterCrNamespace)
+			svc := selfupgrade.NewService(client.GetClient(), helmClient, cfg, log, clusterCrName, clusterCrNamespace)
 
-			ctx, cancel := context.WithTimeout(context.Background(), time.Minute*10)
-			defer cancel()
-
-			log.Warn("Upgrade command not implemented")
 			return svc.Run(ctx, targetVersion)
 		},
 	}
