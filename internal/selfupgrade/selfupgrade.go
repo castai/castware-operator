@@ -20,7 +20,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-var errUninstalled = errors.New("helm release is uninstalled")
+var (
+	errUninstalled   = errors.New("helm release is uninstalled")
+	errStatusUnknown = errors.New("helm release status is unknown")
+)
 
 func NewService(client client.Client, helmClient helm.Client, config *config.Config, log logrus.FieldLogger, clusterCrName string, clusterCrNamespace string) *Service {
 	return &Service{Client: client, helmClient: helmClient, config: config, log: log, clusterCrName: clusterCrName, clusterCrNamespace: clusterCrNamespace}
@@ -93,8 +96,8 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 	previousVersion := helmRelease.Chart.Metadata.Version
 	helmRelease, err = s.helmClient.Upgrade(ctx, upgradeOptions)
 	if err != nil {
-		log.WithError(err).Error("Upgrade dry run failed")
-		return fmt.Errorf("upgrade dry run failed: %w", err)
+		log.WithError(err).Error("Upgrade run failed")
+		return fmt.Errorf("upgrade run failed: %w", err)
 	}
 	log.Infof("Upgrade started, release name: %s -> %s", previousVersion, helmRelease.Chart.Metadata.Version)
 	err = s.checkReleaseStatus(ctx, log, getReleaseOptions)
@@ -126,6 +129,7 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 }
 func (s *Service) checkReleaseStatus(ctx context.Context, log *logrus.Entry, getReleaseOptions helm.GetReleaseOptions) error {
 	t := time.NewTicker(time.Second * 5)
+	defer t.Stop()
 	var (
 		helmRelease *release.Release
 		err         error
@@ -160,6 +164,11 @@ func (s *Service) checkReleaseStatus(ctx context.Context, log *logrus.Entry, get
 				// Nothing to do, just wait for the ticker and get the latest status
 			case release.StatusPendingUpgrade, release.StatusPendingInstall, release.StatusPendingRollback:
 				log.Info("Upgrade still in progress, waiting for it to complete")
+			case release.StatusUnknown:
+				// Status is unknown, it shouldn't happen, but if it does,
+				// the only thing we can do is trying to rollback.
+				log.Warn("Helm release status is unknown")
+				return errStatusUnknown
 			}
 		case <-ctx.Done():
 			log.Error("Upgrade canceled for timeout")
