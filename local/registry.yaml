@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: registry
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chartmuseum
+  namespace: registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chartmuseum
+  template:
+    metadata:
+      labels:
+        app: chartmuseum
+    spec:
+      containers:
+        - name: chartmuseum
+          image: ghcr.io/helm/chartmuseum:v0.16.0
+          ports:
+            - containerPort: 8080
+          env:
+            - name: STORAGE
+              value: local
+            - name: STORAGE_LOCAL_ROOTDIR
+              value: /charts
+            - name: CONTEXT_PATH
+              value: /helm-charts
+            - name: CHART_URL
+              value: http://chartmuseum.registry.svc.cluster.local:8080
+          volumeMounts:
+            - name: charts-storage
+              mountPath: /charts
+      volumes:
+        - name: charts-storage
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chartmuseum
+  namespace: registry
+spec:
+  type: NodePort
+  selector:
+    app: chartmuseum
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30500
