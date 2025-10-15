@@ -15,6 +15,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/release"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,10 +48,16 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 			log.Info("cluster resource not found")
 			return err
 		}
-		// Error reading the object - requeue the request.
+		// Error reading the object.
 		log.WithError(err).Error("Failed to get cluster")
 		return err
 	}
+	defer func() {
+		// TODO: set UpgradeJobName to empty string
+		if err := s.updateStatus(ctx, cluster); err != nil {
+			log.WithError(err).Error("Failed to update status")
+		}
+	}()
 
 	auth := auth.NewAuth(cluster.Namespace, cluster.Name)
 	if err := auth.LoadApiKey(ctx, s.Client); err != nil {
@@ -99,7 +106,28 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 		log.WithError(err).Error("Upgrade run failed")
 		return fmt.Errorf("upgrade run failed: %w", err)
 	}
-	log.Infof("Upgrade started, release name: %s -> %s", previousVersion, helmRelease.Chart.Metadata.Version)
+	currentVersion := helmRelease.Chart.Metadata.Version
+	defer func() {
+		if cluster.Spec.Cluster != nil && cluster.Spec.Cluster.ClusterID != "" {
+			actionResult := &castai.ComponentActionResult{
+				Name:           components.ComponentNameOperator,
+				Action:         castai.Action_UPGRADE,
+				CurrentVersion: currentVersion,
+				Version:        previousVersion,
+				Status:         castai.Status_OK,
+				ReleaseName:    helmRelease.Name,
+			}
+			if err != nil {
+				actionResult.Message = err.Error()
+				actionResult.Status = castai.Status_ERROR
+			}
+			err = castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, actionResult)
+			if err != nil {
+				log.WithError(err).Error("Failed to record action result")
+			}
+		}
+	}()
+	log.Infof("Upgrade started, release name: %s -> %s", previousVersion, currentVersion)
 	err = s.checkReleaseStatus(ctx, log, getReleaseOptions)
 	if err != nil {
 		// If context was canceled or timed out, return the error and do not attempt to rollback
@@ -123,10 +151,10 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 		return err
 	}
 
-	// TODO: p3 RecordActionResult if action id was specified
 	// TODO: p3 set cluster CR status to upgraded (remove upgrade job id)
 	return nil
 }
+
 func (s *Service) checkReleaseStatus(ctx context.Context, log *logrus.Entry, getReleaseOptions helm.GetReleaseOptions) error {
 	t := time.NewTicker(time.Second * 5)
 	defer t.Stop()
@@ -175,4 +203,21 @@ func (s *Service) checkReleaseStatus(ctx context.Context, log *logrus.Entry, get
 			return ctx.Err()
 		}
 	}
+}
+
+func (s *Service) updateStatus(ctx context.Context, cluster *castwarev1alpha1.Cluster) error {
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		var latestCluster castwarev1alpha1.Cluster
+		if err := s.Get(ctx, types.NamespacedName{
+			Name:      cluster.Name,
+			Namespace: cluster.Namespace,
+		}, &latestCluster); err != nil {
+			return err
+		}
+
+		// Modify latestCluster.Status here
+		latestCluster.Status = cluster.Status
+
+		return s.Status().Update(ctx, &latestCluster)
+	})
 }
