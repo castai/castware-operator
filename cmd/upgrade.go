@@ -12,7 +12,9 @@ import (
 	"github.com/castai/castware-operator/internal/selfupgrade"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	v1 "k8s.io/api/core/v1"
 	controllerruntime "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 )
 
@@ -47,6 +49,11 @@ func newUpgradeCmd() *cobra.Command {
 			restConfig := controllerruntime.GetConfigOrDie()
 			client, err := cluster.New(restConfig, func(options *cluster.Options) {
 				options.Scheme = scheme
+				options.Client.Cache = &client.CacheOptions{
+					DisableFor: []client.Object{
+						&v1.Secret{},
+					},
+				}
 			})
 			if err != nil {
 				return fmt.Errorf("failed to create cluster client: %w", err)
@@ -62,6 +69,11 @@ func newUpgradeCmd() *cobra.Command {
 					cancel()
 				}
 			}()
+
+			cacheSynced := client.GetCache().WaitForCacheSync(ctx)
+			if !cacheSynced {
+				return errors.New("failed to sync cache")
+			}
 
 			chartLoader := helm.NewChartLoader(log)
 			helmClient := helm.NewClient(log, chartLoader, restConfig)

@@ -66,6 +66,27 @@ func TestSelfUpgrade(t *testing.T) {
 		}
 		r.NoError(testOps.sut.Create(ctx, secret))
 
+		// Create a mock pod that will be ready after upgrade
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "castware-operator-pod",
+				Namespace: "test-namespace",
+				Labels: map[string]string{
+					"app.kubernetes.io/instance": "castware-operator",
+				},
+			},
+			Status: corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				Conditions: []corev1.PodCondition{
+					{
+						Type:   corev1.PodReady,
+						Status: corev1.ConditionTrue,
+					},
+				},
+			},
+		}
+		r.NoError(testOps.sut.Create(ctx, pod))
+
 		// Mock the initial GetRelease call
 		initialRelease := createMockRelease("castware-operator", "0.1.0", "test-namespace")
 		testOps.mockHelm.EXPECT().
@@ -373,6 +394,195 @@ func TestSelfUpgrade(t *testing.T) {
 		err := testOps.sut.Run(ctx, "v0.1.1")
 		r.Error(err)
 		r.Contains(err.Error(), "failed to get helm release")
+	})
+
+	t.Run("should fail when pod has ImagePullBackOff after upgrade", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+
+		testCluster := newTestCluster(t, server)
+		testOps := newTestOps(t, testCluster)
+
+		// Create a fake secret for API key
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-api-secret",
+				Namespace: "test-namespace",
+			},
+			Data: map[string][]byte{
+				"API_KEY": []byte("test-api-key"),
+			},
+		}
+		r.NoError(testOps.sut.Create(ctx, secret))
+
+		// Create a mock pod with ImagePullBackOff (wrong image tag)
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "castware-operator-pod",
+				Namespace: "test-namespace",
+				Labels: map[string]string{
+					"app.kubernetes.io/instance": "castware-operator",
+				},
+			},
+			Status: corev1.PodStatus{
+				Phase: corev1.PodPending,
+				ContainerStatuses: []corev1.ContainerStatus{
+					{
+						Name: "castware-operator",
+						State: corev1.ContainerState{
+							Waiting: &corev1.ContainerStateWaiting{
+								Reason:  "ImagePullBackOff",
+								Message: "Back-off pulling image \"castai/castware-operator:invalid-tag\"",
+							},
+						},
+						Ready: false,
+					},
+				},
+			},
+		}
+		r.NoError(testOps.sut.Create(ctx, pod))
+
+		// Mock the initial GetRelease call
+		initialRelease := createMockRelease("castware-operator", "0.1.0", "test-namespace")
+		testOps.mockHelm.EXPECT().
+			GetRelease(gomock.Any()).
+			Return(initialRelease, nil).
+			Times(1)
+
+		// Mock the dry run upgrade
+		testOps.mockHelm.EXPECT().
+			Upgrade(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(ctx context.Context, opts helm.UpgradeOptions) (*release.Release, error) {
+				r.True(opts.DryRun)
+				return createMockRelease("castware-operator", "v0.1.1", "test-namespace"), nil
+			}).
+			Times(1)
+
+		// Mock the actual upgrade
+		upgradedRelease := createMockRelease("castware-operator", "v0.1.1", "test-namespace")
+		upgradedRelease.Info.Status = release.StatusPendingUpgrade
+		testOps.mockHelm.EXPECT().
+			Upgrade(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(ctx context.Context, opts helm.UpgradeOptions) (*release.Release, error) {
+				r.False(opts.DryRun)
+				return upgradedRelease, nil
+			}).
+			Times(1)
+
+		// Mock GetRelease to return deployed status
+		deployedRelease := createMockRelease("castware-operator", "v0.1.1", "test-namespace")
+		deployedRelease.Info.Status = release.StatusDeployed
+		testOps.mockHelm.EXPECT().
+			GetRelease(gomock.Any()).
+			Return(deployedRelease, nil).
+			MinTimes(1)
+
+		// Mock the rollback
+		testOps.mockHelm.EXPECT().
+			Rollback(gomock.Any()).
+			DoAndReturn(func(opts helm.RollbackOptions) error {
+				r.Equal("test-namespace", opts.Namespace)
+				r.Equal("castware-operator", opts.ReleaseName)
+				return nil
+			}).
+			Times(1)
+
+		ctxWithTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+
+		err := testOps.sut.Run(ctxWithTimeout, "v0.1.1")
+		r.Error(err)
+		r.Contains(err.Error(), "pods failed to start")
+	})
+
+	t.Run("should fail when pod is in CrashLoopBackOff after upgrade", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+
+		testCluster := newTestCluster(t, server)
+		testOps := newTestOps(t, testCluster)
+
+		// Create a fake secret for API key
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-api-secret",
+				Namespace: "test-namespace",
+			},
+			Data: map[string][]byte{
+				"API_KEY": []byte("test-api-key"),
+			},
+		}
+		r.NoError(testOps.sut.Create(ctx, secret))
+
+		// Create a mock pod with CrashLoopBackOff
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "castware-operator-pod",
+				Namespace: "test-namespace",
+				Labels: map[string]string{
+					"app.kubernetes.io/instance": "castware-operator",
+				},
+			},
+			Status: corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				ContainerStatuses: []corev1.ContainerStatus{
+					{
+						Name: "castware-operator",
+						State: corev1.ContainerState{
+							Waiting: &corev1.ContainerStateWaiting{
+								Reason:  "CrashLoopBackOff",
+								Message: "Back-off 5m0s restarting failed container",
+							},
+						},
+						Ready:        false,
+						RestartCount: 5,
+					},
+				},
+			},
+		}
+		r.NoError(testOps.sut.Create(ctx, pod))
+
+		// Mock the initial GetRelease call
+		initialRelease := createMockRelease("castware-operator", "0.1.0", "test-namespace")
+		testOps.mockHelm.EXPECT().
+			GetRelease(gomock.Any()).
+			Return(initialRelease, nil).
+			Times(1)
+
+		// Mock the dry run upgrade
+		testOps.mockHelm.EXPECT().
+			Upgrade(gomock.Any(), gomock.Any()).
+			Return(createMockRelease("castware-operator", "v0.1.1", "test-namespace"), nil).
+			Times(1)
+
+		// Mock the actual upgrade
+		testOps.mockHelm.EXPECT().
+			Upgrade(gomock.Any(), gomock.Any()).
+			Return(createMockRelease("castware-operator", "v0.1.1", "test-namespace"), nil).
+			Times(1)
+
+		// Mock GetRelease to return deployed status
+		deployedRelease := createMockRelease("castware-operator", "v0.1.1", "test-namespace")
+		deployedRelease.Info.Status = release.StatusDeployed
+		testOps.mockHelm.EXPECT().
+			GetRelease(gomock.Any()).
+			Return(deployedRelease, nil).
+			MinTimes(1)
+
+		// Mock the rollback
+		testOps.mockHelm.EXPECT().
+			Rollback(gomock.Any()).
+			Return(nil).
+			Times(1)
+
+		ctxWithTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+
+		err := testOps.sut.Run(ctxWithTimeout, "v0.1.1")
+		r.Error(err)
+		r.Contains(err.Error(), "pods failed to start")
 	})
 }
 
