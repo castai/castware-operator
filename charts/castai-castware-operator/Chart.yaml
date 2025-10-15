@@ -3,4 +3,4 @@ name: castware-operator
 description: CAST AI operator for managing Castware components.
 type: application
 version: 0.0.7
-appVersion: "0.0.7"
+appVersion: "v0.0.7"
