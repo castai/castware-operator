@@ -126,9 +126,7 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 			// err = errors.Join(err, rollbackErr)
 			log.WithError(rollbackErr).Error("Rollback failed")
 		}
-		// If we return error after rollback the job will be marked as failed and will restart,
-		// trying to upgrade again, failing again and rolling back again.
-		return nil
+		return err
 	}
 
 	// TODO: p3 RecordActionResult if action id was specified
