@@ -1,0 +1,43 @@
+{{- if .Values.defaultCluster.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-webhook-wait
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: post-install, post-upgrade
+    helm.sh/hook-weight: "1"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+  labels:
+    {{- include "castware-operator.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      name: {{ include "castware-operator.fullname" . }}-webhook-wait
+      labels:
+        {{- include "castware-operator.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "castware-operator.fullname" . }}-controller-manager
+      containers:
+      - name: wait
+        image: bitnami/kubectl:latest
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Waiting for webhook service to be ready..."
+          kubectl wait --for=condition=ready pod \
+            -l app.kubernetes.io/name={{ include "castware-operator.name" . }} \
+            -n {{ .Release.Namespace }} \
+            --timeout=120s
+
+          echo "Waiting for webhook endpoint to respond..."
+          # Give the webhook server a few more seconds to be fully ready
+          sleep 5
+
+          echo "Webhook is ready!"
+{{- end }}
