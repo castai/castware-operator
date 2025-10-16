@@ -40,6 +40,7 @@ export CERTS_ROTATION=true
 export NAMESPACE=castai-agent
 export CERTS_SECRET_NAME="castware-operator-certs"
 export WEBHOOK_SERVICE_DNS_NAME=host.docker.internal
+KIND_CLUSTER_CREATED=false
 
 # -------- 3) Ensure yq is installed (latest) --------
 install_yq_latest() {
@@ -100,14 +101,43 @@ if kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
   log "kind cluster '$CLUSTER_NAME' already exists."
 else
   warn "kind cluster '$CLUSTER_NAME' not found. Creating…"
-  kind create cluster --name "$CLUSTER_NAME"
+  kind create cluster --name "$CLUSTER_NAME" --config - <<EOF
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30500
+        hostPort: 5001
+        protocol: TCP
+EOF
+  KIND_CLUSTER_CREATED=true
   log "Created kind cluster '$CLUSTER_NAME'."
 fi
 
-# -------- 5) Switch kube context to this cluster --------
+# -------- 5) Switch kube context to this cluster and configure containerd for local registry --------
 CONTEXT="kind-${CLUSTER_NAME}"
 kubectl config use-context "$CONTEXT" >/dev/null
 log "Switched kubectl context to '$CONTEXT'."
+
+if [ "$KIND_CLUSTER_CREATED" = true ]; then
+  log "Configuring containerd for local registry..."
+  docker exec "${CLUSTER_NAME}-control-plane" sh -c "cat >> /etc/containerd/config.toml" <<EOF
+
+[plugins."io.containerd.grpc.v1.cri".registry.configs."registry.registry.svc.cluster.local:5000"]
+  [plugins."io.containerd.grpc.v1.cri".registry.configs."registry.registry.svc.cluster.local:5000".tls]
+    insecure_skip_verify = true
+
+[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"]
+  endpoint = ["http://registry.registry.svc.cluster.local:5000"]
+EOF
+
+  # Restart containerd
+  docker exec "${CLUSTER_NAME}-control-plane" systemctl restart containerd
+  log "Containerd configured and restarted."
+  kubectl apply -f $LOCAL_DIR/registry.yaml
+  log "Local Helm registry created"
+fi
 
 # -------- 6) Optionally run `make build-installer` --------
 if [ -z "${MAKELEVEL:-}" ]; then
