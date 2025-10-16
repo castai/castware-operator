@@ -26,12 +26,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/release"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	kubernetesfake "k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -814,11 +816,17 @@ func newClusterTestOps(t *testing.T, objs ...client.Object) *clusterTestOps {
 	err = corev1.AddToScheme(scheme)
 	r.NoError(err)
 
+	err = batchv1.AddToScheme(scheme)
+	r.NoError(err)
+
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).WithStatusSubresource(objs...).Build()
 
 	ctrl := gomock.NewController(t)
 	mockChartLoader := mock_helm.NewMockChartLoader(ctrl)
 	mockHelm := mock_helm.NewMockClient(ctrl)
+
+	// Create a fake Clientset for pod log reading operations
+	fakeClientset := kubernetesfake.NewClientset()
 
 	opts := &clusterTestOps{
 		mockHelm:        mockHelm,
@@ -830,7 +838,7 @@ func newClusterTestOps(t *testing.T, objs ...client.Object) *clusterTestOps {
 			Config:      &config.Config{RequestTimeout: time.Second},
 			HelmClient:  mockHelm,
 			ChartLoader: mockChartLoader,
-			Clientset:   nil,
+			Clientset:   fakeClientset,
 			RestConfig:  nil,
 		},
 	}
