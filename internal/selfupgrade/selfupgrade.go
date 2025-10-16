@@ -151,7 +151,6 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 		return err
 	}
 
-	// TODO: p3 set cluster CR status to upgraded (remove upgrade job id)
 	return nil
 }
 
