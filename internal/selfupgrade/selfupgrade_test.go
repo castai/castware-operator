@@ -74,24 +74,7 @@ func TestSelfUpgrade(t *testing.T) {
 		r.NoError(testOps.sut.Create(ctx, secret))
 
 		// Create a mock pod that will be ready after upgrade
-		pod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "castware-operator-pod",
-				Namespace: "test-namespace",
-				Labels: map[string]string{
-					"app.kubernetes.io/instance": "castware-operator",
-				},
-			},
-			Status: corev1.PodStatus{
-				Phase: corev1.PodRunning,
-				Conditions: []corev1.PodCondition{
-					{
-						Type:   corev1.PodReady,
-						Status: corev1.ConditionTrue,
-					},
-				},
-			},
-		}
+		pod := newTestPod(t)
 		r.NoError(testOps.sut.Create(ctx, pod))
 
 		// Mock the initial GetRelease call
@@ -449,6 +432,10 @@ func TestSelfUpgrade(t *testing.T) {
 		}
 		r.NoError(testOps.sut.Create(ctx, secret))
 
+		// Create a mock pod that will be ready after upgrade
+		pod := newTestPod(t)
+		r.NoError(testOps.sut.Create(ctx, pod))
+
 		// Mock the initial GetRelease call
 		initialRelease := createMockRelease("castware-operator", "0.1.0", "test-namespace")
 		testOps.mockHelm.EXPECT().
@@ -595,6 +582,7 @@ func TestSelfUpgrade(t *testing.T) {
 		r.Equal(castai.Status_ERROR, actionResult.Status)
 		r.Equal("helm is in failed status: upgrade failed due to pod crash", actionResult.Message)
 	})
+
 	t.Run("should fail when pod has ImagePullBackOff after upgrade", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
@@ -785,6 +773,367 @@ func TestSelfUpgrade(t *testing.T) {
 	})
 }
 
+func TestCheckPodsReadiness(t *testing.T) {
+	t.Run("should return true when all pods are ready", func(t *testing.T) {
+		r := require.New(t)
+
+		podList := &corev1.PodList{
+			Items: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "pod-1",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{
+								Type:   corev1.PodReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "pod-2",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{
+								Type:   corev1.PodReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		allReady, failedPods := checkPodsReadiness(podList)
+		r.True(allReady)
+		r.Empty(failedPods)
+	})
+
+	t.Run("should return false when some pods are not ready", func(t *testing.T) {
+		r := require.New(t)
+
+		podList := &corev1.PodList{
+			Items: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "pod-1",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{
+								Type:   corev1.PodReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "pod-2",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodPending,
+						Conditions: []corev1.PodCondition{
+							{
+								Type:   corev1.PodReady,
+								Status: corev1.ConditionFalse,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		allReady, failedPods := checkPodsReadiness(podList)
+		r.False(allReady)
+		r.Empty(failedPods) // Not ready but not failed either
+	})
+
+	t.Run("should detect pod in Failed phase", func(t *testing.T) {
+		r := require.New(t)
+
+		podList := &corev1.PodList{
+			Items: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "failed-pod",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodFailed,
+					},
+				},
+			},
+		}
+
+		allReady, failedPods := checkPodsReadiness(podList)
+		r.False(allReady)
+		r.Len(failedPods, 1)
+		r.Equal("failed-pod", failedPods[0].Name)
+	})
+
+	t.Run("should detect pod with ImagePullBackOff", func(t *testing.T) {
+		r := require.New(t)
+
+		podList := &corev1.PodList{
+			Items: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "image-pull-pod",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodPending,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name: "container-1",
+								State: corev1.ContainerState{
+									Waiting: &corev1.ContainerStateWaiting{
+										Reason:  "ImagePullBackOff",
+										Message: "Back-off pulling image",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		allReady, failedPods := checkPodsReadiness(podList)
+		r.False(allReady)
+		r.Len(failedPods, 1)
+		r.Equal("image-pull-pod", failedPods[0].Name)
+	})
+
+	t.Run("should detect pod with ErrImagePull", func(t *testing.T) {
+		r := require.New(t)
+
+		podList := &corev1.PodList{
+			Items: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "err-image-pull-pod",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodPending,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name: "container-1",
+								State: corev1.ContainerState{
+									Waiting: &corev1.ContainerStateWaiting{
+										Reason:  "ErrImagePull",
+										Message: "Failed to pull image",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		allReady, failedPods := checkPodsReadiness(podList)
+		r.False(allReady)
+		r.Len(failedPods, 1)
+		r.Equal("err-image-pull-pod", failedPods[0].Name)
+	})
+
+	t.Run("should detect pod with CrashLoopBackOff", func(t *testing.T) {
+		r := require.New(t)
+
+		podList := &corev1.PodList{
+			Items: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "crash-loop-pod",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name: "container-1",
+								State: corev1.ContainerState{
+									Waiting: &corev1.ContainerStateWaiting{
+										Reason:  "CrashLoopBackOff",
+										Message: "Back-off restarting failed container",
+									},
+								},
+								RestartCount: 5,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		allReady, failedPods := checkPodsReadiness(podList)
+		r.False(allReady)
+		r.Len(failedPods, 1)
+		r.Equal("crash-loop-pod", failedPods[0].Name)
+	})
+
+	t.Run("should handle multiple containers in a pod", func(t *testing.T) {
+		r := require.New(t)
+
+		podList := &corev1.PodList{
+			Items: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "multi-container-pod",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodPending,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name: "container-1",
+								State: corev1.ContainerState{
+									Running: &corev1.ContainerStateRunning{},
+								},
+								Ready: true,
+							},
+							{
+								Name: "container-2",
+								State: corev1.ContainerState{
+									Waiting: &corev1.ContainerStateWaiting{
+										Reason: "CrashLoopBackOff",
+									},
+								},
+								Ready: false,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		allReady, failedPods := checkPodsReadiness(podList)
+		r.False(allReady)
+		r.Len(failedPods, 1)
+		r.Equal("multi-container-pod", failedPods[0].Name)
+	})
+
+	t.Run("should handle empty pod list", func(t *testing.T) {
+		r := require.New(t)
+
+		podList := &corev1.PodList{
+			Items: []corev1.Pod{},
+		}
+
+		allReady, failedPods := checkPodsReadiness(podList)
+		r.True(allReady) // No pods means all are ready
+		r.Empty(failedPods)
+	})
+
+	t.Run("should not flag pods with ContainerCreating", func(t *testing.T) {
+		r := require.New(t)
+
+		podList := &corev1.PodList{
+			Items: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "creating-pod",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodPending,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name: "container-1",
+								State: corev1.ContainerState{
+									Waiting: &corev1.ContainerStateWaiting{
+										Reason: "ContainerCreating",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		allReady, failedPods := checkPodsReadiness(podList)
+		r.False(allReady)   // Not ready yet
+		r.Empty(failedPods) // But not failed
+	})
+
+	t.Run("should handle mixed pod states", func(t *testing.T) {
+		r := require.New(t)
+
+		podList := &corev1.PodList{
+			Items: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "ready-pod",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{
+								Type:   corev1.PodReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "pending-pod",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodPending,
+						Conditions: []corev1.PodCondition{
+							{
+								Type:   corev1.PodReady,
+								Status: corev1.ConditionFalse,
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "failed-pod",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodFailed,
+					},
+				},
+			},
+		}
+
+		allReady, failedPods := checkPodsReadiness(podList)
+		r.False(allReady)
+		r.Len(failedPods, 1)
+		r.Equal("failed-pod", failedPods[0].Name)
+	})
+
+	t.Run("should detect pod without Ready condition as not ready", func(t *testing.T) {
+		r := require.New(t)
+
+		podList := &corev1.PodList{
+			Items: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "no-condition-pod",
+					},
+					Status: corev1.PodStatus{
+						Phase:      corev1.PodRunning,
+						Conditions: []corev1.PodCondition{},
+					},
+				},
+			},
+		}
+
+		allReady, failedPods := checkPodsReadiness(podList)
+		r.False(allReady)
+		r.Empty(failedPods)
+	})
+}
+
 type testOps struct {
 	sut      *Service
 	mockHelm *mock_helm.MockClient
@@ -839,6 +1188,28 @@ func newTestCluster(t *testing.T, server *httptest.Server) *castwarev1alpha1.Clu
 			},
 			APIKeySecret: "test-api-secret",
 			HelmRepoURL:  "https://castai.github.io/helm-charts",
+		},
+	}
+}
+
+func newTestPod(t *testing.T) *corev1.Pod {
+	t.Helper()
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "castware-operator-pod-" + uuid.NewString(),
+			Namespace: "test-namespace",
+			Labels: map[string]string{
+				"app.kubernetes.io/instance": "castware-operator",
+			},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{
+				{
+					Type:   corev1.PodReady,
+					Status: corev1.ConditionTrue,
+				},
+			},
 		},
 	}
 }

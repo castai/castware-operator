@@ -16,7 +16,6 @@ import (
 	"helm.sh/helm/v3/pkg/release"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -183,7 +182,6 @@ func (s *Service) checkReleaseStatus(ctx context.Context, log *logrus.Entry, get
 					return fmt.Errorf("upgrade deployed but pods failed to start: %w", err)
 				}
 				log.Info("Upgrade successful")
-				// TODO: p4 - check pod readiness
 				return nil
 			case release.StatusFailed:
 				return fmt.Errorf("helm is in failed status: %s", helmRelease.Info.Description)
@@ -205,23 +203,6 @@ func (s *Service) checkReleaseStatus(ctx context.Context, log *logrus.Entry, get
 			return ctx.Err()
 		}
 	}
-}
-
-func (s *Service) updateStatus(ctx context.Context, cluster *castwarev1alpha1.Cluster) error {
-	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		var latestCluster castwarev1alpha1.Cluster
-		if err := s.Get(ctx, types.NamespacedName{
-			Name:      cluster.Name,
-			Namespace: cluster.Namespace,
-		}, &latestCluster); err != nil {
-			return err
-		}
-
-		// Modify latestCluster.Status here
-		latestCluster.Status = cluster.Status
-
-		return s.Status().Update(ctx, &latestCluster)
-	})
 }
 
 // waitForPodsReady waits for all pods associated with the Helm release to be ready.
