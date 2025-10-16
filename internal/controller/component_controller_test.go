@@ -180,6 +180,7 @@ func TestReconcile(t *testing.T) {
 			r.NoError(err)
 		})
 	})
+
 	t.Run("when migrating from yaml", func(t *testing.T) {
 		t.Run("should set status condition to progressing and finalizer on the first reconcile loop", func(t *testing.T) {
 			t.Parallel()
@@ -353,6 +354,40 @@ func TestReconcile(t *testing.T) {
 
 			availableCondition := meta.FindStatusCondition(actualComponent.Status.Conditions, typeAvailableComponent)
 			r.Equal(metav1.ConditionTrue, availableCondition.Status)
+		})
+	})
+
+	t.Run("when component is readonly", func(t *testing.T) {
+		t.Run("should update currentVersion if it's different from helm version", func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			r := require.New(t)
+
+			testCluster := newTestCluster(t, uuid.NewString())
+			testComponent := newTestComponent(t, testCluster.Name, "test-component")
+			testComponent.Spec.Readonly = true
+
+			testOps := newComponentTestOps(t, testCluster, testComponent)
+			testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+				Namespace:   testComponent.Namespace,
+				ReleaseName: testComponent.Spec.Component,
+			}).Return(&release.Release{
+				Chart: &chart.Chart{
+					Metadata: &chart.Metadata{
+						Version: "0.2.1",
+					},
+				},
+			}, nil)
+
+			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+			_, err := testOps.sut.Reconcile(ctx, req)
+			r.NoError(err)
+
+			var actualComponent castwarev1alpha1.Component
+			err = testOps.sut.Client.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+			r.NoError(err)
+
+			r.Equal("0.2.1", actualComponent.Status.CurrentVersion)
 		})
 	})
 }

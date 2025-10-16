@@ -114,6 +114,30 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.deleteComponent(ctx, log.WithField("action", "delete"), component)
 	}
 
+	// If the component is marked as readonly we just check if the helm chart is installed
+	// and update the status accordingly.
+	if component.Spec.Readonly {
+		helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+			Namespace:   component.Namespace,
+			ReleaseName: component.Spec.Component,
+		})
+		if err != nil {
+			log.WithError(err).Error("Failed to get helm release")
+			// Helm release not found, nothing to do.
+			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+		}
+		if component.Status.CurrentVersion != helmRelease.Chart.Metadata.Version {
+			log.Info("Component version changed, updating current version in component status")
+			component.Status.CurrentVersion = helmRelease.Chart.Metadata.Version
+			if err := r.updateStatus(ctx, component); err != nil {
+				log.WithError(err).Error("Failed to update component status")
+				return ctrl.Result{}, err
+			}
+		}
+
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+	}
+
 	if !controllerutil.ContainsFinalizer(component, componentFinalizer) {
 		controllerutil.AddFinalizer(component, componentFinalizer)
 		if err := r.Update(ctx, component); err != nil {
