@@ -101,5 +101,5 @@ kind delete cluster --name castware-operator
 #### Test self upgrade from helm registry
 1. Push at least two versions to the local registry (change `version` and `appVersion` in `Chart.yaml` before running `helm package`)
 2. Install the operator from the local registry
-3. Change `helmRepoURL` in cluster CR to `http://localhost:5001` to `http://chartmuseum.registry.svc.cluster.local:8080/helm-charts`
+3. Change `helmRepoURL` in cluster CR to `http://chartmuseum.registry.svc.cluster.local:8080/helm-charts`
 4. Run self upgrade from a job manifest or an action
