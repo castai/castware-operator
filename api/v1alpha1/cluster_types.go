@@ -99,6 +99,8 @@ type ClusterStatus struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=status
 	Conditions        []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
 	LastSecretVersion string             `json:"lastSecretVersion,omitempty"`
+	// UpgradeJobName is the name of an upgrade operator job
+	UpgradeJobName string `json:"upgradeJobName,omitempty"`
 }
 
 //+kubebuilder:object:root=true
