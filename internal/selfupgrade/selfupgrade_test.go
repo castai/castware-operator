@@ -1158,9 +1158,13 @@ func newTestOps(t *testing.T, objs ...client.Object) *testOps {
 	opts := &testOps{
 		mockHelm: mockHelm,
 		sut: &Service{
-			Client:             c,
-			helmClient:         mockHelm,
-			config:             &config.Config{RequestTimeout: time.Second},
+			Client:     c,
+			helmClient: mockHelm,
+			config: &config.Config{
+				RequestTimeout:          time.Second,
+				PodsStatusCheckInterval: time.Second,
+				PodsReadyTimeout:        time.Minute,
+			},
 			log:                logrus.New(),
 			clusterCrName:      "test-cluster",
 			clusterCrNamespace: "test-namespace",

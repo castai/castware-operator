@@ -153,7 +153,7 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 }
 
 func (s *Service) checkReleaseStatus(ctx context.Context, log *logrus.Entry, getReleaseOptions helm.GetReleaseOptions) error {
-	t := time.NewTicker(time.Second * 5)
+	t := time.NewTicker(s.config.PodsStatusCheckInterval)
 	defer t.Stop()
 	var (
 		helmRelease *release.Release
@@ -208,14 +208,11 @@ func (s *Service) checkReleaseStatus(ctx context.Context, log *logrus.Entry, get
 // waitForPodsReady waits for all pods associated with the Helm release to be ready.
 // This ensures that the upgrade is truly successful and not just deployed with failing pods.
 func (s *Service) waitForPodsReady(ctx context.Context, log *logrus.Entry, getReleaseOptions helm.GetReleaseOptions) error {
-	timeout := 5 * time.Minute
-	checkInterval := 5 * time.Second
-
 	// Create a context with timeout for pod readiness check
-	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	checkCtx, cancel := context.WithTimeout(ctx, s.config.PodsReadyTimeout)
 	defer cancel()
 
-	ticker := time.NewTicker(checkInterval)
+	ticker := time.NewTicker(s.config.PodsStatusCheckInterval)
 	defer ticker.Stop()
 
 	// Helm uses app.kubernetes.io/instance label to identify release resources
@@ -243,9 +240,10 @@ func (s *Service) waitForPodsReady(ctx context.Context, log *logrus.Entry, getRe
 				// Log details about failed pods
 				for _, pod := range failedPods {
 					log.WithFields(logrus.Fields{
-						"pod":    pod.Name,
-						"phase":  pod.Status.Phase,
-						"reason": pod.Status.Reason,
+						"pod":     pod.Name,
+						"phase":   pod.Status.Phase,
+						"reason":  pod.Status.Reason,
+						"message": pod.Status.Message,
 					}).Warn("Pod in failed state")
 				}
 				return fmt.Errorf("pods failed to start: %d pod(s) in failed state", len(failedPods))
@@ -271,7 +269,7 @@ func (s *Service) waitForPodsReady(ctx context.Context, log *logrus.Entry, getRe
 						}).Warn("Pod status at timeout")
 					}
 				}
-				return fmt.Errorf("timeout waiting for pods to become ready after %v", timeout)
+				return fmt.Errorf("timeout waiting for pods to become ready after %v", s.config.PodsReadyTimeout)
 			}
 			return checkCtx.Err()
 		}
