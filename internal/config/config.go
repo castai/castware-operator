@@ -23,13 +23,15 @@ func (l LogLevel) Level() logrus.Level {
 }
 
 type Config struct {
-	LogLevel       LogLevel      `envconfig:"LOG_LEVEL" default:"info"`
-	RequestTimeout time.Duration `envconfig:"REQUEST_TIMEOUT" default:"10s"`
-	CertDir        string        `envconfig:"CERTS_DIR" default:"/certs"`
-	CertsSecret    string        `envconfig:"CERTS_SECRET" default:"castware-operator-certs"`
-	PodNamespace   string        `envconfig:"POD_NAMESPACE"`
-	ServiceName    string        `envconfig:"SERVICE_NAME" default:"castware-operator"`
-	CertsRotation  bool          `envconfig:"CERTS_ROTATION" default:"false"`
+	LogLevel                LogLevel      `envconfig:"LOG_LEVEL" default:"info"`
+	RequestTimeout          time.Duration `envconfig:"REQUEST_TIMEOUT" default:"10s"`
+	CertDir                 string        `envconfig:"CERTS_DIR" default:"/certs"`
+	CertsSecret             string        `envconfig:"CERTS_SECRET" default:"castware-operator-certs"`
+	PodNamespace            string        `envconfig:"POD_NAMESPACE"`
+	ServiceName             string        `envconfig:"SERVICE_NAME" default:"castware-operator"`
+	CertsRotation           bool          `envconfig:"CERTS_ROTATION" default:"false"`
+	PodsReadyTimeout        time.Duration `envconfig:"PODS_READY_TIMEOUT" default:"5m"`
+	PodsStatusCheckInterval time.Duration `envconfig:"PODS_STATUS_CHECK_INTERVAL" default:"5s"`
 }
 
 func GetFromEnvironment() (*Config, error) {

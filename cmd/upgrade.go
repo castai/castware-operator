@@ -70,7 +70,10 @@ func newUpgradeCmd() *cobra.Command {
 				}
 			}()
 
-			client.GetCache().WaitForCacheSync(ctx)
+			cacheSynced := client.GetCache().WaitForCacheSync(ctx)
+			if !cacheSynced {
+				return errors.New("failed to sync cache")
+			}
 
 			chartLoader := helm.NewChartLoader(log)
 			helmClient := helm.NewClient(log, chartLoader, restConfig)

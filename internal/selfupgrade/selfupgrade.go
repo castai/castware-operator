@@ -14,8 +14,8 @@ import (
 	"github.com/castai/castware-operator/internal/helm"
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/release"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -52,12 +52,6 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 		log.WithError(err).Error("Failed to get cluster")
 		return err
 	}
-	defer func() {
-		// TODO: set UpgradeJobName to empty string
-		if err := s.updateStatus(ctx, cluster); err != nil {
-			log.WithError(err).Error("Failed to update status")
-		}
-	}()
 
 	auth := auth.NewAuth(cluster.Namespace, cluster.Name)
 	if err := auth.LoadApiKey(ctx, s.Client); err != nil {
@@ -90,7 +84,9 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 		Release:              helmRelease,
 		ResetThenReuseValues: true,
 		DryRun:               true,
-		Recreate:             true,
+		Recreate:             false,
+		// If the tag was overridden, auto upgrade won't work unless we reset it to helm default.
+		ValuesOverrides: map[string]interface{}{"image": map[string]interface{}{"tag": ""}},
 	}
 	_, err = s.helmClient.Upgrade(ctx, upgradeOptions)
 	if err != nil {
@@ -103,8 +99,11 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 	previousVersion := helmRelease.Chart.Metadata.Version
 	helmRelease, err = s.helmClient.Upgrade(ctx, upgradeOptions)
 	if err != nil {
+		// If upgrade fails we log the error check for status, if the upgrade didn't start there's
+		// no reason to rollback, but if the helm release is in failed state we rollback.
 		log.WithError(err).Error("Upgrade run failed")
-		return fmt.Errorf("upgrade run failed: %w", err)
+	} else {
+		log.Infof("Upgrade started, release name: %s -> %s", previousVersion, helmRelease.Chart.Metadata.Version)
 	}
 	currentVersion := helmRelease.Chart.Metadata.Version
 	defer func() {
@@ -127,7 +126,6 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 			}
 		}
 	}()
-	log.Infof("Upgrade started, release name: %s -> %s", previousVersion, currentVersion)
 	err = s.checkReleaseStatus(ctx, log, getReleaseOptions)
 	if err != nil {
 		// If context was canceled or timed out, return the error and do not attempt to rollback
@@ -155,7 +153,7 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 }
 
 func (s *Service) checkReleaseStatus(ctx context.Context, log *logrus.Entry, getReleaseOptions helm.GetReleaseOptions) error {
-	t := time.NewTicker(time.Second * 5)
+	t := time.NewTicker(s.config.PodsStatusCheckInterval)
 	defer t.Stop()
 	var (
 		helmRelease *release.Release
@@ -179,8 +177,11 @@ func (s *Service) checkReleaseStatus(ctx context.Context, log *logrus.Entry, get
 
 			switch helmRelease.Info.Status {
 			case release.StatusDeployed:
+				log.Info("Helm release deployed, verifying pods are ready")
+				if err := s.waitForPodsReady(ctx, log, getReleaseOptions); err != nil {
+					return fmt.Errorf("upgrade deployed but pods failed to start: %w", err)
+				}
 				log.Info("Upgrade successful")
-				// TODO: p4 - check pod readiness
 				return nil
 			case release.StatusFailed:
 				return fmt.Errorf("helm is in failed status: %s", helmRelease.Info.Description)
@@ -204,19 +205,118 @@ func (s *Service) checkReleaseStatus(ctx context.Context, log *logrus.Entry, get
 	}
 }
 
-func (s *Service) updateStatus(ctx context.Context, cluster *castwarev1alpha1.Cluster) error {
-	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		var latestCluster castwarev1alpha1.Cluster
-		if err := s.Get(ctx, types.NamespacedName{
-			Name:      cluster.Name,
-			Namespace: cluster.Namespace,
-		}, &latestCluster); err != nil {
-			return err
+// waitForPodsReady waits for all pods associated with the Helm release to be ready.
+// This ensures that the upgrade is truly successful and not just deployed with failing pods.
+func (s *Service) waitForPodsReady(ctx context.Context, log *logrus.Entry, getReleaseOptions helm.GetReleaseOptions) error {
+	// Create a context with timeout for pod readiness check
+	checkCtx, cancel := context.WithTimeout(ctx, s.config.PodsReadyTimeout)
+	defer cancel()
+
+	ticker := time.NewTicker(s.config.PodsStatusCheckInterval)
+	defer ticker.Stop()
+
+	// Helm uses app.kubernetes.io/instance label to identify release resources
+	labelSelector := client.MatchingLabels{
+		"app.kubernetes.io/instance": getReleaseOptions.ReleaseName,
+	}
+
+	for {
+		select {
+		case <-ticker.C:
+			podList := &corev1.PodList{}
+			if err := s.List(checkCtx, podList, client.InNamespace(getReleaseOptions.Namespace), labelSelector); err != nil {
+				log.WithError(err).Warn("Failed to list pods for release")
+				continue
+			}
+
+			if len(podList.Items) == 0 {
+				log.Debug("No pods found for release yet, waiting...")
+				continue
+			}
+
+			allReady, failedPods := checkPodsReadiness(podList)
+
+			if len(failedPods) > 0 {
+				// Log details about failed pods
+				for _, pod := range failedPods {
+					log.WithFields(logrus.Fields{
+						"pod":     pod.Name,
+						"phase":   pod.Status.Phase,
+						"reason":  pod.Status.Reason,
+						"message": pod.Status.Message,
+					}).Warn("Pod in failed state")
+				}
+				return fmt.Errorf("pods failed to start: %d pod(s) in failed state", len(failedPods))
+			}
+
+			if allReady {
+				log.Infof("All %d pod(s) are ready", len(podList.Items))
+				return nil
+			}
+
+			log.Debugf("Waiting for pods to become ready (%d total)", len(podList.Items))
+
+		case <-checkCtx.Done():
+			if errors.Is(checkCtx.Err(), context.DeadlineExceeded) {
+				// Get current pod status for error message
+				podList := &corev1.PodList{}
+				if err := s.List(ctx, podList, client.InNamespace(getReleaseOptions.Namespace), labelSelector); err == nil {
+					for _, pod := range podList.Items {
+						log.WithFields(logrus.Fields{
+							"pod":   pod.Name,
+							"phase": pod.Status.Phase,
+							"ready": isPodReady(&pod),
+						}).Warn("Pod status at timeout")
+					}
+				}
+				return fmt.Errorf("timeout waiting for pods to become ready after %v", s.config.PodsReadyTimeout)
+			}
+			return checkCtx.Err()
+		}
+	}
+}
+
+// checkPodsReadiness checks if all pods are ready and returns failed pods
+func checkPodsReadiness(podList *corev1.PodList) (allReady bool, failedPods []corev1.Pod) {
+	allReady = true
+	failedPods = []corev1.Pod{}
+
+	for _, pod := range podList.Items {
+		// Check for permanent failure states
+		if pod.Status.Phase == corev1.PodFailed {
+			failedPods = append(failedPods, pod)
+			allReady = false
+			continue
 		}
 
-		// Modify latestCluster.Status here
-		latestCluster.Status = cluster.Status
+		// Check for image pull errors or crash loops
+		for _, containerStatus := range pod.Status.ContainerStatuses {
+			if containerStatus.State.Waiting != nil {
+				reason := containerStatus.State.Waiting.Reason
+				// These are permanent failures that won't recover
+				if reason == "ImagePullBackOff" || reason == "ErrImagePull" || reason == "CrashLoopBackOff" {
+					failedPods = append(failedPods, pod)
+					allReady = false
+					break
+				}
+			}
+		}
 
-		return s.Status().Update(ctx, &latestCluster)
-	})
+		// Check if pod is ready
+		if !isPodReady(&pod) {
+			allReady = false
+		}
+	}
+
+	return allReady, failedPods
+}
+
+// isPodReady checks if a pod has the Ready condition set to True
+func isPodReady(pod *corev1.Pod) bool {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
