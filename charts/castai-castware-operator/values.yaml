@@ -103,7 +103,7 @@ defaultComponents:
   # List of default components to create
   # Each component will be created with the specified configuration
   components:
-    - name: "castai-agent"
+    castai-agent:
       component: "castai-agent"
       cluster: "castai"
       enabled: true
