@@ -57,7 +57,7 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 	if err := auth.LoadApiKey(ctx, s.Client); err != nil {
 		return fmt.Errorf("failed to load api key: %w", err)
 	}
-	castAiClient := castai.NewClient(s.log, castai.NewRestyClient(s.config, cluster.Spec.API.APIURL, auth))
+	castAiClient := castai.NewClient(s.log, s.config, castai.NewRestyClient(s.config, cluster.Spec.API.APIURL, auth))
 	component, err := castAiClient.GetComponentByName(ctx, components.ComponentNameOperator)
 	if err != nil {
 		return fmt.Errorf("failed to get component: %w", err)

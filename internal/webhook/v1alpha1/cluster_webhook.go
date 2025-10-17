@@ -102,7 +102,7 @@ func (v *ClusterCustomValidator) validateApiKey(ctx context.Context, cluster *ca
 
 	restClient := castai.NewRestyClient(v.config, cluster.Spec.API.APIURL, auth)
 
-	_, err = castai.NewClient(logrus.New(), restClient).Me(ctx)
+	_, err = castai.NewClient(logrus.New(), v.config, restClient).Me(ctx)
 	if err != nil {
 		return err
 	}

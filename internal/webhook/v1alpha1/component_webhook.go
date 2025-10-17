@@ -96,7 +96,7 @@ func (d *ComponentCustomDefaulter) getCastaiClient(ctx context.Context, log logr
 	}
 	rest := castai.NewRestyClient(cfg, cluster.Spec.API.APIURL, auth)
 
-	client := castai.NewClient(log, rest)
+	client := castai.NewClient(log, cfg, rest)
 
 	return client, nil
 }
@@ -284,7 +284,7 @@ func (v *ComponentCustomValidator) getComponentByName(ctx context.Context, clust
 
 	restClient := castai.NewRestyClient(v.config, cluster.Spec.API.APIURL, auth)
 
-	resp, err := castai.NewClient(logrus.New(), restClient).GetComponentByName(ctx, componentName)
+	resp, err := castai.NewClient(logrus.New(), v.config, restClient).GetComponentByName(ctx, componentName)
 	if err != nil {
 		if errors.Is(err, castai.ErrNotFound) {
 			return nil, fmt.Errorf("component '%s' is not supported by CAST.AI", componentName)

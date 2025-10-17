@@ -759,7 +759,7 @@ func (r *ComponentReconciler) getCastaiClient(ctx context.Context, cluster *cast
 	}
 	rest := castai.NewRestyClient(r.Config, cluster.Spec.API.APIURL, auth)
 
-	client := castai.NewClient(nil, rest)
+	client := castai.NewClient(nil, r.Config, rest)
 
 	return client, nil
 }

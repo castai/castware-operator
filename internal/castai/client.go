@@ -37,8 +37,9 @@ type CastAIClient interface {
 	AckAction(ctx context.Context, clusterID, actionID string, error error) error
 }
 type Client struct {
-	log  logrus.FieldLogger
-	rest *resty.Client
+	log    logrus.FieldLogger
+	config *config.Config
+	rest   *resty.Client
 }
 
 func SetVersion(v config.CastwareOperatorVersion) {
@@ -46,19 +47,18 @@ func SetVersion(v config.CastwareOperatorVersion) {
 }
 
 // NewClient returns new Client for communicating with Cast AI.
-func NewClient(log logrus.FieldLogger, rest *resty.Client) CastAIClient {
+func NewClient(log logrus.FieldLogger, config *config.Config, rest *resty.Client) CastAIClient {
 	return &Client{
-		log:  log,
-		rest: rest,
+		log:    log,
+		config: config,
+		rest:   rest,
 	}
 }
 
 // NewRestyClient returns a new authenticated rest client to send requests to the specified API.
 func NewRestyClient(config *config.Config, apiURL string, auth auth.Auth) *resty.Client {
 
-	client := resty.NewWithClient(&http.Client{
-		Timeout: config.RequestTimeout,
-	})
+	client := resty.NewWithClient(&http.Client{})
 
 	client.SetBaseURL(apiURL)
 	client.OnBeforeRequest(func(c *resty.Client, r *resty.Request) error {
@@ -92,6 +92,8 @@ func (c *Client) toError(resp *resty.Response) error {
 
 // Me gets profile for current user.
 func (c *Client) Me(ctx context.Context) (*User, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.config.RequestTimeout)
+	defer cancel()
 	result := &User{}
 	resp, err := c.rest.R().SetResult(result).SetContext(ctx).Get("/v1/me")
 	if err != nil {
@@ -107,6 +109,9 @@ func (c *Client) Me(ctx context.Context) (*User, error) {
 
 // GetCluster gets a cluster by id.
 func (c *Client) GetCluster(ctx context.Context, clusterID string) (*Cluster, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.config.RequestTimeout)
+	defer cancel()
+
 	result := &Cluster{}
 	resp, err := c.rest.R().
 		SetResult(result).
@@ -127,6 +132,9 @@ func (c *Client) GetCluster(ctx context.Context, clusterID string) (*Cluster, er
 // RegisterCluster registers a new cluster in the mothership and returns a cluster id,
 // if the cluster already exists the id of the existing cluster is returned
 func (c *Client) RegisterCluster(ctx context.Context, req *castai.RegisterClusterRequest) (*castai.RegisterClusterResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.config.RequestTimeout)
+	defer cancel()
+
 	result := &castai.RegisterClusterResponse{}
 	resp, err := c.rest.R().SetBody(req).SetResult(result).SetContext(ctx).Post("/v1/kubernetes/external-clusters")
 	if err != nil {
@@ -157,6 +165,9 @@ func (c *Client) SendLogEvent(ctx context.Context, clusterID string, req *castai
 
 // GetComponentByName retrieves a component by its name.
 func (c *Client) GetComponentByName(ctx context.Context, name string) (*Component, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.config.RequestTimeout)
+	defer cancel()
+
 	resp, err := c.rest.R().
 		SetContext(ctx).
 		SetQueryParam("name", name).
@@ -181,6 +192,9 @@ func (c *Client) GetComponentByName(ctx context.Context, name string) (*Componen
 
 // RecordActionResult recors the results of an action performed on a component.
 func (c *Client) RecordActionResult(ctx context.Context, clusterID string, req *ComponentActionResult) error {
+	ctx, cancel := context.WithTimeout(ctx, c.config.RequestTimeout)
+	defer cancel()
+
 	resp, err := c.rest.R().
 		SetContext(ctx).
 		SetPathParam("clusterId", clusterID).
@@ -200,7 +214,9 @@ func (c *Client) RecordActionResult(ctx context.Context, clusterID string, req *
 }
 
 func (c *Client) PollActions(ctx context.Context, clusterID string) (*PollActionsResponse, error) {
-	// TODO: max actions in config
+	ctx, cancel := context.WithTimeout(ctx, c.config.PollActionsTimeout)
+	defer cancel()
+
 	result := &PollActionsResponse{}
 	resp, err := c.rest.R().
 		SetContext(ctx).
@@ -219,6 +235,9 @@ func (c *Client) PollActions(ctx context.Context, clusterID string) (*PollAction
 }
 
 func (c *Client) AckAction(ctx context.Context, clusterID, actionID string, error error) error {
+	ctx, cancel := context.WithTimeout(ctx, c.config.RequestTimeout)
+	defer cancel()
+
 	req := &AckActionRequest{}
 	if error != nil {
 		req.Error = lo.ToPtr(error.Error())

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	mock_auth "github.com/castai/castware-operator/internal/castai/auth/mock"
 	"github.com/castai/castware-operator/internal/config"
@@ -14,7 +15,7 @@ import (
 )
 
 func TestClientMe(t *testing.T) {
-	cfg := &config.Config{LogLevel: config.LogLevel(logrus.DebugLevel)}
+	cfg := &config.Config{LogLevel: config.LogLevel(logrus.DebugLevel), RequestTimeout: time.Second * 10}
 
 	t.Run("should call api when api key is available", func(t *testing.T) {
 		r := require.New(t)
@@ -27,7 +28,7 @@ func TestClientMe(t *testing.T) {
 		t.Cleanup(func() {
 			httpmock.Deactivate()
 		})
-		client := NewClient(logrus.New(), restyClient)
+		client := NewClient(logrus.New(), cfg, restyClient)
 
 		responder, err := httpmock.NewJsonResponder(200, json.RawMessage(`{"id": "9ba1d646-96a4-409e-a1d6-4696a4909e90", "username": "test"}`))
 		r.NoError(err)
@@ -51,7 +52,7 @@ func TestClientMe(t *testing.T) {
 		t.Cleanup(func() {
 			httpmock.Deactivate()
 		})
-		client := NewClient(logrus.New(), restyClient)
+		client := NewClient(logrus.New(), cfg, restyClient)
 
 		responder, err := httpmock.NewJsonResponder(401, json.RawMessage(`{}`))
 		r.NoError(err)
@@ -75,7 +76,7 @@ func TestClientMe(t *testing.T) {
 		t.Cleanup(func() {
 			httpmock.Deactivate()
 		})
-		client := NewClient(logrus.New(), restyClient)
+		client := NewClient(logrus.New(), cfg, restyClient)
 
 		mockAuth.EXPECT().ApiKey().Return("")
 
@@ -87,7 +88,7 @@ func TestClientMe(t *testing.T) {
 }
 
 func TestClientGetComponentByName(t *testing.T) {
-	cfg := &config.Config{LogLevel: config.LogLevel(logrus.DebugLevel)}
+	cfg := &config.Config{LogLevel: config.LogLevel(logrus.DebugLevel), RequestTimeout: time.Second * 10}
 
 	t.Run("should call api when api key is available", func(t *testing.T) {
 		r := require.New(t)
@@ -100,7 +101,7 @@ func TestClientGetComponentByName(t *testing.T) {
 		t.Cleanup(func() {
 			httpmock.Deactivate()
 		})
-		client := NewClient(logrus.New(), restyClient)
+		client := NewClient(logrus.New(), cfg, restyClient)
 
 		responder, err := httpmock.NewJsonResponder(200, json.RawMessage(`{
 			"id": "comp-123",
@@ -135,7 +136,7 @@ func TestClientGetComponentByName(t *testing.T) {
 		t.Cleanup(func() {
 			httpmock.Deactivate()
 		})
-		client := NewClient(logrus.New(), restyClient)
+		client := NewClient(logrus.New(), cfg, restyClient)
 
 		responder, err := httpmock.NewJsonResponder(404, json.RawMessage(`{}`))
 		r.NoError(err)
@@ -159,7 +160,7 @@ func TestClientGetComponentByName(t *testing.T) {
 		t.Cleanup(func() {
 			httpmock.Deactivate()
 		})
-		client := NewClient(logrus.New(), restyClient)
+		client := NewClient(logrus.New(), cfg, restyClient)
 
 		responder, err := httpmock.NewJsonResponder(500, json.RawMessage(`{}`))
 		r.NoError(err)
@@ -183,7 +184,7 @@ func TestClientGetComponentByName(t *testing.T) {
 		t.Cleanup(func() {
 			httpmock.Deactivate()
 		})
-		client := NewClient(logrus.New(), restyClient)
+		client := NewClient(logrus.New(), cfg, restyClient)
 
 		mockAuth.EXPECT().ApiKey().Return("")
 
@@ -194,7 +195,7 @@ func TestClientGetComponentByName(t *testing.T) {
 }
 
 func TestClientRecordActionResult(t *testing.T) {
-	cfg := &config.Config{LogLevel: config.LogLevel(logrus.DebugLevel)}
+	cfg := &config.Config{LogLevel: config.LogLevel(logrus.DebugLevel), RequestTimeout: time.Second * 10}
 
 	t.Run("should call api when api key is available", func(t *testing.T) {
 		r := require.New(t)
@@ -207,7 +208,7 @@ func TestClientRecordActionResult(t *testing.T) {
 		t.Cleanup(func() {
 			httpmock.Deactivate()
 		})
-		client := NewClient(logrus.New(), restyClient)
+		client := NewClient(logrus.New(), cfg, restyClient)
 
 		responder, err := httpmock.NewJsonResponder(200, json.RawMessage(`{}`))
 		r.NoError(err)
@@ -241,7 +242,7 @@ func TestClientRecordActionResult(t *testing.T) {
 		t.Cleanup(func() {
 			httpmock.Deactivate()
 		})
-		client := NewClient(logrus.New(), restyClient)
+		client := NewClient(logrus.New(), cfg, restyClient)
 
 		responder, err := httpmock.NewJsonResponder(404, json.RawMessage(`{}`))
 		r.NoError(err)
@@ -270,7 +271,7 @@ func TestClientRecordActionResult(t *testing.T) {
 		t.Cleanup(func() {
 			httpmock.Deactivate()
 		})
-		client := NewClient(logrus.New(), restyClient)
+		client := NewClient(logrus.New(), cfg, restyClient)
 
 		responder, err := httpmock.NewJsonResponder(500, json.RawMessage(`{}`))
 		r.NoError(err)
@@ -299,7 +300,7 @@ func TestClientRecordActionResult(t *testing.T) {
 		t.Cleanup(func() {
 			httpmock.Deactivate()
 		})
-		client := NewClient(logrus.New(), restyClient)
+		client := NewClient(logrus.New(), cfg, restyClient)
 
 		mockAuth.EXPECT().ApiKey().Return("")
 

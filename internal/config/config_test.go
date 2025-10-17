@@ -26,4 +26,11 @@ func TestGetFromEnvironment(t *testing.T) {
 		r.NoError(err)
 		r.Equal(time.Minute*5, cfg.RequestTimeout)
 	})
+	t.Run("should set polling timeout from env", func(t *testing.T) {
+		r := require.New(t)
+		r.NoError(os.Setenv("POLL_ACTIONS_TIMEOUT", "15m"))
+		cfg, err := GetFromEnvironment()
+		r.NoError(err)
+		r.Equal(time.Minute*15, cfg.PollActionsTimeout)
+	})
 }

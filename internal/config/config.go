@@ -25,6 +25,7 @@ func (l LogLevel) Level() logrus.Level {
 type Config struct {
 	LogLevel                LogLevel      `envconfig:"LOG_LEVEL" default:"info"`
 	RequestTimeout          time.Duration `envconfig:"REQUEST_TIMEOUT" default:"10s"`
+	PollActionsTimeout      time.Duration `envconfig:"POLL_ACTIONS_TIMEOUT" default:"10m"`
 	CertDir                 string        `envconfig:"CERTS_DIR" default:"/certs"`
 	CertsSecret             string        `envconfig:"CERTS_SECRET" default:"castware-operator-certs"`
 	PodNamespace            string        `envconfig:"POD_NAMESPACE"`
