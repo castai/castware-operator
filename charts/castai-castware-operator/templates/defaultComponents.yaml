@@ -1,10 +1,10 @@
 {{- if .Values.defaultComponents.enabled }}
-{{- range .Values.defaultComponents.components }}
+{{- range $name, $comp := .Values.defaultComponents.components }}
 ---
 apiVersion: castware.cast.ai/v1alpha1
 kind: Component
 metadata:
-  name: {{ .name }}
+  name: {{ $name }}
   namespace: {{ $.Release.Namespace }}
   annotations:
     helm.sh/hook: post-install
@@ -13,15 +13,15 @@ metadata:
   labels:
     {{- include "castware-operator.labels" $ | nindent 4 }}
 spec:
-  component: {{ .component | quote }}
-  cluster: {{ .cluster | quote }}
-  enabled: {{ .enabled }}
-  {{- if .version }}
-  version: {{ .version | quote }}
+  component: {{ $comp.component | quote }}
+  cluster: {{ $comp.cluster | quote }}
+  enabled: {{ $comp.enabled }}
+  {{- if $comp.version }}
+  version: {{ $comp.version | quote }}
   {{- end }}
-  {{- if .values }}
+  {{- if $comp.overrides }}
   values:
-    {{- toYaml .values | nindent 4 }}
+    {{- toYaml $comp.overrides | nindent 4 }}
   {{- end }}
 {{- end }}
 {{- end }}
