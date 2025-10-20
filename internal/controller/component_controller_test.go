@@ -34,7 +34,7 @@ func TestReconcile(t *testing.T) {
 			ctx := context.Background()
 			r := require.New(t)
 
-			testCluster := newTestCluster(t, uuid.NewString())
+			testCluster := newTestCluster(t, uuid.NewString(), true)
 			testComponent := newTestComponent(t, testCluster.Name, "test-component")
 			testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
 
@@ -65,7 +65,7 @@ func TestReconcile(t *testing.T) {
 			ctx := context.Background()
 			r := require.New(t)
 
-			testCluster := newTestCluster(t, uuid.NewString())
+			testCluster := newTestCluster(t, uuid.NewString(), true)
 			testComponent := newTestComponent(t, testCluster.Name, "test-component")
 			testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
 
@@ -116,7 +116,7 @@ func TestReconcile(t *testing.T) {
 			ctx := context.Background()
 			r := require.New(t)
 
-			testCluster := newTestCluster(t, uuid.NewString())
+			testCluster := newTestCluster(t, uuid.NewString(), true)
 			testComponent := newTestComponent(t, testCluster.Name, "test-component")
 			testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
 			testComponent.Spec.Version = "0.2.5" // CRD specifies v0.1.1
@@ -187,7 +187,7 @@ func TestReconcile(t *testing.T) {
 			ctx := context.Background()
 			r := require.New(t)
 
-			testCluster := newTestCluster(t, uuid.NewString())
+			testCluster := newTestCluster(t, uuid.NewString(), true)
 			testComponent := newTestComponent(t, testCluster.Name, "test-component")
 			testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationYaml
 
@@ -249,7 +249,7 @@ func TestReconcile(t *testing.T) {
 			ctx := context.Background()
 			r := require.New(t)
 
-			testCluster := newTestCluster(t, uuid.NewString())
+			testCluster := newTestCluster(t, uuid.NewString(), true)
 			testComponent := newTestComponent(t, testCluster.Name, "test-component")
 			testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationYaml
 
@@ -291,7 +291,7 @@ func TestReconcile(t *testing.T) {
 			ctx := context.Background()
 			r := require.New(t)
 
-			testCluster := newTestCluster(t, uuid.NewString())
+			testCluster := newTestCluster(t, uuid.NewString(), true)
 			testComponent := newTestComponent(t, testCluster.Name, "test-component")
 			testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationYaml
 
@@ -363,7 +363,7 @@ func TestReconcile(t *testing.T) {
 			ctx := context.Background()
 			r := require.New(t)
 
-			testCluster := newTestCluster(t, uuid.NewString())
+			testCluster := newTestCluster(t, uuid.NewString(), true)
 			testComponent := newTestComponent(t, testCluster.Name, "test-component")
 			testComponent.Spec.Readonly = true
 

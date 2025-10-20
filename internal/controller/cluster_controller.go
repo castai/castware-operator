@@ -170,6 +170,35 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if clusterMetadata.ClusterID != "" && !meta.IsStatusConditionTrue(cluster.Status.Conditions, typeAvailableCluster) {
+		castAiClient, err := r.getCastaiClient(ctx, cluster)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+			Namespace:   r.Config.PodNamespace,
+			ReleaseName: r.Config.HelmReleaseName,
+		})
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		err = castAiClient.RecordActionResult(ctx, clusterMetadata.ClusterID, &castai.ComponentActionResult{
+			Name:           components.ComponentNameOperator,
+			Action:         castai.Action_INSTALL,
+			CurrentVersion: helmRelease.Chart.Metadata.Version,
+			Version:        helmRelease.Chart.Metadata.Version,
+			Status:         castai.Status_OK,
+			ImageVersions:  nil,
+			ReleaseName:    helmRelease.Name,
+			Message:        "Operator installed",
+		})
+		if err != nil {
+			log.WithError(err).Error("Failed to record action result")
+			// Error may be recoverable, we wait and retry.
+			// If it can't be recovered the cluster stays in "unavailable" state.
+			return ctrl.Result{RequeueAfter: time.Minute}, nil
+		}
+
+		log.Info("Cluster reconciled")
 		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{Type: typeAvailableCluster, Status: metav1.ConditionTrue, Reason: "ClusterIdAvailable", Message: "Cluster reconciled"})
 		err = r.Status().Update(ctx, cluster)
 		if err != nil {
