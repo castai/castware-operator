@@ -38,7 +38,7 @@ func TestOperatorUpgrade(t *testing.T) {
 			_ = os.Unsetenv("POD_NAME")
 		})
 
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 		operatorPod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      podName,
@@ -119,7 +119,7 @@ func TestOperatorUpgrade(t *testing.T) {
 		// Ensure POD_NAME is not set
 		_ = os.Unsetenv("POD_NAME")
 
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 		testOps := newClusterTestOps(t, cluster)
 
 		action := &castai.Action{
@@ -153,7 +153,7 @@ func TestOperatorUpgrade(t *testing.T) {
 
 		jobName := "test-upgrade-job"
 
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 		cluster.Status.UpgradeJobName = jobName
 
 		// Create a running job
@@ -185,7 +185,7 @@ func TestOperatorUpgrade(t *testing.T) {
 		ctx := context.Background()
 		clusterID := uuid.NewString()
 
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 		cluster.Status.UpgradeJobName = "test-upgrade-job"
 
 		// Create a succeeded job
@@ -222,7 +222,7 @@ func TestOperatorUpgrade(t *testing.T) {
 		ctx := context.Background()
 		clusterID := uuid.NewString()
 
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 		cluster.Status.UpgradeJobName = "test-upgrade-job"
 
 		// Create a failed job with pod
@@ -301,7 +301,7 @@ func TestOperatorUpgrade(t *testing.T) {
 		ctx := context.Background()
 		clusterID := uuid.NewString()
 
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 		cluster.Status.UpgradeJobName = "non-existent-job"
 
 		testOps := newClusterTestOps(t, cluster)
@@ -333,7 +333,7 @@ func TestOperatorUpgrade(t *testing.T) {
 			_ = os.Unsetenv("POD_NAME")
 		})
 
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 		cluster.Status.UpgradeJobName = "existing-upgrade-job"
 		cluster.Spec.APIKeySecret = "api-key-secret"
 		// Set cluster to Available status to avoid Reconcile setting it and requeueing

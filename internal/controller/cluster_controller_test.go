@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"testing"
 	"time"
 
@@ -166,7 +167,7 @@ func TestPollActions(t *testing.T) {
 				Component: "test-component",
 			},
 		}
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 
 		testOps := newClusterTestOps(t, cluster)
 
@@ -200,7 +201,7 @@ func TestPollActions(t *testing.T) {
 				Component: "test-component",
 			},
 		}
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 		component := &castwarev1alpha1.Component{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-component",
@@ -236,7 +237,7 @@ func TestPollActions(t *testing.T) {
 				Version:   "0.2",
 			},
 		}
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 		component := &castwarev1alpha1.Component{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-component",
@@ -293,7 +294,7 @@ func TestPollActions(t *testing.T) {
 				ValuesOverrides: map[string]string{"value2.test": "value2-value", "value3": "value3-value"},
 			},
 		}
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 		component1 := &castwarev1alpha1.Component{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-component-1",
@@ -382,7 +383,7 @@ func TestPollActions(t *testing.T) {
 				Component: "test-component",
 			},
 		}
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 		component := &castwarev1alpha1.Component{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-component",
@@ -422,7 +423,7 @@ func TestPollActions(t *testing.T) {
 				Component: "test-component",
 			},
 		}
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 		component := &castwarev1alpha1.Component{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-component",
@@ -470,7 +471,7 @@ func TestPollActions(t *testing.T) {
 				Version:   "0.1",
 			},
 		}
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 
 		testOps := newClusterTestOps(t, cluster)
 
@@ -498,7 +499,7 @@ func TestPollActions(t *testing.T) {
 				Component: "test-component",
 			},
 		}
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 
 		testOps := newClusterTestOps(t, cluster)
 
@@ -527,7 +528,7 @@ func TestPollActions(t *testing.T) {
 				Version:   "0.1",
 			},
 		}
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 		component := &castwarev1alpha1.Component{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-component",
@@ -562,7 +563,7 @@ func TestPollActions(t *testing.T) {
 				Component: "test-component",
 			},
 		}
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 		component := &castwarev1alpha1.Component{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-component",
@@ -611,7 +612,7 @@ func TestPollActions(t *testing.T) {
 				Version:   "0.2",
 			},
 		}
-		cluster := newTestCluster(t, clusterID)
+		cluster := newTestCluster(t, clusterID, false)
 		component := &castwarev1alpha1.Component{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-component",
@@ -787,6 +788,17 @@ func TestReconcileCluster(t *testing.T) {
 		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
 		r.NoError(err)
 		r.NotEmpty(actualCluster.Spec.Cluster.ClusterID)
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   "test-namespace",
+			ReleaseName: "castware-operator",
+		}).Return(&release.Release{
+			Name: "castware-operator",
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "1.2.3",
+				},
+			},
+		}, nil)
 
 		_, err = testOps.sut.Reconcile(ctx, req)
 		r.NoError(err)
@@ -832,10 +844,14 @@ func newClusterTestOps(t *testing.T, objs ...client.Object) *clusterTestOps {
 		mockHelm:        mockHelm,
 		mockChartLoader: mockChartLoader,
 		sut: &ClusterReconciler{
-			Client:      c,
-			Scheme:      c.Scheme(),
-			Log:         logrus.New(),
-			Config:      &config.Config{RequestTimeout: time.Second},
+			Client: c,
+			Scheme: c.Scheme(),
+			Log:    logrus.New(),
+			Config: &config.Config{
+				RequestTimeout:  time.Second,
+				HelmReleaseName: "castware-operator",
+				PodNamespace:    "test-namespace",
+			},
 			HelmClient:  mockHelm,
 			ChartLoader: mockChartLoader,
 			Clientset:   fakeClientset,
@@ -846,9 +862,9 @@ func newClusterTestOps(t *testing.T, objs ...client.Object) *clusterTestOps {
 	return opts
 }
 
-func newTestCluster(t *testing.T, clusterID string) *castwarev1alpha1.Cluster {
+func newTestCluster(t *testing.T, clusterID string, available bool) *castwarev1alpha1.Cluster {
 	t.Helper()
-	return &castwarev1alpha1.Cluster{
+	testCluster := &castwarev1alpha1.Cluster{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-cluster",
 			Namespace: "test-namespace",
@@ -859,12 +875,26 @@ func newTestCluster(t *testing.T, clusterID string) *castwarev1alpha1.Cluster {
 			},
 		},
 	}
+	if available {
+		testCluster.Status.Conditions = []metav1.Condition{
+			{
+				Type:    typeAvailableCluster,
+				Status:  metav1.ConditionTrue,
+				Reason:  "ClusterIdAvailable",
+				Message: "Cluster reconciled",
+			},
+		}
+	}
+
+	return testCluster
 }
 
 func newTestApiServer(t *testing.T) *httptest.Server {
 	t.Helper()
 
 	dummyUser, _ := json.Marshal(castaitest.CreateUserObject())
+
+	actionResultUrlRegex := regexp.MustCompile("/cluster-management/v1/clusters/(.*?)/components:recordActionResult")
 
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -883,6 +913,17 @@ func newTestApiServer(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusOK)
 			return
 		default:
+			if actionResultUrlRegex.MatchString(r.URL.Path) {
+				if r.Method != http.MethodPost {
+					w.WriteHeader(http.StatusMethodNotAllowed)
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{}`))
+				w.WriteHeader(http.StatusOK)
+				return
+			}
 			Fail(fmt.Sprintf("Unexpected request path: %s", r.URL.Path))
 		}
 	}))

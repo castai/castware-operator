@@ -69,6 +69,8 @@ spec:
               value: {{ quote .Values.webhook.port }}
             - name: WEBHOOK_CERTS_DIR
               value: "/webhook-certs"
+            - name: HELM_RELEASE_NAME
+              value: {{ quote .Release.Name }}
             {{- with .Values.webhook.env }}
             {{- range $key, $value := . }}
             - name: {{ $key }}

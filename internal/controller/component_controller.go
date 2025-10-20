@@ -138,6 +138,17 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 	}
 
+	cluster := &castwarev1alpha1.Cluster{}
+	err = r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to get cluster")
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+	if !meta.IsStatusConditionTrue(cluster.Status.Conditions, typeAvailableCluster) {
+		log.Info("Waiting for cluster to be available")
+		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+	}
+
 	if !controllerutil.ContainsFinalizer(component, componentFinalizer) {
 		controllerutil.AddFinalizer(component, componentFinalizer)
 		if err := r.Update(ctx, component); err != nil {
