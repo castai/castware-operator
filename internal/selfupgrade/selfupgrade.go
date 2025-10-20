@@ -97,6 +97,7 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 	// Dry run was successful, proceed with upgrade
 	upgradeOptions.DryRun = false
 	previousVersion := helmRelease.Chart.Metadata.Version
+	releaseName := helmRelease.Name
 	helmRelease, err = s.helmClient.Upgrade(ctx, upgradeOptions)
 	if err != nil {
 		// If upgrade fails we log the error check for status, if the upgrade didn't start there's
@@ -105,7 +106,10 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 	} else {
 		log.Infof("Upgrade started, release name: %s -> %s", previousVersion, helmRelease.Chart.Metadata.Version)
 	}
-	currentVersion := helmRelease.Chart.Metadata.Version
+	currentVersion := ""
+	if helmRelease != nil && helmRelease.Chart != nil && helmRelease.Chart.Metadata != nil {
+		currentVersion = helmRelease.Chart.Metadata.Version
+	}
 	defer func() {
 		if cluster.Spec.Cluster != nil && cluster.Spec.Cluster.ClusterID != "" {
 			actionResult := &castai.ComponentActionResult{
@@ -114,7 +118,7 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 				CurrentVersion: currentVersion,
 				Version:        previousVersion,
 				Status:         castai.Status_OK,
-				ReleaseName:    helmRelease.Name,
+				ReleaseName:    releaseName,
 			}
 			if err != nil {
 				actionResult.Message = err.Error()

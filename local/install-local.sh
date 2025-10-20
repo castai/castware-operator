@@ -35,7 +35,7 @@ helm install ${RELEASE_NAME} \
     --set image.repository=${IMAGE_NAME} \
     --set image.tag=${IMAGE_TAG} \
     --set image.pullPolicy=IfNotPresent \
-    --set apiKeySecret.apiKey="${API_KEY_BASE64}" \
+    --set apiKeySecret.apiKey="${API_KEY}" \
     --set defaultCluster.provider="${PROVIDER:-gke}" \
     --set defaultCluster.api.apiUrl="${API_URL}" \
     --set webhook.env.GKE_CLUSTER_NAME="${GKE_CLUSTER_NAME:-castware-operator-test}" \
@@ -46,7 +46,7 @@ helm install ${RELEASE_NAME} \
     --set "defaultComponents.components.castai-agent.overrides.additionalEnv.GKE_LOCATION=${GKE_LOCATION:-local}" \
     --set "defaultComponents.components.castai-agent.overrides.additionalEnv.GKE_PROJECT_ID=${GKE_PROJECT_ID:-local-test}" \
     --set "defaultComponents.components.castai-agent.overrides.additionalEnv.GKE_REGION=${GKE_REGION:-local1}" \
-    --wait \
+    --atomic \
     --timeout 5m \
     ./charts/castai-castware-operator
 
