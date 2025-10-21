@@ -83,11 +83,12 @@ var ErrNothingToRollback = errors.New("nothing to rollback")
 // ComponentReconciler reconciles a Component object
 type ComponentReconciler struct {
 	client.Client
-	Scheme     *runtime.Scheme
-	Log        logrus.FieldLogger
-	HelmClient helm.Client
-	Recorder   record.EventRecorder
-	Config     *config.Config
+	Scheme             *runtime.Scheme
+	Log                logrus.FieldLogger
+	HelmClient         helm.Client
+	Recorder           record.EventRecorder
+	Config             *config.Config
+	castAIClientGetter func(context.Context, *castwarev1alpha1.Cluster) (castai.CastAIClient, error)
 }
 
 // nolint:gocyclo
@@ -463,6 +464,34 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 	}
 
+	castAiClient, err := r.getCastaiClient(ctx, cluster)
+	if err != nil {
+		recordErr = fmt.Errorf("failed to get castai client: %w", err)
+		log.WithError(err).Error("Failed to get castai client")
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+	}
+
+	validation, err := castAiClient.ValidateComponentUpgrade(ctx, &castai.ValidateComponentUpgradeRequest{
+		ClusterID:     cluster.Spec.Cluster.ClusterID,
+		ComponentName: component.Spec.Component,
+		TargetVersion: component.Spec.Version,
+	})
+	if err != nil {
+		recordErr = fmt.Errorf("failed to validate component upgrade: %w", err)
+		log.WithError(err).Error("Failed to validate component upgrade")
+		return ctrl.Result{}, recordErr
+	}
+
+	if !validation.Allowed {
+		blockReason := "Component upgrade blocked"
+		if validation.BlockReason != nil {
+			blockReason = *validation.BlockReason
+		}
+		recordErr = fmt.Errorf("component upgrade blocked: %s", blockReason)
+		log.Warnf("Component upgrade blocked: %s", blockReason)
+		return ctrl.Result{}, recordErr
+	}
+
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
 		ReleaseName: component.Spec.Component,
@@ -764,6 +793,10 @@ func (r *ComponentReconciler) recordActionResult(ctx context.Context, log logrus
 }
 
 func (r *ComponentReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
+	if r.castAIClientGetter != nil {
+		return r.castAIClientGetter(ctx, cluster)
+	}
+
 	auth := auth.NewAuth(cluster.Namespace, cluster.Name)
 	if err := auth.LoadApiKey(ctx, r.Client); err != nil {
 		return nil, err
