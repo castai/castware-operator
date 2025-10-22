@@ -27,7 +27,69 @@ var _ = Describe("Component Webhook", func() {
 	const (
 		componentName = "castai-agent"
 		clusterName   = "castai"
+		testClusterID = "12345678-1234-5678-89ab-123456789abc"
 	)
+
+	// mockServerOptions configures the mock API server behavior
+	type mockServerOptions struct {
+		validationEndpoint *struct {
+			allowed     bool
+			blockReason string
+		}
+	}
+
+	type mockServerOption func(*mockServerOptions)
+
+	// withValidation configures the validation endpoint response
+	withValidation := func(allowed bool, blockReason string) mockServerOption {
+		return func(opts *mockServerOptions) {
+			opts.validationEndpoint = &struct {
+				allowed     bool
+				blockReason string
+			}{
+				allowed:     allowed,
+				blockReason: blockReason,
+			}
+		}
+	}
+
+	// newMockAPIServer creates a mock API server with optional validation endpoint
+	newMockAPIServer := func(options ...mockServerOption) *httptest.Server {
+		opts := &mockServerOptions{}
+		for _, opt := range options {
+			opt(opts)
+		}
+
+		dummyUser, _ := json.Marshal(castaitest.CreateUserObject())
+		dummyComponent, _ := json.Marshal(castaitest.CreateComponentObject())
+
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/v1/me":
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(dummyUser)
+			case "/cluster-management/v1/components:getByName":
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(dummyComponent)
+			case fmt.Sprintf("/cluster-management/v1/clusters/%s/components:validateUpgrade", testClusterID):
+				if opts.validationEndpoint != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					validationResp := map[string]interface{}{
+						"allowed":      opts.validationEndpoint.allowed,
+						"block_reason": opts.validationEndpoint.blockReason,
+					}
+					response, _ := json.Marshal(validationResp)
+					_, _ = w.Write(response)
+				} else {
+					w.WriteHeader(http.StatusNotFound)
+				}
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+	}
+
 	newTestComponent := func(t GinkgoTInterface) *castwarev1alpha1.Component {
 		t.Helper()
 		return &castwarev1alpha1.Component{
@@ -102,24 +164,8 @@ var _ = Describe("Component Webhook", func() {
 	Context("When creating or updating Component under Validating Webhook", Ordered, func() {
 		var apiServer *httptest.Server
 		BeforeAll(func() {
-			// spin up dummy CAST.AI server
-			dummyUser, _ := json.Marshal(castaitest.CreateUserObject())
-			dummyComponent, _ := json.Marshal(castaitest.CreateComponentObject())
-			apiServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case "/v1/me":
-					w.WriteHeader(http.StatusOK)
-					_, _ = w.Write(dummyUser)
-					return
-				case "/cluster-management/v1/components:getByName":
-					w.WriteHeader(http.StatusOK)
-					_, _ = w.Write(dummyComponent)
-					return
-				default:
-					defer GinkgoRecover()
-					Fail(fmt.Sprintf("Unexpected request path: %s", r.URL.Path))
-				}
-			}))
+			// spin up dummy CAST.AI server (no validation endpoint needed for these tests)
+			apiServer = newMockAPIServer()
 
 			// create a dummy cluster with a valid API key secret
 			secret := &corev1.Secret{
@@ -311,11 +357,8 @@ var _ = Describe("Component Webhook", func() {
 	Context("When validating component upgrade", Ordered, func() {
 		var apiServer *httptest.Server
 		BeforeAll(func() {
-			// Spin up a temporary API server for setup
-			apiServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(`{}`))
-			}))
+			// Spin up a temporary API server for setup (no validation endpoint needed for setup)
+			apiServer = newMockAPIServer()
 
 			// create a dummy cluster with a valid API key secret
 			secret := &corev1.Secret{
@@ -338,10 +381,10 @@ var _ = Describe("Component Webhook", func() {
 					Provider:     "test",
 					APIKeySecret: "test-api-key-upgrade",
 					API: castwarev1alpha1.APISpec{
-						APIURL: apiServer.URL, // Use temporary server URL
+						APIURL: apiServer.URL,
 					},
 					Cluster: &castwarev1alpha1.ClusterMetadataSpec{
-						ClusterID: "12345678-1234-5678-89ab-123456789abc",
+						ClusterID: testClusterID,
 					},
 				},
 			}
@@ -356,32 +399,10 @@ var _ = Describe("Component Webhook", func() {
 
 		It("Should admit update when upgrade validation passes", func() {
 			By("setting up mock server that allows upgrade")
-			dummyComponent, _ := json.Marshal(castaitest.CreateComponentObject())
-
-			// Close the old server and create a new one with proper handlers
 			if apiServer != nil {
 				apiServer.Close()
 			}
-
-			apiServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case "/v1/me":
-					w.WriteHeader(http.StatusOK)
-					_, _ = w.Write([]byte(`{}`))
-					return
-				case "/cluster-management/v1/components:getByName":
-					w.WriteHeader(http.StatusOK)
-					_, _ = w.Write(dummyComponent)
-					return
-				case "/cluster-management/v1/clusters/12345678-1234-5678-89ab-123456789abc/components:validateUpgrade":
-					w.WriteHeader(http.StatusOK)
-					_, _ = w.Write([]byte(`{"allowed": true, "block_reason": ""}`))
-					return
-				default:
-					w.WriteHeader(http.StatusNotFound)
-					return
-				}
-			}))
+			apiServer = newMockAPIServer(withValidation(true, ""))
 
 			// Update cluster with new API server URL
 			cluster := &castwarev1alpha1.Cluster{}
@@ -412,29 +433,10 @@ var _ = Describe("Component Webhook", func() {
 
 		It("Should deny update when upgrade validation fails due to RBAC changes", func() {
 			By("setting up mock server that blocks upgrade")
-			dummyComponent, _ := json.Marshal(castaitest.CreateComponentObject())
+			blockReason := "Component version 0.118.0 requires RBAC permission changes and was released after your operator version. Please upgrade castware-operator (current: 0.45.0 from 2025-01-10) before upgrading castai-agent"
+
 			apiServer.Close()
-			apiServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case "/v1/me":
-					w.WriteHeader(http.StatusOK)
-					_, _ = w.Write([]byte(`{}`))
-					return
-				case "/cluster-management/v1/components:getByName":
-					w.WriteHeader(http.StatusOK)
-					_, _ = w.Write(dummyComponent)
-					return
-				case "/cluster-management/v1/clusters/12345678-1234-5678-89ab-123456789abc/components:validateUpgrade":
-					w.WriteHeader(http.StatusOK)
-					blockReason := "Component version 0.118.0 requires RBAC permission changes and was released after your operator version. Please upgrade castware-operator (current: 0.45.0 from 2025-01-10) before upgrading castai-agent"
-					response := fmt.Sprintf(`{"allowed": false, "block_reason": "%s"}`, blockReason)
-					_, _ = w.Write([]byte(response))
-					return
-				default:
-					defer GinkgoRecover()
-					Fail(fmt.Sprintf("Unexpected request path: %s", r.URL.Path))
-				}
-			}))
+			apiServer = newMockAPIServer(withValidation(false, blockReason))
 
 			// Update cluster with new API server URL
 			cluster := &castwarev1alpha1.Cluster{}
