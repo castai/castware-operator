@@ -154,6 +154,15 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 			err = errors.Join(err, rollbackErr)
 			log.WithError(rollbackErr).Error("Rollback failed")
 		}
+
+		helmRelease, getReleaseErr := s.helmClient.GetRelease(getReleaseOptions)
+		if getReleaseErr != nil {
+			desiredVersion = ""
+			log.WithError(getReleaseErr).Error("Get release after rolback failed")
+		}
+		if helmRelease != nil && helmRelease.Chart != nil && helmRelease.Chart.Metadata != nil {
+			desiredVersion = helmRelease.Chart.Metadata.Version
+		}
 		return err
 	}
 
