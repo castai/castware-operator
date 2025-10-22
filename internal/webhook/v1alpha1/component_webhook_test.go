@@ -25,9 +25,13 @@ import (
 
 var _ = Describe("Component Webhook", func() {
 	const (
-		componentName = "castai-agent"
-		clusterName   = "castai"
-		testClusterID = "12345678-1234-5678-89ab-123456789abc"
+		componentName      = "castai-agent"
+		clusterName        = "castai"
+		testClusterID      = "12345678-1234-5678-89ab-123456789abc"
+		testClusterUpgrade = "test-cluster-upgrade"
+		testVersion0_117_0 = "0.117.0"
+		testVersion0_118_0 = "0.118.0"
+		testApiKeyUpgrade  = "test-api-key-upgrade"
 	)
 
 	// mockServerOptions configures the mock API server behavior
@@ -363,7 +367,7 @@ var _ = Describe("Component Webhook", func() {
 			// create a dummy cluster with a valid API key secret
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-api-key-upgrade",
+					Name:      testApiKeyUpgrade,
 					Namespace: "default",
 				},
 				Data: map[string][]byte{
@@ -374,12 +378,12 @@ var _ = Describe("Component Webhook", func() {
 
 			cluster := &castwarev1alpha1.Cluster{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-cluster-upgrade",
+					Name:      testClusterUpgrade,
 					Namespace: "default",
 				},
 				Spec: castwarev1alpha1.ClusterSpec{
 					Provider:     "test",
-					APIKeySecret: "test-api-key-upgrade",
+					APIKeySecret: testApiKeyUpgrade,
 					API: castwarev1alpha1.APISpec{
 						APIURL: apiServer.URL,
 					},
@@ -406,29 +410,29 @@ var _ = Describe("Component Webhook", func() {
 
 			// Update cluster with new API server URL
 			cluster := &castwarev1alpha1.Cluster{}
-			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "test-cluster-upgrade", Namespace: "default"}, cluster)).To(Succeed())
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: testClusterUpgrade, Namespace: "default"}, cluster)).To(Succeed())
 			cluster.Spec.API.APIURL = apiServer.URL
 			Expect(k8sClient.Update(ctx, cluster)).To(Succeed())
 
 			By("simulating a valid version upgrade")
 			oldObj.Spec.Component = componentName
-			oldObj.Spec.Cluster = "test-cluster-upgrade"
+			oldObj.Spec.Cluster = testClusterUpgrade
 			oldObj.Spec.Version = "0.116.0"
 			oldObj.SetNamespace("default")
 
 			obj.Spec.Component = componentName
-			obj.Spec.Cluster = "test-cluster-upgrade"
-			obj.Spec.Version = "0.117.0"
+			obj.Spec.Cluster = testClusterUpgrade
+			obj.Spec.Version = testVersion0_117_0
 			obj.SetNamespace("default")
 
 			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
 				RepoURL: "",
 				Name:    "test-helm-chart",
-				Version: "0.117.0",
+				Version: testVersion0_117_0,
 			})
 
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("Should deny update when upgrade validation fails due to RBAC changes", func() {
@@ -440,25 +444,25 @@ var _ = Describe("Component Webhook", func() {
 
 			// Update cluster with new API server URL
 			cluster := &castwarev1alpha1.Cluster{}
-			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "test-cluster-upgrade", Namespace: "default"}, cluster)).To(Succeed())
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: testClusterUpgrade, Namespace: "default"}, cluster)).To(Succeed())
 			cluster.Spec.API.APIURL = apiServer.URL
 			Expect(k8sClient.Update(ctx, cluster)).To(Succeed())
 
 			By("simulating a blocked version upgrade")
 			oldObj.Spec.Component = componentName
-			oldObj.Spec.Cluster = "test-cluster-upgrade"
-			oldObj.Spec.Version = "0.117.0"
+			oldObj.Spec.Cluster = testClusterUpgrade
+			oldObj.Spec.Version = testVersion0_117_0
 			oldObj.SetNamespace("default")
 
 			obj.Spec.Component = componentName
-			obj.Spec.Cluster = "test-cluster-upgrade"
-			obj.Spec.Version = "0.118.0"
+			obj.Spec.Cluster = testClusterUpgrade
+			obj.Spec.Version = testVersion0_118_0
 			obj.SetNamespace("default")
 
 			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
 				RepoURL: "",
 				Name:    "test-helm-chart",
-				Version: "0.118.0",
+				Version: testVersion0_118_0,
 			})
 
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
@@ -470,26 +474,26 @@ var _ = Describe("Component Webhook", func() {
 		It("Should skip upgrade validation when version does not change", func() {
 			By("simulating an update without version change")
 			oldObj.Spec.Component = componentName
-			oldObj.Spec.Cluster = "test-cluster-upgrade"
-			oldObj.Spec.Version = "0.117.0"
+			oldObj.Spec.Cluster = testClusterUpgrade
+			oldObj.Spec.Version = testVersion0_117_0
 			oldObj.Spec.Enabled = true
 			oldObj.SetNamespace("default")
 
 			obj.Spec.Component = componentName
-			obj.Spec.Cluster = "test-cluster-upgrade"
-			obj.Spec.Version = "0.117.0" // Same version
-			obj.Spec.Enabled = false     // Only changing enabled flag
+			obj.Spec.Cluster = testClusterUpgrade
+			obj.Spec.Version = testVersion0_117_0 // Same version
+			obj.Spec.Enabled = false              // Only changing enabled flag
 			obj.SetNamespace("default")
 
 			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
 				RepoURL: "",
 				Name:    "test-helm-chart",
-				Version: "0.117.0",
+				Version: testVersion0_117_0,
 			})
 
 			// No ValidateComponentUpgrade API call should be made
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 })
