@@ -96,27 +96,31 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 
 	// Dry run was successful, proceed with upgrade
 	upgradeOptions.DryRun = false
-	previousVersion := helmRelease.Chart.Metadata.Version
+
+	beforeUpdateVersion := helmRelease.Chart.Metadata.Version
 	releaseName := helmRelease.Name
+
 	helmRelease, err = s.helmClient.Upgrade(ctx, upgradeOptions)
 	if err != nil {
 		// If upgrade fails we log the error check for status, if the upgrade didn't start there's
 		// no reason to rollback, but if the helm release is in failed state we rollback.
 		log.WithError(err).Error("Upgrade run failed")
 	} else {
-		log.Infof("Upgrade started, release name: %s -> %s", previousVersion, helmRelease.Chart.Metadata.Version)
+		log.Infof("Upgrade started, release name: %s -> %s", beforeUpdateVersion, helmRelease.Chart.Metadata.Version)
 	}
-	currentVersion := ""
+
+	desiredVersion := ""
 	if helmRelease != nil && helmRelease.Chart != nil && helmRelease.Chart.Metadata != nil {
-		currentVersion = helmRelease.Chart.Metadata.Version
+		desiredVersion = helmRelease.Chart.Metadata.Version
 	}
+
 	defer func() {
 		if cluster.Spec.Cluster != nil && cluster.Spec.Cluster.ClusterID != "" {
 			actionResult := &castai.ComponentActionResult{
 				Name:           components.ComponentNameOperator,
 				Action:         castai.Action_UPGRADE,
-				CurrentVersion: currentVersion,
-				Version:        previousVersion,
+				CurrentVersion: beforeUpdateVersion,
+				Version:        desiredVersion,
 				Status:         castai.Status_OK,
 				ReleaseName:    releaseName,
 			}
