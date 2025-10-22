@@ -464,34 +464,6 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 	}
 
-	castAiClient, err := r.getCastaiClient(ctx, cluster)
-	if err != nil {
-		recordErr = fmt.Errorf("failed to get castai client: %w", err)
-		log.WithError(err).Error("Failed to get castai client")
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
-	}
-
-	validation, err := castAiClient.ValidateComponentUpgrade(ctx, &castai.ValidateComponentUpgradeRequest{
-		ClusterID:     cluster.Spec.Cluster.ClusterID,
-		ComponentName: component.Spec.Component,
-		TargetVersion: component.Spec.Version,
-	})
-	if err != nil {
-		recordErr = fmt.Errorf("failed to validate component upgrade: %w", err)
-		log.WithError(err).Error("Failed to validate component upgrade")
-		return ctrl.Result{}, recordErr
-	}
-
-	if !validation.Allowed {
-		blockReason := "Component upgrade blocked"
-		if validation.BlockReason != nil {
-			blockReason = *validation.BlockReason
-		}
-		recordErr = fmt.Errorf("component upgrade blocked: %s", blockReason)
-		log.Warnf("Component upgrade blocked: %s", blockReason)
-		return ctrl.Result{}, recordErr
-	}
-
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
 		ReleaseName: component.Spec.Component,

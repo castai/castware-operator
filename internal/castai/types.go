@@ -177,6 +177,6 @@ type ValidateComponentUpgradeRequest struct {
 }
 
 type ValidateComponentUpgradeResponse struct {
-	Allowed     bool    `json:"allowed"`
-	BlockReason *string `json:"block_reason,omitempty"`
+	Allowed     bool   `json:"allowed"`
+	BlockReason string `json:"block_reason,omitempty"`
 }

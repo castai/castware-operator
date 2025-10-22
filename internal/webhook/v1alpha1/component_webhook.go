@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/castai/castware-operator/internal/helm"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"helm.sh/helm/v3/pkg/release"
+
+	"github.com/castai/castware-operator/internal/helm"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -18,12 +19,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	"github.com/sirupsen/logrus"
+
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 	"github.com/castai/castware-operator/internal/castai"
 	"github.com/castai/castware-operator/internal/castai/auth"
 	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/internal/config"
-	"github.com/sirupsen/logrus"
 )
 
 // nolint:unused
@@ -245,6 +247,13 @@ func (v *ComponentCustomValidator) ValidateUpdate(ctx context.Context, oldObj, n
 		return nil, fmt.Errorf("failed to validate version %s for chart '%s': %w", component.Spec.Version, castComponent.HelmChart, err)
 	}
 
+	// Validate component upgrade when version changes
+	if oldComponent.Spec.Version != component.Spec.Version {
+		if err := v.validateComponentUpgrade(ctx, cluster, component); err != nil {
+			return nil, fmt.Errorf("component upgrade validation failed: %w", err)
+		}
+	}
+
 	return nil, nil
 }
 
@@ -313,5 +322,37 @@ func (v *ComponentCustomValidator) validateHelmRelease(component *castwarev1alph
 		return errors.New("helm chart is in failed status")
 
 	}
+	return nil
+}
+
+// validateComponentUpgrade validates if a component upgrade can proceed based on RBAC checksum changes.
+func (v *ComponentCustomValidator) validateComponentUpgrade(ctx context.Context, cluster *castwarev1alpha1.Cluster, component *castwarev1alpha1.Component) error {
+	auth := auth.NewAuthFromCR(cluster)
+
+	err := auth.LoadApiKey(ctx, v.client)
+	if err != nil {
+		return fmt.Errorf("unable to load api key: %w", err)
+	}
+
+	restClient := castai.NewRestyClient(v.config, cluster.Spec.API.APIURL, auth)
+	castAiClient := castai.NewClient(v.log, v.config, restClient)
+
+	validation, err := castAiClient.ValidateComponentUpgrade(ctx, &castai.ValidateComponentUpgradeRequest{
+		ClusterID:     cluster.Spec.Cluster.ClusterID,
+		ComponentName: component.Spec.Component,
+		TargetVersion: component.Spec.Version,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to validate component upgrade: %w", err)
+	}
+
+	if !validation.Allowed {
+		blockReason := "Component upgrade blocked"
+		if validation.BlockReason != "" {
+			blockReason = validation.BlockReason
+		}
+		return errors.New(blockReason)
+	}
+
 	return nil
 }
