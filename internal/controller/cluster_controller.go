@@ -283,6 +283,14 @@ func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, cluster *
 
 			component = newComponent(componentName, version, cluster)
 			component.Spec.Migration = castwarev1alpha1.ComponentMigrationYaml
+			valueOverrides, err := json.Marshal(map[string]interface{}{
+				"replicaCount": deploymentList.Items[0].Spec.Replicas,
+			})
+			if err != nil {
+				log.WithError(err).Error("Failed to marshal value overrides")
+				return false, err
+			}
+			component.Spec.Values = &v1.JSON{Raw: valueOverrides}
 
 			err = r.Create(ctx, component)
 			if err != nil {
