@@ -169,3 +169,14 @@ type ActionUninstall struct {
 	// Name of the component to uninstall.
 	Component string `json:"component"`
 }
+
+type ValidateComponentUpgradeRequest struct {
+	ClusterID     string `json:"cluster_id"`
+	ComponentName string `json:"component_name"`
+	TargetVersion string `json:"target_version"`
+}
+
+type ValidateComponentUpgradeResponse struct {
+	Allowed     bool   `json:"allowed"`
+	BlockReason string `json:"block_reason,omitempty"`
+}

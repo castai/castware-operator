@@ -83,11 +83,12 @@ var ErrNothingToRollback = errors.New("nothing to rollback")
 // ComponentReconciler reconciles a Component object
 type ComponentReconciler struct {
 	client.Client
-	Scheme     *runtime.Scheme
-	Log        logrus.FieldLogger
-	HelmClient helm.Client
-	Recorder   record.EventRecorder
-	Config     *config.Config
+	Scheme             *runtime.Scheme
+	Log                logrus.FieldLogger
+	HelmClient         helm.Client
+	Recorder           record.EventRecorder
+	Config             *config.Config
+	castAIClientGetter func(context.Context, *castwarev1alpha1.Cluster) (castai.CastAIClient, error)
 }
 
 // nolint:gocyclo
@@ -764,6 +765,10 @@ func (r *ComponentReconciler) recordActionResult(ctx context.Context, log logrus
 }
 
 func (r *ComponentReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
+	if r.castAIClientGetter != nil {
+		return r.castAIClientGetter(ctx, cluster)
+	}
+
 	auth := auth.NewAuth(cluster.Namespace, cluster.Name)
 	if err := auth.LoadApiKey(ctx, r.Client); err != nil {
 		return nil, err

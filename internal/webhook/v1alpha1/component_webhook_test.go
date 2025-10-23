@@ -6,30 +6,94 @@ import (
 	"net/http"
 	"net/http/httptest"
 
-	"github.com/castai/castware-operator/internal/helm"
-	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
 	"github.com/golang/mock/gomock"
-	"helm.sh/helm/v3/pkg/release"
-	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-
-	"github.com/sirupsen/logrus"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
+	"github.com/sirupsen/logrus"
+	"helm.sh/helm/v3/pkg/release"
 	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 	castaitest "github.com/castai/castware-operator/internal/castai/test"
 	"github.com/castai/castware-operator/internal/config"
+	"github.com/castai/castware-operator/internal/helm"
+	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
 )
 
 var _ = Describe("Component Webhook", func() {
 	const (
-		componentName = "castai-agent"
-		clusterName   = "castai"
+		componentName      = "castai-agent"
+		clusterName        = "castai"
+		testClusterID      = "12345678-1234-5678-89ab-123456789abc"
+		testClusterUpgrade = "test-cluster-upgrade"
+		testVersion0_117_0 = "0.117.0"
+		testVersion0_118_0 = "0.118.0"
+		testApiKeyUpgrade  = "test-api-key-upgrade"
 	)
+
+	// mockServerOptions configures the mock API server behavior
+	type mockServerOptions struct {
+		validationEndpoint *struct {
+			allowed     bool
+			blockReason string
+		}
+	}
+
+	type mockServerOption func(*mockServerOptions)
+
+	// withValidation configures the validation endpoint response
+	withValidation := func(allowed bool, blockReason string) mockServerOption {
+		return func(opts *mockServerOptions) {
+			opts.validationEndpoint = &struct {
+				allowed     bool
+				blockReason string
+			}{
+				allowed:     allowed,
+				blockReason: blockReason,
+			}
+		}
+	}
+
+	// newMockAPIServer creates a mock API server with optional validation endpoint
+	newMockAPIServer := func(options ...mockServerOption) *httptest.Server {
+		opts := &mockServerOptions{}
+		for _, opt := range options {
+			opt(opts)
+		}
+
+		dummyUser, _ := json.Marshal(castaitest.CreateUserObject())
+		dummyComponent, _ := json.Marshal(castaitest.CreateComponentObject())
+
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/v1/me":
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(dummyUser)
+			case "/cluster-management/v1/components:getByName":
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(dummyComponent)
+			case fmt.Sprintf("/cluster-management/v1/clusters/%s/components:validateUpgrade", testClusterID):
+				if opts.validationEndpoint != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					validationResp := map[string]interface{}{
+						"allowed":      opts.validationEndpoint.allowed,
+						"block_reason": opts.validationEndpoint.blockReason,
+					}
+					response, _ := json.Marshal(validationResp)
+					_, _ = w.Write(response)
+				} else {
+					w.WriteHeader(http.StatusNotFound)
+				}
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+	}
+
 	newTestComponent := func(t GinkgoTInterface) *castwarev1alpha1.Component {
 		t.Helper()
 		return &castwarev1alpha1.Component{
@@ -104,24 +168,8 @@ var _ = Describe("Component Webhook", func() {
 	Context("When creating or updating Component under Validating Webhook", Ordered, func() {
 		var apiServer *httptest.Server
 		BeforeAll(func() {
-			// spin up dummy CAST.AI server
-			dummyUser, _ := json.Marshal(castaitest.CreateUserObject())
-			dummyComponent, _ := json.Marshal(castaitest.CreateComponentObject())
-			apiServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case "/v1/me":
-					w.WriteHeader(http.StatusOK)
-					_, _ = w.Write(dummyUser)
-					return
-				case "/cluster-management/v1/components:getByName":
-					w.WriteHeader(http.StatusOK)
-					_, _ = w.Write(dummyComponent)
-					return
-				default:
-					defer GinkgoRecover()
-					Fail(fmt.Sprintf("Unexpected request path: %s", r.URL.Path))
-				}
-			}))
+			// spin up dummy CAST.AI server (no validation endpoint needed for these tests)
+			apiServer = newMockAPIServer()
 
 			// create a dummy cluster with a valid API key secret
 			secret := &corev1.Secret{
@@ -287,10 +335,11 @@ var _ = Describe("Component Webhook", func() {
 		})
 
 		It("Should admit update", func() {
-			By("simulating a valid update scenario")
+			By("simulating a valid update scenario without version change")
 			oldObj.Spec.Component = componentName
 			oldObj.Spec.Cluster = clusterName
 			oldObj.Spec.Enabled = true
+			oldObj.Spec.Version = "0.0.1" // Set same version to avoid upgrade validation
 			oldObj.SetNamespace("default")
 
 			obj.Spec.Component = componentName
@@ -306,6 +355,145 @@ var _ = Describe("Component Webhook", func() {
 			})
 
 			Expect(validator.ValidateUpdate(ctx, oldObj, obj)).To(BeNil())
+		})
+	})
+
+	Context("When validating component upgrade", Ordered, func() {
+		var apiServer *httptest.Server
+		BeforeAll(func() {
+			// Spin up a temporary API server for setup (no validation endpoint needed for setup)
+			apiServer = newMockAPIServer()
+
+			// create a dummy cluster with a valid API key secret
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testApiKeyUpgrade,
+					Namespace: "default",
+				},
+				Data: map[string][]byte{
+					"API_KEY": []byte("dummy-api-key"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+			cluster := &castwarev1alpha1.Cluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testClusterUpgrade,
+					Namespace: "default",
+				},
+				Spec: castwarev1alpha1.ClusterSpec{
+					Provider:     "test",
+					APIKeySecret: testApiKeyUpgrade,
+					API: castwarev1alpha1.APISpec{
+						APIURL: apiServer.URL,
+					},
+					Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+						ClusterID: testClusterID,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+		})
+
+		AfterAll(func() {
+			if apiServer != nil {
+				apiServer.Close()
+			}
+		})
+
+		It("Should admit update when upgrade validation passes", func() {
+			By("setting up mock server that allows upgrade")
+			if apiServer != nil {
+				apiServer.Close()
+			}
+			apiServer = newMockAPIServer(withValidation(true, ""))
+
+			// Update cluster with new API server URL
+			cluster := &castwarev1alpha1.Cluster{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: testClusterUpgrade, Namespace: "default"}, cluster)).To(Succeed())
+			cluster.Spec.API.APIURL = apiServer.URL
+			Expect(k8sClient.Update(ctx, cluster)).To(Succeed())
+
+			By("simulating a valid version upgrade")
+			oldObj.Spec.Component = componentName
+			oldObj.Spec.Cluster = testClusterUpgrade
+			oldObj.Spec.Version = "0.116.0"
+			oldObj.SetNamespace("default")
+
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = testClusterUpgrade
+			obj.Spec.Version = testVersion0_117_0
+			obj.SetNamespace("default")
+
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: testVersion0_117_0,
+			})
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("Should deny update when upgrade validation fails due to RBAC changes", func() {
+			By("setting up mock server that blocks upgrade")
+			blockReason := "Component version 0.118.0 requires RBAC permission changes and was released after your operator version. Please upgrade castware-operator (current: 0.45.0 from 2025-01-10) before upgrading castai-agent"
+
+			apiServer.Close()
+			apiServer = newMockAPIServer(withValidation(false, blockReason))
+
+			// Update cluster with new API server URL
+			cluster := &castwarev1alpha1.Cluster{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: testClusterUpgrade, Namespace: "default"}, cluster)).To(Succeed())
+			cluster.Spec.API.APIURL = apiServer.URL
+			Expect(k8sClient.Update(ctx, cluster)).To(Succeed())
+
+			By("simulating a blocked version upgrade")
+			oldObj.Spec.Component = componentName
+			oldObj.Spec.Cluster = testClusterUpgrade
+			oldObj.Spec.Version = testVersion0_117_0
+			oldObj.SetNamespace("default")
+
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = testClusterUpgrade
+			obj.Spec.Version = testVersion0_118_0
+			obj.SetNamespace("default")
+
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: testVersion0_118_0,
+			})
+
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("RBAC permission changes"))
+			Expect(err.Error()).To(ContainSubstring("upgrade castware-operator"))
+		})
+
+		It("Should skip upgrade validation when version does not change", func() {
+			By("simulating an update without version change")
+			oldObj.Spec.Component = componentName
+			oldObj.Spec.Cluster = testClusterUpgrade
+			oldObj.Spec.Version = testVersion0_117_0
+			oldObj.Spec.Enabled = true
+			oldObj.SetNamespace("default")
+
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = testClusterUpgrade
+			obj.Spec.Version = testVersion0_117_0 // Same version
+			obj.Spec.Enabled = false              // Only changing enabled flag
+			obj.SetNamespace("default")
+
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: testVersion0_117_0,
+			})
+
+			// No ValidateComponentUpgrade API call should be made
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 })

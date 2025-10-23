@@ -35,6 +35,7 @@ type CastAIClient interface {
 	RecordActionResult(ctx context.Context, clusterID string, req *ComponentActionResult) error
 	PollActions(ctx context.Context, clusterID string) (*PollActionsResponse, error)
 	AckAction(ctx context.Context, clusterID, actionID string, error error) error
+	ValidateComponentUpgrade(ctx context.Context, req *ValidateComponentUpgradeRequest) (*ValidateComponentUpgradeResponse, error)
 }
 type Client struct {
 	log    logrus.FieldLogger
@@ -256,4 +257,25 @@ func (c *Client) AckAction(ctx context.Context, clusterID, actionID string, erro
 		return err
 	}
 	return nil
+}
+
+func (c *Client) ValidateComponentUpgrade(ctx context.Context, req *ValidateComponentUpgradeRequest) (*ValidateComponentUpgradeResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.config.RequestTimeout)
+	defer cancel()
+
+	result := &ValidateComponentUpgradeResponse{}
+	resp, err := c.rest.R().
+		SetContext(ctx).
+		SetResult(result).
+		SetPathParam("clusterId", req.ClusterID).
+		SetBody(req).
+		Post("cluster-management/v1/clusters/{clusterId}/components:validateUpgrade")
+	if err != nil {
+		return nil, err
+	}
+	err = c.toError(resp)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }

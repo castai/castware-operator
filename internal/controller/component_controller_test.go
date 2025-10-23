@@ -1,3 +1,4 @@
+//nolint:goconst
 package controller
 
 import (
@@ -5,10 +6,6 @@ import (
 	"errors"
 	"testing"
 
-	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
-	"github.com/castai/castware-operator/internal/config"
-	"github.com/castai/castware-operator/internal/helm"
-	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
 	"github.com/golang/mock/gomock"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
@@ -25,6 +22,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
+	"github.com/castai/castware-operator/internal/castai"
+	mock_castai "github.com/castai/castware-operator/internal/castai/mock"
+	"github.com/castai/castware-operator/internal/config"
+	"github.com/castai/castware-operator/internal/helm"
+	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
 )
 
 func TestReconcile(t *testing.T) {
@@ -121,7 +125,7 @@ func TestReconcile(t *testing.T) {
 			testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
 			testComponent.Spec.Version = "0.2.5" // CRD specifies v0.1.1
 
-			testOps := newComponentTestOps(t, testCluster, testComponent)
+			testOps := newComponentTestOpsWithCastAIClient(t, testCluster, testComponent)
 
 			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
 
@@ -129,21 +133,25 @@ func TestReconcile(t *testing.T) {
 			_, err := testOps.sut.Reconcile(ctx, req)
 			r.NoError(err)
 
-			// Mock existing helm release with different version than CRD
 			testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 				Namespace:   testComponent.Namespace,
 				ReleaseName: testComponent.Spec.Component,
 			}).Return(&release.Release{
-				Name: testComponent.Spec.Component,
-				Info: &release.Info{Status: release.StatusDeployed},
+				Name:      testComponent.Spec.Component,
+				Namespace: testComponent.Namespace,
+				Info:      &release.Info{Status: release.StatusDeployed},
 				Chart: &chart.Chart{
 					Metadata: &chart.Metadata{
-						Version: "0.1.1", // Different version than CRD (0.2.5)
+						Name:    testComponent.Spec.Component,
+						Version: "0.1.1",
 					},
 				},
+				Config: map[string]interface{}{},
 			}, nil).Times(2)
 
-			// Second reconcile should detect version mismatch and set current version from helm
+			testOps.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), testCluster.Spec.Cluster.ClusterID, gomock.Any()).Return(nil).AnyTimes()
+
+			// Second reconcile detects version mismatch
 			_, err = testOps.sut.Reconcile(ctx, req)
 			r.NoError(err)
 
@@ -151,7 +159,6 @@ func TestReconcile(t *testing.T) {
 			err = testOps.sut.Client.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
 			r.NoError(err)
 
-			// Should set current version to what's actually installed in helm
 			r.Equal("0.1.1", actualComponent.Status.CurrentVersion)
 			r.Len(actualComponent.Status.Conditions, 2)
 
@@ -166,7 +173,6 @@ func TestReconcile(t *testing.T) {
 			r.Equal(metav1.ConditionTrue, availableCondition.Status)
 			r.Equal(reasonInstalled, availableCondition.Reason)
 
-			// Third reconcile should upgrade the component
 			testOps.mockHelm.EXPECT().Upgrade(gomock.Any(), gomock.Any()).Return(&release.Release{
 				Name: testComponent.Spec.Component,
 				Info: &release.Info{Status: release.StatusDeployed},
@@ -176,6 +182,7 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 			}, nil)
+
 			_, err = testOps.sut.Reconcile(ctx, req)
 			r.NoError(err)
 		})
@@ -414,8 +421,9 @@ func newTestComponent(t *testing.T, clusterName, name string) *castwarev1alpha1.
 }
 
 type componentTestOps struct {
-	sut      *ComponentReconciler
-	mockHelm *mock_helm.MockClient
+	sut        *ComponentReconciler
+	mockHelm   *mock_helm.MockClient
+	mockCastAI *mock_castai.MockCastAIClient
 }
 
 func newComponentTestOps(t *testing.T, objs ...client.Object) *componentTestOps {
@@ -445,6 +453,44 @@ func newComponentTestOps(t *testing.T, objs ...client.Object) *componentTestOps 
 			HelmClient: mockHelm,
 			Recorder:   fakeRecorder,
 			Config:     &config.Config{},
+		},
+	}
+
+	return opts
+}
+
+func newComponentTestOpsWithCastAIClient(t *testing.T, objs ...client.Object) *componentTestOps {
+	t.Helper()
+	r := require.New(t)
+	scheme := runtime.NewScheme()
+
+	err := castwarev1alpha1.AddToScheme(scheme)
+	r.NoError(err)
+
+	err = corev1.AddToScheme(scheme)
+	r.NoError(err)
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).WithStatusSubresource(objs...).Build()
+
+	ctrl := gomock.NewController(t)
+	mockHelm := mock_helm.NewMockClient(ctrl)
+	mockCastAI := mock_castai.NewMockCastAIClient(ctrl)
+
+	fakeRecorder := record.NewFakeRecorder(10)
+
+	opts := &componentTestOps{
+		mockHelm:   mockHelm,
+		mockCastAI: mockCastAI,
+		sut: &ComponentReconciler{
+			Client:     c,
+			Scheme:     c.Scheme(),
+			Log:        logrus.New(),
+			HelmClient: mockHelm,
+			Recorder:   fakeRecorder,
+			Config:     &config.Config{},
+			castAIClientGetter: func(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
+				return mockCastAI, nil
+			},
 		},
 	}
 
