@@ -165,8 +165,13 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 		return nil, fmt.Errorf("cluster '%s' does not exist", c.Spec.Cluster)
 	}
 
+	castAiClient, err := v.getCastAIClient(ctx, cluster)
+	if err != nil {
+		return nil, err
+	}
+
 	// validate that CAST.AI supports the component
-	castComponent, err := v.getComponentByName(ctx, cluster, c.Spec.Component)
+	castComponent, err := v.getComponentByName(ctx, castAiClient, c.Spec.Component)
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +243,12 @@ func (v *ComponentCustomValidator) ValidateUpdate(ctx context.Context, oldObj, n
 		return nil, fmt.Errorf("cluster '%s' does not exist", component.Spec.Cluster)
 	}
 
-	castComponent, err := v.getComponentByName(ctx, cluster, component.Spec.Component)
+	castAiClient, err := v.getCastAIClient(ctx, cluster)
+	if err != nil {
+		return nil, err
+	}
+
+	castComponent, err := v.getComponentByName(ctx, castAiClient, component.Spec.Component)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +259,7 @@ func (v *ComponentCustomValidator) ValidateUpdate(ctx context.Context, oldObj, n
 
 	// Validate component upgrade when version changes
 	if oldComponent.Spec.Version != component.Spec.Version {
-		if err := v.validateComponentUpgrade(ctx, cluster, component); err != nil {
+		if err := v.validateComponentUpgrade(ctx, castAiClient, cluster, component); err != nil {
 			return nil, fmt.Errorf("component upgrade validation failed: %w", err)
 		}
 	}
@@ -283,7 +293,7 @@ func (v *ComponentCustomValidator) validateVersion(ctx context.Context, helmChar
 	})
 	return err
 }
-func (v *ComponentCustomValidator) getComponentByName(ctx context.Context, cluster *castwarev1alpha1.Cluster, componentName string) (*castai.Component, error) {
+func (v *ComponentCustomValidator) getCastAIClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
 	auth := auth.NewAuthFromCR(cluster)
 
 	err := auth.LoadApiKey(ctx, v.client)
@@ -292,8 +302,11 @@ func (v *ComponentCustomValidator) getComponentByName(ctx context.Context, clust
 	}
 
 	restClient := castai.NewRestyClient(v.config, cluster.Spec.API.APIURL, auth)
+	return castai.NewClient(v.log, v.config, restClient), nil
+}
 
-	resp, err := castai.NewClient(logrus.New(), v.config, restClient).GetComponentByName(ctx, componentName)
+func (v *ComponentCustomValidator) getComponentByName(ctx context.Context, client castai.CastAIClient, componentName string) (*castai.Component, error) {
+	resp, err := client.GetComponentByName(ctx, componentName)
 	if err != nil {
 		if errors.Is(err, castai.ErrNotFound) {
 			return nil, fmt.Errorf("component '%s' is not supported by CAST.AI", componentName)
@@ -326,17 +339,7 @@ func (v *ComponentCustomValidator) validateHelmRelease(component *castwarev1alph
 }
 
 // validateComponentUpgrade validates if a component upgrade can proceed based on RBAC checksum changes.
-func (v *ComponentCustomValidator) validateComponentUpgrade(ctx context.Context, cluster *castwarev1alpha1.Cluster, component *castwarev1alpha1.Component) error {
-	auth := auth.NewAuthFromCR(cluster)
-
-	err := auth.LoadApiKey(ctx, v.client)
-	if err != nil {
-		return fmt.Errorf("unable to load api key: %w", err)
-	}
-
-	restClient := castai.NewRestyClient(v.config, cluster.Spec.API.APIURL, auth)
-	castAiClient := castai.NewClient(v.log, v.config, restClient)
-
+func (v *ComponentCustomValidator) validateComponentUpgrade(ctx context.Context, castAiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, component *castwarev1alpha1.Component) error {
 	validation, err := castAiClient.ValidateComponentUpgrade(ctx, &castai.ValidateComponentUpgradeRequest{
 		ClusterID:     cluster.Spec.Cluster.ClusterID,
 		ComponentName: component.Spec.Component,
