@@ -390,6 +390,20 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 		return ctrl.Result{}, nil
 	}
 
+	// Set progressing status before starting the install
+	if !dryRun {
+		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+			Type:    typeProgressingComponent,
+			Status:  metav1.ConditionTrue,
+			Reason:  progressingReasonInstalling,
+			Message: fmt.Sprintf("Installing component: %s", component.Spec.Version),
+		})
+		err = r.updateStatus(ctx, component)
+		if err != nil {
+			log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
+		}
+	}
+
 	_, err = r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
 		ReleaseName: component.Spec.Component,
@@ -424,19 +438,6 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
-		}
-	}
-
-	if !dryRun {
-		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
-			Type:    typeProgressingComponent,
-			Status:  metav1.ConditionTrue,
-			Reason:  progressingReasonInstalling,
-			Message: fmt.Sprintf("Installing component: %s", component.Spec.Version),
-		})
-		err = r.updateStatus(ctx, component)
-		if err != nil {
-			log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
 		}
 	}
 
@@ -480,6 +481,19 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 		return ctrl.Result{}, nil
 	}
 
+	// Set progressing status before starting the upgrade
+	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+		Type:    typeProgressingComponent,
+		Status:  metav1.ConditionTrue,
+		Reason:  progressingReasonUpgrading,
+		Message: fmt.Sprintf("Upgrading component: %s -> %s", component.Status.CurrentVersion, component.Spec.Version),
+	})
+	err = r.updateStatus(ctx, component)
+	if err != nil {
+		// Update status errors are recoverable, if it happens we just requeue and end up here again.
+		log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
+	}
+
 	_, err = r.HelmClient.Upgrade(ctx, helm.UpgradeOptions{
 		ChartSource: &helm.ChartSource{
 			RepoURL: cluster.Spec.HelmRepoURL,
@@ -514,17 +528,6 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 
 	r.Recorder.Eventf(component, v1.EventTypeNormal, reasonUpgradeStarted, "Upgrade started: %s -> %s", component.Status.CurrentVersion, component.Spec.Version)
 
-	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
-		Type:    typeProgressingComponent,
-		Status:  metav1.ConditionTrue,
-		Reason:  progressingReasonUpgrading,
-		Message: fmt.Sprintf("Upgrading component: %s -> %s", component.Status.CurrentVersion, component.Spec.Version),
-	})
-	err = r.updateStatus(ctx, component)
-	if err != nil {
-		// Update status errors are recoverable, if it happens we just requeue and end up here again.
-		log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
-	}
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 
