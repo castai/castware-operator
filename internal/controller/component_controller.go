@@ -369,7 +369,10 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 			if recordErr == nil {
 				recordErr = err
 			}
-			r.recordActionResult(ctx, log, component, castai.Action_INSTALL, recordErr, withDefaultStatus(castai.Status_PROGRESSING))
+
+			if recordErr != nil {
+				r.recordActionResult(ctx, log, component, castai.Action_INSTALL, recordErr)
+			}
 		}
 	}()
 
@@ -390,7 +393,6 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 		return ctrl.Result{}, nil
 	}
 
-	// Set progressing status before starting the install
 	if !dryRun {
 		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
 			Type:    typeProgressingComponent,
@@ -402,6 +404,9 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 		if err != nil {
 			log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
 		}
+
+		// Record progressing status before starting the install
+		r.recordActionResult(ctx, log, component, castai.Action_INSTALL, nil, withDefaultStatus(castai.Status_PROGRESSING))
 	}
 
 	_, err = r.HelmClient.GetRelease(helm.GetReleaseOptions{
@@ -453,7 +458,10 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 		if recordErr == nil {
 			recordErr = err
 		}
-		r.recordActionResult(ctx, log, component, castai.Action_UPGRADE, recordErr, withDefaultStatus(castai.Status_PROGRESSING))
+		// Record error status if there was an error at any point
+		if recordErr != nil {
+			r.recordActionResult(ctx, log, component, castai.Action_UPGRADE, recordErr)
+		}
 	}()
 
 	cluster := &castwarev1alpha1.Cluster{}
@@ -493,6 +501,9 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 		// Update status errors are recoverable, if it happens we just requeue and end up here again.
 		log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
 	}
+
+	// Record progressing status to before starting the upgrade
+	r.recordActionResult(ctx, log, component, castai.Action_UPGRADE, nil, withDefaultStatus(castai.Status_PROGRESSING))
 
 	_, err = r.HelmClient.Upgrade(ctx, helm.UpgradeOptions{
 		ChartSource: &helm.ChartSource{
