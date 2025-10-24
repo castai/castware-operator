@@ -59,6 +59,13 @@ jobs:
           GOARCH: arm64
           CGO_ENABLED: 0
 
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: bin/
+          retention-days: 1
+
       - name: Test
         run: make test
 
@@ -66,7 +73,7 @@ jobs:
         uses: docker/setup-qemu-action@v2
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to Google Artifact Registry
         uses: docker/login-action@v3
@@ -75,15 +82,14 @@ jobs:
           username: _json_key
           password: ${{ secrets.ARTIFACT_BUILDER_JSON_KEY }}
 
-      # - name: Build and push main
-      #   if: github.event_name != 'release'
-      #   uses: docker/build-push-action@v6
-      #   with:
-      #     context: .
-      #     push: true
-      #     platforms: linux/arm64,linux/amd64
-      #     tags: |
-      #       us-docker.pkg.dev/castai-hub/library/castware-operator:${{ github.sha }}
+      - name: Build and push pr
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/arm64,linux/amd64
+          tags: us-docker.pkg.dev/castai-hub/library/castware-operator:${{ github.sha }}
 
       - name: Build and push release
         if: github.event_name == 'release'
@@ -128,6 +134,15 @@ jobs:
           key: ${{ runner.os }}-build-${{ hashFiles('**/go.sum') }}
           restore-keys: ${{ runner.os }}-build-
 
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: bin/
+
+      - name: Make binaries executable
+        run: chmod +x bin/*
+
       - name: Set cluster name
         run: echo "KIND_CLUSTER=castware-operator-e2e" >> $GITHUB_ENV
 
@@ -140,35 +155,6 @@ jobs:
 
       - name: Run E2E tests
         run: make test-e2e
-
-
-  release_module:
-    name: Release GO Module
-    runs-on: ubuntu-24.04
-    if: github.event_name == 'release'
-    needs: build
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-        with:
-          path: src/
-
-      - name: Get release tag
-        run: echo "RELEASE_TAG=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
-
-      - name: Authenticate with Google Cloud Artifact Registry
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: '${{ secrets.GCP_MODULES_RELEASER_JSON_KEY }}'
-
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          install_components: package-go-module
-
-      - name: Upload Library to Artifact Registry
-        run: |
-          gcloud artifacts go upload --repository=go-modules --location=us-central1 --version=${{ env.RELEASE_TAG }} --module-path=github.com/castai/castware-operator --source=./src
 
   release_chart:
     name: Release Helm Chart
