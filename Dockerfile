@@ -3,7 +3,7 @@
 FROM gcr.io/distroless/static:nonroot
 ARG TARGETARCH
 WORKDIR /
-COPY bin/castware-operator-${TARGETARCH} .
+COPY bin/castware-operator-${TARGETARCH} /manager
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]
