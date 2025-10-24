@@ -60,7 +60,7 @@ jobs:
           CGO_ENABLED: 0
 
       - name: Upload binaries
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: binaries
           path: bin/
@@ -135,7 +135,7 @@ jobs:
           restore-keys: ${{ runner.os }}-build-
 
       - name: Download binaries
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: binaries
           path: bin/
