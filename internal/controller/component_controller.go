@@ -369,7 +369,10 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 			if recordErr == nil {
 				recordErr = err
 			}
-			r.recordActionResult(ctx, log, component, castai.Action_INSTALL, recordErr, withDefaultStatus(castai.Status_PROGRESSING))
+
+			if recordErr != nil {
+				r.recordActionResult(ctx, log, component, castai.Action_INSTALL, recordErr)
+			}
 		}
 	}()
 
@@ -388,6 +391,22 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 		recordErr = fmt.Errorf("failed to set value overrides: %w", err)
 		log.WithError(err).Error("Failed to set helm value overrides")
 		return ctrl.Result{}, nil
+	}
+
+	if !dryRun {
+		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+			Type:    typeProgressingComponent,
+			Status:  metav1.ConditionTrue,
+			Reason:  progressingReasonInstalling,
+			Message: fmt.Sprintf("Installing component: %s", component.Spec.Version),
+		})
+		err = r.updateStatus(ctx, component)
+		if err != nil {
+			log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
+		}
+
+		// Record progressing status before starting the install
+		r.recordActionResult(ctx, log, component, castai.Action_INSTALL, nil, withDefaultStatus(castai.Status_PROGRESSING))
 	}
 
 	_, err = r.HelmClient.GetRelease(helm.GetReleaseOptions{
@@ -427,19 +446,6 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 		}
 	}
 
-	if !dryRun {
-		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
-			Type:    typeProgressingComponent,
-			Status:  metav1.ConditionTrue,
-			Reason:  progressingReasonInstalling,
-			Message: fmt.Sprintf("Installing component: %s", component.Spec.Version),
-		})
-		err = r.updateStatus(ctx, component)
-		if err != nil {
-			log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
-		}
-	}
-
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 
@@ -452,7 +458,10 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 		if recordErr == nil {
 			recordErr = err
 		}
-		r.recordActionResult(ctx, log, component, castai.Action_UPGRADE, recordErr, withDefaultStatus(castai.Status_PROGRESSING))
+		// Record error status if there was an error at any point
+		if recordErr != nil {
+			r.recordActionResult(ctx, log, component, castai.Action_UPGRADE, recordErr)
+		}
 	}()
 
 	cluster := &castwarev1alpha1.Cluster{}
@@ -479,6 +488,22 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 		log.WithError(err).Error("Failed to set helm value overrides")
 		return ctrl.Result{}, nil
 	}
+
+	// Set progressing status before starting the upgrade
+	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+		Type:    typeProgressingComponent,
+		Status:  metav1.ConditionTrue,
+		Reason:  progressingReasonUpgrading,
+		Message: fmt.Sprintf("Upgrading component: %s -> %s", component.Status.CurrentVersion, component.Spec.Version),
+	})
+	err = r.updateStatus(ctx, component)
+	if err != nil {
+		// Update status errors are recoverable, if it happens we just requeue and end up here again.
+		log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
+	}
+
+	// Record progressing status to before starting the upgrade
+	r.recordActionResult(ctx, log, component, castai.Action_UPGRADE, nil, withDefaultStatus(castai.Status_PROGRESSING))
 
 	_, err = r.HelmClient.Upgrade(ctx, helm.UpgradeOptions{
 		ChartSource: &helm.ChartSource{
@@ -514,17 +539,6 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 
 	r.Recorder.Eventf(component, v1.EventTypeNormal, reasonUpgradeStarted, "Upgrade started: %s -> %s", component.Status.CurrentVersion, component.Spec.Version)
 
-	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
-		Type:    typeProgressingComponent,
-		Status:  metav1.ConditionTrue,
-		Reason:  progressingReasonUpgrading,
-		Message: fmt.Sprintf("Upgrading component: %s -> %s", component.Status.CurrentVersion, component.Spec.Version),
-	})
-	err = r.updateStatus(ctx, component)
-	if err != nil {
-		// Update status errors are recoverable, if it happens we just requeue and end up here again.
-		log.WithError(err).Errorf("Failed to set '%s' status", typeProgressingComponent)
-	}
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 
