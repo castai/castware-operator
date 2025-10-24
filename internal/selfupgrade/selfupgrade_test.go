@@ -1346,6 +1346,127 @@ func TestRecordActionResultVersions(t *testing.T) {
 	})
 }
 
+func TestSelfUpgrade_RecordActionCalledForRollback(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	ctx := context.Background()
+
+	const getByNamePath = "/cluster-management/v1/components:getByName"
+	actionResultUrlRegex := regexp.MustCompile("/cluster-management/v1/clusters/(.*?)/components:recordActionResult")
+
+	var recordedActions []castai.ComponentActionResult
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == getByNamePath {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{
+				"id": "test-id",
+				"name": "castware-operator",
+				"helmChart": "castware-operator",
+				"dependencies": [],
+				"latestVersion": "v0.2.0"
+			}`))
+			return
+		} else if actionResultUrlRegex.MatchString(request.URL.Path) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			body, err := io.ReadAll(request.Body)
+			r.NoError(err)
+			var actionResult castai.ComponentActionResult
+			r.NoError(json.Unmarshal(body, &actionResult))
+			recordedActions = append(recordedActions, actionResult)
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	testCluster := newTestCluster(t, server)
+	testOps := newTestOps(t, testCluster)
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-api-secret",
+			Namespace: "test-namespace",
+		},
+		Data: map[string][]byte{
+			"API_KEY": []byte("test-api-key"),
+		},
+	}
+	r.NoError(testOps.sut.Create(ctx, secret))
+
+	initialRelease := createMockRelease("castware-operator", "0.1.0", "test-namespace")
+	testOps.mockHelm.EXPECT().
+		GetRelease(gomock.Any()).
+		Return(initialRelease, nil).
+		Times(1)
+
+	testOps.mockHelm.EXPECT().
+		Upgrade(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts helm.UpgradeOptions) (*release.Release, error) {
+			r.True(opts.DryRun)
+			return createMockRelease("castware-operator", "v0.1.5", "test-namespace"), nil
+		}).
+		Times(1)
+
+	upgradedRelease := createMockRelease("castware-operator", "v0.1.5", "test-namespace")
+	upgradedRelease.Info.Status = release.StatusPendingUpgrade
+	testOps.mockHelm.EXPECT().
+		Upgrade(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts helm.UpgradeOptions) (*release.Release, error) {
+			r.False(opts.DryRun)
+			return upgradedRelease, nil
+		}).
+		Times(1)
+
+	failedRelease := createMockRelease("castware-operator", "v0.1.5", "test-namespace")
+	failedRelease.Info.Status = release.StatusFailed
+	failedRelease.Info.Description = "pod crash"
+	testOps.mockHelm.EXPECT().
+		GetRelease(gomock.Any()).
+		Return(failedRelease, nil).
+		Times(1)
+
+	testOps.mockHelm.EXPECT().
+		Rollback(gomock.Any()).
+		DoAndReturn(func(opts helm.RollbackOptions) error {
+			r.Equal("test-namespace", opts.Namespace)
+			r.Equal("castware-operator", opts.ReleaseName)
+			return nil
+		}).
+		Times(1)
+
+	rolledBackRelease := createMockRelease("castware-operator", "0.1.0", "test-namespace")
+	rolledBackRelease.Info.Status = release.StatusDeployed
+	testOps.mockHelm.EXPECT().
+		GetRelease(gomock.Any()).
+		Return(rolledBackRelease, nil).
+		Times(1)
+
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	err := testOps.sut.Run(ctxWithTimeout, "v0.1.5")
+	r.Error(err)
+
+	r.Len(recordedActions, 2)
+
+	rollbackAction := recordedActions[0]
+	r.Equal(castai.Action_ROLLBACK, rollbackAction.Action)
+	r.Equal("v0.1.5", rollbackAction.CurrentVersion)
+	r.Equal("0.1.0", rollbackAction.Version)
+	r.Equal(castai.Status_OK, rollbackAction.Status)
+	r.Equal("castware-operator", rollbackAction.ReleaseName)
+
+	upgradeAction := recordedActions[1]
+	r.Equal(castai.Action_UPGRADE, upgradeAction.Action)
+	r.Equal("0.1.0", upgradeAction.CurrentVersion)
+	r.Equal("0.1.0", upgradeAction.Version)
+	r.Equal(castai.Status_ERROR, upgradeAction.Status)
+	r.Equal("castware-operator", upgradeAction.ReleaseName)
+}
+
 type testOps struct {
 	sut      *Service
 	mockHelm *mock_helm.MockClient

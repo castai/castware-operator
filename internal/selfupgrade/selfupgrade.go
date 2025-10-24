@@ -75,6 +75,7 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get helm release: %w", err)
 	}
+
 	upgradeOptions := helm.UpgradeOptions{
 		ChartSource: &helm.ChartSource{
 			RepoURL: cluster.Spec.HelmRepoURL,
@@ -100,6 +101,30 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 	beforeUpdateVersion := helmRelease.Chart.Metadata.Version
 	releaseName := helmRelease.Name
 
+	recordAction := func(action castai.ActionType, currentVersion, version string, err error) {
+		if cluster.Spec.Cluster == nil || cluster.Spec.Cluster.ClusterID == "" {
+			return
+		}
+
+		actionResult := &castai.ComponentActionResult{
+			Name:           components.ComponentNameOperator,
+			Action:         action,
+			CurrentVersion: currentVersion,
+			Version:        version,
+			Status:         castai.Status_OK,
+			ReleaseName:    releaseName,
+		}
+
+		if err != nil {
+			actionResult.Message = err.Error()
+			actionResult.Status = castai.Status_ERROR
+		}
+
+		if err := castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, actionResult); err != nil {
+			log.WithError(err).Error("Failed to record action result")
+		}
+	}
+
 	helmRelease, err = s.helmClient.Upgrade(ctx, upgradeOptions)
 	if err != nil {
 		// If upgrade fails we log the error check for status, if the upgrade didn't start there's
@@ -115,24 +140,7 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 	}
 
 	defer func() {
-		if cluster.Spec.Cluster != nil && cluster.Spec.Cluster.ClusterID != "" {
-			actionResult := &castai.ComponentActionResult{
-				Name:           components.ComponentNameOperator,
-				Action:         castai.Action_UPGRADE,
-				CurrentVersion: beforeUpdateVersion,
-				Version:        desiredVersion,
-				Status:         castai.Status_OK,
-				ReleaseName:    releaseName,
-			}
-			if err != nil {
-				actionResult.Message = err.Error()
-				actionResult.Status = castai.Status_ERROR
-			}
-			err = castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, actionResult)
-			if err != nil {
-				log.WithError(err).Error("Failed to record action result")
-			}
-		}
+		recordAction(castai.Action_UPGRADE, beforeUpdateVersion, desiredVersion, err)
 	}()
 	err = s.checkReleaseStatus(ctx, log, getReleaseOptions)
 	if err != nil {
@@ -150,6 +158,8 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 			Namespace:   getReleaseOptions.Namespace,
 			ReleaseName: getReleaseOptions.ReleaseName,
 		})
+
+		recordAction(castai.Action_ROLLBACK, desiredVersion, beforeUpdateVersion, rollbackErr)
 		if rollbackErr != nil {
 			err = errors.Join(err, rollbackErr)
 			log.WithError(rollbackErr).Error("Rollback failed")
