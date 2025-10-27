@@ -3,6 +3,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -11,9 +12,12 @@ import (
 	"github.com/castai/castware-operator/internal/castai"
 	mock_castai "github.com/castai/castware-operator/internal/castai/mock"
 	components "github.com/castai/castware-operator/internal/component"
+	"github.com/castai/castware-operator/internal/helm"
 	"github.com/golang/mock/gomock"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/release"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -567,5 +571,243 @@ func TestUpgradeJobFailureDetails(t *testing.T) {
 		message := testOps.sut.getUpgradeJobFailureDetails(ctx, job)
 		r.Contains(message, "pod scheduling failed")
 		r.Contains(message, "insufficient memory")
+	})
+}
+func TestRecordOperatorUpgradeProgressing(t *testing.T) {
+	t.Run("should record progressing action result successfully", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+
+		cluster := newTestCluster(t, clusterID, false)
+		cluster.Spec.APIKeySecret = "api-key-secret"
+
+		apiKeySecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "api-key-secret",
+				Namespace: cluster.Namespace,
+			},
+			Data: map[string][]byte{"API_KEY": []byte("test-api-key")},
+		}
+
+		testOps := newClusterTestOps(t, cluster, apiKeySecret)
+
+		helmRelease := &release.Release{
+			Name: "castware-operator",
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "v1.0.0",
+				},
+			},
+		}
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   testOps.sut.Config.PodNamespace,
+			ReleaseName: testOps.sut.Config.HelmReleaseName,
+		}).Return(helmRelease, nil)
+
+		mockClient.EXPECT().RecordActionResult(
+			gomock.Any(),
+			clusterID,
+			&castai.ComponentActionResult{
+				Name:           components.ComponentNameOperator,
+				Action:         castai.Action_UPGRADE,
+				CurrentVersion: "v1.0.0",
+				Version:        "v1.0.0",
+				Status:         castai.Status_PROGRESSING,
+				ImageVersions:  nil,
+				ReleaseName:    "castware-operator",
+				Message:        "Operator upgrading",
+			},
+		).Return(nil)
+
+		castAiClient := mockClient
+		helmReleaseResult, err := testOps.sut.HelmClient.GetRelease(helm.GetReleaseOptions{
+			Namespace:   testOps.sut.Config.PodNamespace,
+			ReleaseName: testOps.sut.Config.HelmReleaseName,
+		})
+		r.NoError(err)
+
+		err = castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, &castai.ComponentActionResult{
+			Name:           components.ComponentNameOperator,
+			Action:         castai.Action_UPGRADE,
+			CurrentVersion: helmReleaseResult.Chart.Metadata.Version,
+			Version:        helmReleaseResult.Chart.Metadata.Version,
+			Status:         castai.Status_PROGRESSING,
+			ImageVersions:  nil,
+			ReleaseName:    helmReleaseResult.Name,
+			Message:        "Operator upgrading",
+		})
+		r.NoError(err)
+	})
+
+	t.Run("should handle getCastaiClient error", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+
+		cluster := newTestCluster(t, clusterID, false)
+
+		testOps := newClusterTestOps(t, cluster)
+
+		_, err := testOps.sut.getCastaiClient(ctx, cluster)
+		r.Error(err)
+	})
+
+	t.Run("should handle helm GetRelease error", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		clusterID := uuid.NewString()
+
+		cluster := newTestCluster(t, clusterID, false)
+		cluster.Spec.APIKeySecret = "api-key-secret"
+
+		apiKeySecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "api-key-secret",
+				Namespace: cluster.Namespace,
+			},
+			Data: map[string][]byte{"API_KEY": []byte("test-api-key")},
+		}
+
+		testOps := newClusterTestOps(t, cluster, apiKeySecret)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   testOps.sut.Config.PodNamespace,
+			ReleaseName: testOps.sut.Config.HelmReleaseName,
+		}).Return(nil, errors.New("not found"))
+
+		_, err := testOps.sut.HelmClient.GetRelease(helm.GetReleaseOptions{
+			Namespace:   testOps.sut.Config.PodNamespace,
+			ReleaseName: testOps.sut.Config.HelmReleaseName,
+		})
+		r.Error(err)
+	})
+
+	t.Run("should log error when RecordActionResult fails", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+
+		cluster := newTestCluster(t, clusterID, false)
+		cluster.Spec.APIKeySecret = "api-key-secret"
+
+		apiKeySecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "api-key-secret",
+				Namespace: cluster.Namespace,
+			},
+			Data: map[string][]byte{"API_KEY": []byte("test-api-key")},
+		}
+
+		testOps := newClusterTestOps(t, cluster, apiKeySecret)
+
+		helmRelease := &release.Release{
+			Name: "castware-operator",
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "v1.0.0",
+				},
+			},
+		}
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   testOps.sut.Config.PodNamespace,
+			ReleaseName: testOps.sut.Config.HelmReleaseName,
+		}).Return(helmRelease, nil)
+
+		mockClient.EXPECT().RecordActionResult(
+			gomock.Any(),
+			clusterID,
+			gomock.Any(),
+		).Return(errors.New("Unauthorizes"))
+
+		castAiClient := mockClient
+		helmReleaseResult, err := testOps.sut.HelmClient.GetRelease(helm.GetReleaseOptions{
+			Namespace:   testOps.sut.Config.PodNamespace,
+			ReleaseName: testOps.sut.Config.HelmReleaseName,
+		})
+		r.NoError(err)
+
+		err = castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, &castai.ComponentActionResult{
+			Name:           components.ComponentNameOperator,
+			Action:         castai.Action_UPGRADE,
+			CurrentVersion: helmReleaseResult.Chart.Metadata.Version,
+			Version:        helmReleaseResult.Chart.Metadata.Version,
+			Status:         castai.Status_PROGRESSING,
+			ImageVersions:  nil,
+			ReleaseName:    helmReleaseResult.Name,
+			Message:        "Operator upgrading",
+		})
+		r.Error(err)
+	})
+
+	t.Run("should use correct config values for namespace and release name", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+
+		cluster := newTestCluster(t, clusterID, false)
+		cluster.Spec.APIKeySecret = "api-key-secret"
+
+		apiKeySecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "api-key-secret",
+				Namespace: cluster.Namespace,
+			},
+			Data: map[string][]byte{"API_KEY": []byte("test-api-key")},
+		}
+
+		testOps := newClusterTestOps(t, cluster, apiKeySecret)
+
+		helmRelease := &release.Release{
+			Name: testOps.sut.Config.HelmReleaseName,
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "v1.0.0",
+				},
+			},
+		}
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   testOps.sut.Config.PodNamespace,
+			ReleaseName: testOps.sut.Config.HelmReleaseName,
+		}).Return(helmRelease, nil)
+
+		mockClient.EXPECT().RecordActionResult(
+			gomock.Any(),
+			clusterID,
+			gomock.Any(),
+		).Return(nil)
+
+		castAiClient := mockClient
+		helmReleaseResult, err := testOps.sut.HelmClient.GetRelease(helm.GetReleaseOptions{
+			Namespace:   testOps.sut.Config.PodNamespace,
+			ReleaseName: testOps.sut.Config.HelmReleaseName,
+		})
+		r.NoError(err)
+		r.Equal(testOps.sut.Config.HelmReleaseName, helmReleaseResult.Name)
+
+		err = castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, &castai.ComponentActionResult{
+			Name:           components.ComponentNameOperator,
+			Action:         castai.Action_UPGRADE,
+			CurrentVersion: helmReleaseResult.Chart.Metadata.Version,
+			Version:        helmReleaseResult.Chart.Metadata.Version,
+			Status:         castai.Status_PROGRESSING,
+			ImageVersions:  nil,
+			ReleaseName:    helmReleaseResult.Name,
+			Message:        "Operator upgrading",
+		})
+		r.NoError(err)
 	})
 }
