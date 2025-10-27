@@ -722,6 +722,36 @@ func (r *ClusterReconciler) handleOperatorUpgrade(ctx context.Context, cluster *
 	}
 
 	log.Infof("Operator upgrade job created: %s", jobName)
+
+	castAiClient, err := r.getCastaiClient(ctx, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to get castaiClient")
+		return nil
+	}
+
+	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+		Namespace:   r.Config.PodNamespace,
+		ReleaseName: r.Config.HelmReleaseName,
+	})
+	if err != nil {
+		log.WithError(err).Error("Failed to get helmRelease")
+		return nil
+	}
+
+	err = castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, &castai.ComponentActionResult{
+		Name:           components.ComponentNameOperator,
+		Action:         castai.Action_UPGRADE,
+		CurrentVersion: helmRelease.Chart.Metadata.Version,
+		Version:        helmRelease.Chart.Metadata.Version,
+		Status:         castai.Status_PROGRESSING,
+		ImageVersions:  nil,
+		ReleaseName:    helmRelease.Name,
+		Message:        "Operator upgrading",
+	})
+	if err != nil {
+		log.WithError(err).Error("Failed to record action result")
+	}
+
 	return nil
 }
 
