@@ -51,7 +51,6 @@ type UpgradeOptions struct {
 	MaxHistory           int
 	ResetThenReuseValues bool
 	DryRun               bool
-	Recreate             bool
 	Install              bool
 }
 
@@ -173,7 +172,6 @@ func (c *client) Upgrade(ctx context.Context, opts UpgradeOptions) (*release.Rel
 	upgrade.DryRun = opts.DryRun
 	// upgrade.PostRenderer = hook.NewLabelIgnoreHook(cfg.KubeClient, opts.Release)
 	upgrade.ResetThenReuseValues = opts.ResetThenReuseValues
-	upgrade.Recreate = opts.Recreate
 	upgrade.Install = opts.Install
 	name := opts.Release.Name
 

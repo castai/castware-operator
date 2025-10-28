@@ -85,7 +85,6 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 		Release:              helmRelease,
 		ResetThenReuseValues: true,
 		DryRun:               true,
-		Recreate:             false,
 		// If the tag was overridden, auto upgrade won't work unless we reset it to helm default.
 		ValuesOverrides: map[string]interface{}{"image": map[string]interface{}{"tag": ""}},
 	}
