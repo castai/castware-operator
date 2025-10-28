@@ -514,7 +514,7 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 		Release:              helmRelease,
 		ValuesOverrides:      overrides,
 		ResetThenReuseValues: true,
-		Recreate:             true,
+		Install:              true,
 	})
 	if err != nil {
 		recordErr = fmt.Errorf("failed to upgrade chart: %w", err)
