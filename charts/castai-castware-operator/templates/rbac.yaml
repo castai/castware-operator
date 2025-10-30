@@ -59,7 +59,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   namespace: "{{ .Release.Namespace }}"
-  name: {{ include "castware-operator.fullname" . }}-namespace-admin
+  name: {{ include "castware-operator.fullname" . }}-namespace-role
   labels:
     {{- include "castware-operator.labels" . | nindent 4 }}
 rules:
@@ -100,6 +100,18 @@ rules:
   - ""
   resources:
   - serviceaccounts
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - services
   verbs:
   - create
   - get
@@ -458,13 +470,13 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   namespace: "{{ .Release.Namespace }}"
-  name: {{ include "castware-operator.fullname" . }}-namespace-admin-binding
+  name: {{ include "castware-operator.fullname" . }}-namespace-role-binding
   labels:
     {{- include "castware-operator.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: castware-operator-namespace-admin
+  name: castware-operator-namespace-role
 subjects:
 - kind: ServiceAccount
   name: {{ include "castware-operator.fullname" . }}-controller-manager

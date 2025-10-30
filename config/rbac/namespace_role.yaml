@@ -1,7 +1,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: namespace-admin
+  name: namespace-role
   namespace: castai-agent
 rules:
   # ---
@@ -47,6 +47,18 @@ rules:
       - ""
     resources:
       - serviceaccounts
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - services
     verbs:
       - create
       - get
