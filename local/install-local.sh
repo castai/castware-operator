@@ -30,7 +30,7 @@ if helm list -n ${NAMESPACE} | grep -q ${RELEASE_NAME}; then
 fi
 
 echo -e "${BLUE}=== Installing Helm Chart ===${NC}"
-helm install ${RELEASE_NAME} \
+helm upgrade --install ${RELEASE_NAME} \
     --namespace ${NAMESPACE} --create-namespace \
     --set image.repository=${IMAGE_NAME} \
     --set image.tag=${IMAGE_TAG} \
