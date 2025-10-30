@@ -15,18 +15,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 echo -e "${BLUE}=== Building Operator Binary & Docker Image ===${NC}"
-
-ARCH=$(uname -m)
-case $ARCH in
-  x86_64) TARGETARCH=amd64 ;;
-  arm64|aarch64) TARGETARCH=arm64 ;;
-  *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
-esac
-
-echo -e "${BLUE}=== Cross-compiling for Linux (${TARGETARCH}) ===${NC}"
-GOOS=linux GOARCH=${TARGETARCH} go build -o bin/castware-operator-${TARGETARCH} github.com/castai/castware-operator/cmd
-
-echo -e "${BLUE}=== Building Docker image ===${NC}"
+make build
 make docker-build IMG=${IMAGE_NAME}:${IMAGE_TAG}
 
 echo -e "${BLUE}=== Loading Image into Kind Cluster ===${NC}"
