@@ -258,11 +258,11 @@ func (v *ComponentCustomValidator) ValidateUpdate(ctx context.Context, oldObj, n
 	}
 
 	// Validate component upgrade when version changes
-	if oldComponent.Spec.Version != component.Spec.Version {
-		if err := v.validateComponentUpgrade(ctx, castAiClient, cluster, component); err != nil {
-			return nil, fmt.Errorf("component upgrade validation failed: %w", err)
-		}
-	}
+	// if oldComponent.Spec.Version != component.Spec.Version {
+	// 	if err := v.validateComponentUpgrade(ctx, castAiClient, cluster, component); err != nil {
+	// 		return nil, fmt.Errorf("component upgrade validation failed: %w", err)
+	// 	}
+	// }
 
 	return nil, nil
 }
