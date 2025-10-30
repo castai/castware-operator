@@ -19,6 +19,6 @@ resources:
 - metrics_auth_role_binding.yaml
 - metrics_reader_role.yaml
 - metrics_reader_role_binding.yaml
-- namespace_admin_role.yaml
-- namespace_admin_role_binding.yaml
+- namespace_role.yaml
+- namespace_role_binding.yaml
 - kube_system_rbac.yaml
