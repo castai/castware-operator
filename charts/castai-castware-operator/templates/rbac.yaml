@@ -206,6 +206,17 @@ rules:
   - update
   - watch
 - apiGroups:
+  - apiextensions.k8s.io
+  resourceNames:
+  - clusters.castware.cast.ai
+  - components.castware.cast.ai
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - delete
+  - get
+  - list
+- apiGroups:
   - apps
   resources:
   - daemonsets

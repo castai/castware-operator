@@ -54,7 +54,7 @@ func TestReconcile(t *testing.T) {
 			r.NoError(err)
 
 			r.Len(actualComponent.Finalizers, 1)
-			r.Equal(componentFinalizer, actualComponent.Finalizers[0])
+			r.Equal(ComponentFinalizer, actualComponent.Finalizers[0])
 
 			r.Len(actualComponent.Status.Conditions, 1)
 			actualCondition := actualComponent.Status.Conditions[0]
@@ -241,7 +241,7 @@ func TestReconcile(t *testing.T) {
 			r.NoError(err)
 
 			r.Len(actualComponent.Finalizers, 1)
-			r.Equal(componentFinalizer, actualComponent.Finalizers[0])
+			r.Equal(ComponentFinalizer, actualComponent.Finalizers[0])
 
 			r.Len(actualComponent.Status.Conditions, 1)
 			actualCondition := actualComponent.Status.Conditions[0]

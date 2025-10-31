@@ -31,7 +31,8 @@ import (
 
 // Definitions to manage status conditions
 const (
-	componentFinalizer = "castware.cast.ai/cleanup-helm"
+	ComponentFinalizer   = "castware.cast.ai/cleanup-helm"
+	LabelDeleteCandidate = "castware.cast.ai/delete-candidate"
 
 	// typeAvailableComponent represents the status when component resource is reconciled, installed and works as expected.
 	typeAvailableComponent = "Available"
@@ -115,6 +116,11 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.deleteComponent(ctx, log.WithField("action", "delete"), component)
 	}
 
+	if component.Labels[LabelDeleteCandidate] == "true" {
+		log.Info("Component CR is marked as delete candidate")
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+	}
+
 	// If the component is marked as readonly we just check if the helm chart is installed
 	// and update the status accordingly.
 	if component.Spec.Readonly {
@@ -150,8 +156,8 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
 
-	if !controllerutil.ContainsFinalizer(component, componentFinalizer) {
-		controllerutil.AddFinalizer(component, componentFinalizer)
+	if !controllerutil.ContainsFinalizer(component, ComponentFinalizer) {
+		controllerutil.AddFinalizer(component, ComponentFinalizer)
 		if err := r.Update(ctx, component); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -337,7 +343,7 @@ func (r *ComponentReconciler) deleteComponent(ctx context.Context, log logrus.Fi
 	}()
 
 	log.Info("Component is being deleted")
-	if controllerutil.ContainsFinalizer(component, componentFinalizer) {
+	if controllerutil.ContainsFinalizer(component, ComponentFinalizer) {
 		log.Info("Uninstalling Helm release")
 		_, err := r.HelmClient.Uninstall(helm.UninstallOptions{
 			Namespace:   component.Namespace,
@@ -352,7 +358,7 @@ func (r *ComponentReconciler) deleteComponent(ctx context.Context, log logrus.Fi
 			return ctrl.Result{}, err
 		}
 		// If the helm chart is successfully uninstalled the finalizer is removed and the CR deleted.
-		controllerutil.RemoveFinalizer(component, componentFinalizer)
+		controllerutil.RemoveFinalizer(component, ComponentFinalizer)
 		if err := r.Update(ctx, component); err != nil {
 			return ctrl.Result{}, err
 		}
