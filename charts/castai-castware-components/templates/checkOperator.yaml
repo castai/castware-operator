@@ -1,0 +1,21 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: check-operator-ready
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+    "helm.sh/hook-weight": "0"
+spec:
+  template:
+    spec:
+      serviceAccountName: check-operator
+      restartPolicy: Never
+      containers:
+        - name: check
+          image: bitnami/kubectl:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Checking if castware-operator exists..."
+              kubectl get deployment castware-operator -n castai-agent

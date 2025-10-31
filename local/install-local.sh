@@ -7,6 +7,7 @@ IMAGE_NAME="castai/castware-operator"
 IMAGE_TAG="${IMAGE_TAG:-local-dev}"
 NAMESPACE="castai-agent"
 RELEASE_NAME="castware-operator"
+COMPONENTS_RELEASE_NAME="castware-components"
 export GOOS=linux
 export GOARCH="${GOARCH:-arm64}"
 
@@ -44,6 +45,7 @@ helm upgrade --install ${RELEASE_NAME} \
     --set webhook.env.GKE_LOCATION="${GKE_LOCATION:-local}" \
     --set webhook.env.GKE_PROJECT_ID="${GKE_PROJECT_ID:-local-test}" \
     --set webhook.env.GKE_REGION="${GKE_REGION:-local1}" \
+    --set webhook.env.GKE_REGION="${GKE_REGION:-local1}" \
     --set "defaultComponents.components.castai-agent.overrides.additionalEnv.GKE_CLUSTER_NAME=${GKE_CLUSTER_NAME:-castware-operator-test}" \
     --set "defaultComponents.components.castai-agent.overrides.additionalEnv.GKE_LOCATION=${GKE_LOCATION:-local}" \
     --set "defaultComponents.components.castai-agent.overrides.additionalEnv.GKE_PROJECT_ID=${GKE_PROJECT_ID:-local-test}" \
@@ -51,6 +53,18 @@ helm upgrade --install ${RELEASE_NAME} \
     --atomic \
     --timeout 5m \
     ./charts/castai-castware-operator
+
+echo -e "${BLUE}=== Installing or Upgrading Castware Components ===${NC}"
+helm upgrade --install ${COMPONENTS_RELEASE_NAME} ./charts/castai-castware-components \
+    --namespace ${NAMESPACE} \
+    --wait  --atomic \
+    --set "components.castai-agent.enabled=true" \
+    --set "components.castai-agent.component=castai-agent" \
+    --set "components.castai-agent.cluster=castai" \
+    --set "components.castai-agent.overrides.additionalEnv.GKE_CLUSTER_NAME=${GKE_CLUSTER_NAME:-castware-operator-test}" \
+    --set "components.castai-agent.overrides.additionalEnv.GKE_LOCATION=${GKE_LOCATION:-local}" \
+    --set "components.castai-agent.overrides.additionalEnv.GKE_PROJECT_ID=${GKE_PROJECT_ID:-local-test}" \
+    --set "components.castai-agent.overrides.additionalEnv.GKE_REGION=${GKE_REGION:-local1}"
 
 echo -e "${GREEN}=== Installation Complete ===${NC}"
 echo ""

@@ -1,0 +1,28 @@
+{{- range $name, $comp := .Values.components }}
+{{- if $comp.enabled }}
+---
+apiVersion: castware.cast.ai/v1alpha1
+kind: Component
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $.Chart.Name }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/managed-by: Helm
+    {{- with $comp.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  component: {{ $comp.component | quote }}
+  cluster: {{ $comp.cluster | quote }}
+  enabled: {{ $comp.enabled }}
+  {{- if $comp.version }}
+  version: {{ $comp.version | quote }}
+  {{- end }}
+  {{- if $comp.overrides }}
+  values:
+    {{- toYaml $comp.overrides | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

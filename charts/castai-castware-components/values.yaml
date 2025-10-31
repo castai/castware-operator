@@ -1,0 +1,5 @@
+components:
+  castai-agent:
+    component: "castai-agent"
+    cluster: "castai"
+    enabled: true
