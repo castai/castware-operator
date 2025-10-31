@@ -10,6 +10,7 @@ metadata:
     "helm.sh/hook-weight": "0"
     "helm.sh/hook-delete-policy": hook-succeeded
 spec:
+  backoffLimit: 3
   template:
     metadata:
       name: {{ include "castware-operator.fullname" . }}-cleanup
@@ -20,6 +21,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+
       serviceAccountName: {{ include "castware-operator.fullname" . }}-controller-manager
       restartPolicy: OnFailure
       securityContext:
