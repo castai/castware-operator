@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/bombsimon/logrusr/v4"
+	v1alpha2 "github.com/castai/castware-operator/api/v1alpha1"
 	"github.com/castai/castware-operator/internal/castai"
 	"github.com/castai/castware-operator/internal/config"
 	"github.com/castai/castware-operator/internal/controller"
@@ -16,8 +19,11 @@ import (
 	"github.com/open-policy-agent/cert-controller/pkg/rotator"
 	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	cache2 "k8s.io/client-go/tools/cache"
 	controllerruntime "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
@@ -219,6 +225,12 @@ func runOperator(args operatorArgs) error {
 	}
 	log.Info("Manager started")
 
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	if err := runSecretWatcher(context.Background(), cfg, log, stopCh, clientset, mgr.GetClient()); err != nil {
+		return err
+	}
+
 	chartLoader := helm.NewChartLoader(log)
 	helmClient := helm.NewClient(log, chartLoader, restConfig)
 
@@ -295,5 +307,102 @@ func runOperator(args operatorArgs) error {
 		return fmt.Errorf("problem running manager: %w", err)
 	}
 
+	return nil
+}
+
+func runSecretWatcher(ctx context.Context, cfg *config.Config, log logrus.FieldLogger, stopCh chan struct{}, clientset *kubernetes.Clientset, client client.Client) error {
+	informerFactory := informers.NewSharedInformerFactoryWithOptions(
+		clientset,
+		time.Second*5,
+		informers.WithNamespace(cfg.PodNamespace),
+	)
+	secretInformer := informerFactory.Core().V1().Secrets().Informer()
+
+	crBackups := map[string]*v1alpha2.Component{}
+	_, err := secretInformer.AddEventHandler(cache2.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			secret := obj.(*v1.Secret)
+			if secret.Labels["owner"] == "helm" && secret.Labels["name"] == "castware-operator" {
+				chartName := secret.Labels["name"]
+				releaseVersion, _ := strconv.Atoi(secret.Labels["version"])
+				log.WithField("version", releaseVersion).Infof("Helm secret added: %s", chartName)
+				components := &v1alpha2.ComponentList{}
+				err := client.List(ctx, components)
+				if err != nil {
+					log.Error(err, "failed to get component")
+					return
+				}
+				for _, item := range components.Items {
+					crBackups[item.Name] = item.DeepCopy()
+					log.Infof("Component CR backup: %v", crBackups[item.Name].Name)
+				}
+
+				// Restore backups
+				component := &v1alpha2.Component{}
+				for crName, item := range crBackups {
+					err := client.Get(ctx, types.NamespacedName{Name: crName, Namespace: cfg.PodNamespace}, component)
+					if err != nil {
+						if apierrors.IsNotFound(err) {
+							log.Warn("Component CR deleted, restoring backup")
+							backupCr := item.DeepCopy()
+							backupCr.ResourceVersion = ""
+							backupCr.Labels["restored"] = "true"
+							err = client.Create(ctx, backupCr)
+							if err != nil {
+								log.WithError(err).Error("failed to restore component CR")
+								continue
+							}
+						} else {
+							log.WithError(err).Error("failed to get component CR")
+						}
+
+						continue
+					}
+				}
+				// Handle Helm upgrade
+			}
+		},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldSecret := oldObj.(*v1.Secret)
+			newSecret := newObj.(*v1.Secret)
+			if oldSecret.ResourceVersion == newSecret.ResourceVersion {
+				// Nothing changed
+				return
+			}
+			if newSecret.Labels["owner"] == "helm" && newSecret.Labels["name"] == "castware-operator" {
+				chartName := newSecret.Labels["name"]
+				component := &v1alpha2.Component{}
+				for crName, item := range crBackups {
+					err := client.Get(ctx, types.NamespacedName{Name: crName, Namespace: cfg.PodNamespace}, component)
+					if err != nil {
+						if apierrors.IsNotFound(err) && crBackups[chartName] != nil {
+							log.Warn("Component CR deleted, restoring backup")
+							backupCr := item.DeepCopy()
+							err = client.Create(ctx, backupCr)
+							if err != nil {
+								log.WithError(err).Error("failed to restore component CR")
+								continue
+							}
+						}
+						log.WithError(err).Error("failed to get component CR")
+						continue
+					}
+				}
+			}
+		},
+	})
+	if err != nil {
+		log.Error(err, "failed to add helm secret handler")
+		return err
+	}
+
+	informerFactory.Start(stopCh)
+	informerFactory.WaitForCacheSync(stopCh)
+	log.Info("Waiting for informer cache to sync...")
+	if !cache2.WaitForCacheSync(stopCh, secretInformer.HasSynced) {
+		log.Error(nil, "failed to sync informer cache")
+		return fmt.Errorf("failed to sync cache")
+	}
+	log.Info("Informer cache synced, watching for Helm secrets...")
 	return nil
 }

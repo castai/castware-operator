@@ -150,12 +150,12 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
 
-	if !controllerutil.ContainsFinalizer(component, componentFinalizer) {
+	/*if !controllerutil.ContainsFinalizer(component, componentFinalizer) {
 		controllerutil.AddFinalizer(component, componentFinalizer)
 		if err := r.Update(ctx, component); err != nil {
 			return ctrl.Result{}, err
 		}
-	}
+	}*/
 
 	progressingCondition := meta.FindStatusCondition(component.Status.Conditions, typeProgressingComponent)
 	if progressingCondition == nil && component.Spec.Migration == castwarev1alpha1.ComponentMigrationHelm {
