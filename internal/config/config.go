@@ -29,6 +29,7 @@ type Config struct {
 	CertDir                 string        `envconfig:"CERTS_DIR" default:"/certs"`
 	CertsSecret             string        `envconfig:"CERTS_SECRET" default:"castware-operator-certs"`
 	PodNamespace            string        `envconfig:"POD_NAMESPACE"`
+	OperatorName            string        `envconfig:"OPERATOR_NAME" default:"castware-operator"`
 	ServiceName             string        `envconfig:"SERVICE_NAME" default:"castware-operator"`
 	HelmReleaseName         string        `envconfig:"HELM_RELEASE_NAME" default:"castware-operator"`
 	CertsRotation           bool          `envconfig:"CERTS_ROTATION" default:"false"`

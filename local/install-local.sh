@@ -7,6 +7,8 @@ IMAGE_NAME="castai/castware-operator"
 IMAGE_TAG="${IMAGE_TAG:-local-dev}"
 NAMESPACE="castai-agent"
 RELEASE_NAME="castware-operator"
+export GOOS=linux
+export GOARCH="${GOARCH:-arm64}"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -15,7 +17,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 echo -e "${BLUE}=== Building Operator Binary & Docker Image ===${NC}"
-make build
+go build -o bin/castware-operator-${GOARCH} github.com/castai/castware-operator/cmd
 make docker-build IMG=${IMAGE_NAME}:${IMAGE_TAG}
 
 echo -e "${BLUE}=== Loading Image into Kind Cluster ===${NC}"
