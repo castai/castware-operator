@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/google/uuid"
@@ -395,6 +396,35 @@ func TestReconcile(t *testing.T) {
 			r.NoError(err)
 
 			r.Equal("0.2.1", actualComponent.Status.CurrentVersion)
+		})
+	})
+
+	t.Run("when component has terraform migration", func(t *testing.T) {
+		t.Run("should requeue without processing to give cluster controller time to handle migration", func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			r := require.New(t)
+
+			testCluster := newTestCluster(t, uuid.NewString(), true)
+			testComponent := newTestComponent(t, testCluster.Name, "test-component")
+			testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationTerraform
+			testComponent.Spec.Version = ""
+
+			testOps := newComponentTestOps(t, testCluster, testComponent)
+
+			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+
+			result, err := testOps.sut.Reconcile(ctx, req)
+			r.NoError(err)
+			r.Equal(time.Second*30, result.RequeueAfter)
+
+			var actualComponent castwarev1alpha1.Component
+			err = testOps.sut.Client.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+			r.NoError(err)
+
+			r.Empty(actualComponent.Finalizers)
+			r.Empty(actualComponent.Status.Conditions)
+			r.Empty(actualComponent.Status.CurrentVersion)
 		})
 	})
 }

@@ -90,6 +90,7 @@ extendedPermissions: false
 
 # Default cluster configuration
 defaultCluster:
+  terraform: false # make this true by default later after we update mothership
   enabled: true
   # This will create a default Cluster CR if enabled
   name: "castai"

@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/release"
+	"helm.sh/helm/v3/pkg/storage/driver"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -808,6 +809,257 @@ func TestReconcileCluster(t *testing.T) {
 		availableCondition := meta.FindStatusCondition(actualCluster.Status.Conditions, typeAvailableCluster)
 		r.NotNil(availableCondition)
 		r.Equal(metav1.ConditionTrue, availableCondition.Status)
+	})
+}
+
+func TestSyncTerraformComponents(t *testing.T) {
+	t.Run("should return false when cluster terraform flag is not set", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+
+		cluster := newTestCluster(t, uuid.NewString(), true)
+		cluster.Spec.Terraform = false
+
+		testOps := newClusterTestOps(t, cluster)
+
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		r.NoError(err)
+		r.False(reconcile)
+	})
+
+	t.Run("should return true and requeue when component CR does not exist yet", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+
+		cluster := newTestCluster(t, uuid.NewString(), true)
+		cluster.Spec.Terraform = true
+
+		testOps := newClusterTestOps(t, cluster)
+
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		r.NoError(err)
+		r.True(reconcile)
+	})
+
+	t.Run("should return false when component CR exists but migration is not terraform", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+
+		cluster := newTestCluster(t, uuid.NewString(), true)
+		cluster.Spec.Terraform = true
+
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "castai-agent",
+				Namespace: cluster.Namespace,
+			},
+			Spec: castwarev1alpha1.ComponentSpec{
+				Component: "castai-agent",
+				Cluster:   cluster.Name,
+				Migration: castwarev1alpha1.ComponentMigrationHelm,
+			},
+		}
+
+		testOps := newClusterTestOps(t, cluster, component)
+
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		r.NoError(err)
+		r.False(reconcile)
+	})
+
+	t.Run("should clear migration flag when component has version set in write mode", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+
+		cluster := newTestCluster(t, uuid.NewString(), true)
+		cluster.Spec.Terraform = true
+		cluster.Spec.MigrationMode = castwarev1alpha1.ClusterMigrationModeWrite
+
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "castai-agent",
+				Namespace: cluster.Namespace,
+			},
+			Spec: castwarev1alpha1.ComponentSpec{
+				Component: "castai-agent",
+				Cluster:   cluster.Name,
+				Migration: castwarev1alpha1.ComponentMigrationTerraform,
+				Version:   "1.5.0",
+			},
+		}
+
+		testOps := newClusterTestOps(t, cluster, component)
+
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		r.NoError(err)
+		r.True(reconcile)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualComponent)
+		r.NoError(err)
+		r.Equal("", actualComponent.Spec.Migration)
+		r.Equal("1.5.0", actualComponent.Spec.Version)
+	})
+
+	t.Run("should clear migration flag and leave version empty in autoupgrade mode", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+
+		cluster := newTestCluster(t, uuid.NewString(), true)
+		cluster.Spec.Terraform = true
+		cluster.Spec.MigrationMode = castwarev1alpha1.ClusterMigrationModeAutoupgrade
+
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "castai-agent",
+				Namespace: cluster.Namespace,
+			},
+			Spec: castwarev1alpha1.ComponentSpec{
+				Component: "castai-agent",
+				Cluster:   cluster.Name,
+				Migration: castwarev1alpha1.ComponentMigrationTerraform,
+				Version:   "",
+			},
+		}
+
+		testOps := newClusterTestOps(t, cluster, component)
+
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		r.NoError(err)
+		r.True(reconcile)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualComponent)
+		r.NoError(err)
+		r.Equal("", actualComponent.Spec.Migration)
+		r.Equal("", actualComponent.Spec.Version)
+	})
+
+	t.Run("should detect and set version from existing helm release in write mode", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+
+		cluster := newTestCluster(t, uuid.NewString(), true)
+		cluster.Spec.Terraform = true
+		cluster.Spec.MigrationMode = castwarev1alpha1.ClusterMigrationModeWrite
+
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "castai-agent",
+				Namespace: cluster.Namespace,
+			},
+			Spec: castwarev1alpha1.ComponentSpec{
+				Component: "castai-agent",
+				Cluster:   cluster.Name,
+				Migration: castwarev1alpha1.ComponentMigrationTerraform,
+				Version:   "",
+			},
+		}
+
+		testOps := newClusterTestOps(t, cluster, component)
+
+		helmValues := map[string]interface{}{
+			"replicaCount": 2,
+		}
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   cluster.Namespace,
+			ReleaseName: "castai-agent",
+		}).Return(&release.Release{
+			Name: "castai-agent",
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "1.2.3",
+				},
+			},
+			Config: helmValues,
+		}, nil)
+
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		r.NoError(err)
+		r.True(reconcile)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualComponent)
+		r.NoError(err)
+		r.Equal("", actualComponent.Spec.Migration)
+		r.Equal("1.2.3", actualComponent.Spec.Version)
+		r.NotNil(actualComponent.Spec.Values)
+
+		var actualValues map[string]interface{}
+		err = json.Unmarshal(actualComponent.Spec.Values.Raw, &actualValues)
+		r.NoError(err)
+		r.Equal(float64(2), actualValues["replicaCount"])
+	})
+
+	t.Run("should leave version empty when no existing installation found in write mode", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+
+		cluster := newTestCluster(t, uuid.NewString(), true)
+		cluster.Spec.Terraform = true
+		cluster.Spec.MigrationMode = castwarev1alpha1.ClusterMigrationModeWrite
+
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "castai-agent",
+				Namespace: cluster.Namespace,
+			},
+			Spec: castwarev1alpha1.ComponentSpec{
+				Component: "castai-agent",
+				Cluster:   cluster.Name,
+				Migration: castwarev1alpha1.ComponentMigrationTerraform,
+				Version:   "",
+			},
+		}
+
+		testOps := newClusterTestOps(t, cluster, component)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   cluster.Namespace,
+			ReleaseName: "castai-agent",
+		}).Return(nil, driver.ErrReleaseNotFound)
+
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		r.NoError(err)
+		r.True(reconcile)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualComponent)
+		r.NoError(err)
+		r.Equal("", actualComponent.Spec.Migration)
+		r.Equal("", actualComponent.Spec.Version)
+	})
+}
+
+func TestScanExistingComponentsWithTerraform(t *testing.T) {
+	t.Run("should not create component CR when cluster terraform flag is true", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+
+		cluster := newTestCluster(t, uuid.NewString(), true)
+		cluster.Spec.Terraform = true
+
+		testOps := newClusterTestOps(t, cluster)
+
+		testOps.mockHelm.EXPECT().GetRelease(gomock.Any()).Times(0)
+
+		reconcile, err := testOps.sut.scanExistingComponents(ctx, cluster)
+		r.NoError(err)
+		r.False(reconcile)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualComponent)
+		r.Error(err)
+		r.True(apierrors.IsNotFound(err))
 	})
 }
 

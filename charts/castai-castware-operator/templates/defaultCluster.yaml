@@ -11,6 +11,7 @@ metadata:
   labels:
     {{- include "castware-operator.labels" . | nindent 4 }}
 spec:
+  terraform: {{ $comp.terraform }}
   api:
     apiUrl: {{ .Values.defaultCluster.api.apiUrl | quote }}
     {{- if .Values.defaultCluster.api.apiGrpcUrl }}
