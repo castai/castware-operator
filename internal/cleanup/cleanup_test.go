@@ -2,16 +2,12 @@ package cleanup
 
 import (
 	"context"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
-	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
-	"helm.sh/helm/v3/pkg/chart"
-	"helm.sh/helm/v3/pkg/release"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -137,66 +133,4 @@ func newTestOps(t *testing.T, objs ...client.Object) *testOps {
 	}
 
 	return opts
-}
-
-func newTestCluster(t *testing.T, server *httptest.Server) *castwarev1alpha1.Cluster {
-	t.Helper()
-	// Create a mock HTTP server
-
-	return &castwarev1alpha1.Cluster{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-cluster",
-			Namespace: "test-namespace",
-		},
-		Spec: castwarev1alpha1.ClusterSpec{
-			Cluster: &castwarev1alpha1.ClusterMetadataSpec{
-				ClusterID: uuid.NewString(),
-			},
-			API: castwarev1alpha1.APISpec{
-				APIURL: server.URL,
-			},
-			APIKeySecret: "test-api-secret",
-			HelmRepoURL:  "https://castai.github.io/helm-charts",
-		},
-	}
-}
-
-func newTestPod(t *testing.T) *corev1.Pod {
-	t.Helper()
-	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "castware-operator-pod-" + uuid.NewString(),
-			Namespace: "test-namespace",
-			Labels: map[string]string{
-				"app.kubernetes.io/instance": "castware-operator",
-			},
-		},
-		Status: corev1.PodStatus{
-			Phase: corev1.PodRunning,
-			Conditions: []corev1.PodCondition{
-				{
-					Type:   corev1.PodReady,
-					Status: corev1.ConditionTrue,
-				},
-			},
-		},
-	}
-}
-
-//nolint:unparam
-func createMockRelease(name, version, namespace string) *release.Release {
-	return &release.Release{
-		Name:      name,
-		Namespace: namespace,
-		Info: &release.Info{
-			Status: release.StatusDeployed,
-		},
-		Chart: &chart.Chart{
-			Metadata: &chart.Metadata{
-				Name:    name,
-				Version: version,
-			},
-		},
-		Config: map[string]interface{}{},
-	}
 }
