@@ -73,6 +73,9 @@ func newCleanupCmd() *cobra.Command {
 			for _, component := range componentCRs.Items {
 				if controllerutil.ContainsFinalizer(&component, controller.ComponentFinalizer) {
 					controllerutil.RemoveFinalizer(&component, controller.ComponentFinalizer)
+					if component.Labels == nil {
+						component.Labels = map[string]string{}
+					}
 					component.Labels["castware.cast.ai/delete-candidate"] = "true"
 					if err := Client.GetClient().Update(ctx, &component); err != nil {
 						log.WithError(err).Error("failed to remove finalizer from component CR")

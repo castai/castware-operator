@@ -127,3 +127,9 @@ rules:
       - patch
       - update
       - delete
+  - apiGroups:
+      - ""
+    resources:
+      - pods/log
+    verbs:
+      - get
