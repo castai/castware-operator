@@ -69,11 +69,33 @@ func (d *ComponentCustomDefaulter) Default(ctx context.Context, obj runtime.Obje
 	}
 	log := d.log.WithField("component", component.GetName())
 
+	castAiClient, err := d.getCastaiClient(ctx, log, component)
+	if err != nil {
+		log.WithError(err).Error("Failed to get castaiClient")
+		return err
+	}
+
+	c, err := castAiClient.GetComponentByName(ctx, component.Spec.Component)
+	if err != nil {
+		log.WithError(err).Error("Failed to get component")
+		return err
+	}
+
 	// If version is empty we set it to the latest available.
 	if component.Spec.Version == "" {
-		if err := d.setLatestVersion(ctx, log, component); err != nil {
-			return err
+		if c.LatestVersion == "" {
+			log.Error("component latest version not returned by api")
+			return errors.New("component latest version not returned by api")
 		}
+		component.Spec.Version = c.LatestVersion
+	}
+
+	if component.Labels == nil {
+		component.Labels = map[string]string{}
+	}
+
+	if component.Labels[castwarev1alpha1.LabelHelmChart] == "" {
+		component.Labels[castwarev1alpha1.LabelHelmChart] = c.HelmChart
 	}
 
 	return nil
@@ -101,30 +123,6 @@ func (d *ComponentCustomDefaulter) getCastaiClient(ctx context.Context, log logr
 	client := castai.NewClient(log, cfg, rest)
 
 	return client, nil
-}
-
-func (d *ComponentCustomDefaulter) setLatestVersion(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) error {
-	log.Info("Component version not found, installing latest version")
-
-	castAiClient, err := d.getCastaiClient(ctx, log, component)
-	if err != nil {
-		log.WithError(err).Error("Failed to get castaiClient")
-		return err
-	}
-	c, err := castAiClient.GetComponentByName(ctx, component.Spec.Component)
-	if err != nil {
-		log.WithError(err).Error("Failed to get component")
-		return err
-	}
-
-	if c.LatestVersion == "" {
-		log.Error("component latest version not returned by api")
-		return errors.New("component latest version not returned by api")
-	}
-
-	component.Spec.Version = c.LatestVersion
-
-	return nil
 }
 
 // NOTE: The 'path' attribute must follow a specific pattern and should not be modified directly here.

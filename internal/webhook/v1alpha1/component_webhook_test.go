@@ -65,7 +65,9 @@ var _ = Describe("Component Webhook", func() {
 		}
 
 		dummyUser, _ := json.Marshal(castaitest.CreateUserObject())
-		dummyComponent, _ := json.Marshal(castaitest.CreateComponentObject())
+		dummyComponent := castaitest.CreateComponentObject()
+		dummyComponent.LatestVersion = "0.0.2"
+		dummyComponentJson, _ := json.Marshal(dummyComponent)
 
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
@@ -74,7 +76,7 @@ var _ = Describe("Component Webhook", func() {
 				_, _ = w.Write(dummyUser)
 			case "/cluster-management/v1/components:getByName":
 				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write(dummyComponent)
+				_, _ = w.Write(dummyComponentJson)
 			case fmt.Sprintf("/cluster-management/v1/clusters/%s/components:validateUpgrade", testClusterID):
 				if opts.validationEndpoint != nil {
 					w.Header().Set("Content-Type", "application/json")
@@ -142,7 +144,10 @@ var _ = Describe("Component Webhook", func() {
 			log:         log,
 		}
 		Expect(validator).NotTo(BeNil(), "Expected validator to be initialized")
-		defaulter = ComponentCustomDefaulter{log: logrus.New()}
+		defaulter = ComponentCustomDefaulter{
+			log:    logrus.New(),
+			client: k8sClient,
+		}
 		Expect(defaulter).NotTo(BeNil(), "Expected defaulter to be initialized")
 		Expect(oldObj).NotTo(BeNil(), "Expected oldObj to be initialized")
 		Expect(obj).NotTo(BeNil(), "Expected obj to be initialized")
@@ -151,18 +156,54 @@ var _ = Describe("Component Webhook", func() {
 	AfterEach(func() {
 		// TODO (user): Add any teardown logic common to all tests
 	})
+	Context("When creating Component under Defaulting Webhook", Ordered, func() {
+		var apiServer *httptest.Server
+		BeforeAll(func() {
+			// spin up dummy CAST.AI server
+			apiServer = newMockAPIServer()
 
-	Context("When creating Component under Defaulting Webhook", func() {
-		// TODO (user): Add logic for defaulting webhooks
-		// Example:
-		// It("Should apply defaults when a required field is empty", func() {
-		//     By("simulating a scenario where defaults should be applied")
-		//     obj.SomeFieldWithDefault = ""
-		//     By("calling the Default method to apply defaults")
-		//     defaulter.Default(ctx, obj)
-		//     By("checking that the default values are set")
-		//     Expect(obj.SomeFieldWithDefault).To(Equal("default_value"))
-		// })
+			// create a dummy cluster with a valid API key secret
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-api-key-defaulter",
+					Namespace: "default",
+				},
+				Data: map[string][]byte{
+					"API_KEY": []byte("dummy-api-key"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+			cluster := &castwarev1alpha1.Cluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "dummy-cluster-defaulter",
+					Namespace: "default",
+				},
+				Spec: castwarev1alpha1.ClusterSpec{
+					Provider:     "test",
+					APIKeySecret: "test-api-key-defaulter",
+					API: castwarev1alpha1.APISpec{
+						APIURL: apiServer.URL,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+		})
+
+		AfterAll(func() {
+			apiServer.Close()
+		})
+
+		It("Should set helm chart label", func() {
+			apiServer = newMockAPIServer()
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = "dummy-cluster-defaulter"
+			obj.SetNamespace("default")
+
+			err := defaulter.Default(ctx, obj)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(obj.Labels).To(HaveKeyWithValue(castwarev1alpha1.LabelHelmChart, "test-helm-chart"))
+		})
 	})
 
 	Context("When creating or updating Component under Validating Webhook", Ordered, func() {

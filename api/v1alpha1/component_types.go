@@ -11,6 +11,7 @@ import (
 const (
 	ComponentMigrationHelm = "helm"
 	ComponentMigrationYaml = "yaml"
+	LabelHelmChart         = "castware.cast.ai/helm-chart"
 )
 
 // ComponentSpec defines the desired state of Component
@@ -75,6 +76,14 @@ type Component struct {
 
 	Spec   ComponentSpec   `json:"spec,omitempty"`
 	Status ComponentStatus `json:"status,omitempty"`
+}
+
+func (c Component) HelmChartName() string {
+	if c.Labels != nil && c.Labels[LabelHelmChart] != "" {
+		return c.Labels[LabelHelmChart]
+	}
+	// Fallback to the component name if there is no helm chart label.
+	return c.Spec.Component
 }
 
 //+kubebuilder:object:root=true
