@@ -427,11 +427,11 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 			log.WithError(err).Error("Failed to get release")
 			return ctrl.Result{}, err
 		}
-		log.Info("Helm release not found, installing component")
+		log.WithField("helm_chart", component.HelmChartName()).Info("Helm release not found, installing component")
 		_, err = r.HelmClient.Install(ctx, helm.InstallOptions{
 			ChartSource: &helm.ChartSource{
 				RepoURL: cluster.Spec.HelmRepoURL,
-				Name:    component.Spec.Component,
+				Name:    component.HelmChartName(),
 				Version: component.Spec.Version,
 			},
 			Namespace:       component.Namespace,
