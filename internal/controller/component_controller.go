@@ -113,7 +113,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	log = log.WithField("cluster", component.Spec.Cluster)
 
-	if component.Spec.Migration == castwarev1alpha1.ComponentMigrationTerraform {
+	if component.IsInitiliazedByTerraform() {
 		// if Migration mode is TF it means the CR was just created by TF
 		// reque so we give time to cluster controller to handle the CR first
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
