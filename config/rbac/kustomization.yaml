@@ -22,3 +22,7 @@ resources:
 - namespace_role.yaml
 - namespace_role_binding.yaml
 - kube_system_rbac.yaml
+- phase2-namespace_role.yaml
+- phase2-namespace_role_binding.yaml
+- phase2-role.yaml
+- phase2-role_binding.yaml

@@ -1,0 +1,251 @@
+{{- if .Values.extendedPermissions }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: "{{ .Release.Namespace }}"
+  name: {{ include "castware-operator.fullname" . }}-namespace-role-ext
+  labels:
+    castware.cast.ai/extended-permissions: "true"
+    {{- include "castware-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - '*'
+  resources:
+  - '*'
+  verbs:
+  - '*'
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-manager-role-ext
+  labels:
+    castware.cast.ai/extended-permissions: "true"
+    {{- include "castware-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - list
+- apiGroups:
+  - autoscaling.cast.ai
+  resources:
+  - '*'
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+  - create
+  - delete
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - nodes/status
+  verbs:
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - pods/eviction
+  verbs:
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - delete
+- apiGroups:
+  - certificates.k8s.io
+  resources:
+  - certificatesigningrequests
+  verbs:
+  - get
+  - list
+  - delete
+  - create
+  - watch
+- apiGroups:
+  - certificates.k8s.io
+  resources:
+  - certificatesigningrequests/approval
+  verbs:
+  - patch
+  - update
+- apiGroups:
+  - certificates.k8s.io
+  resourceNames:
+  - kubernetes.io/kubelet-serving
+  - kubernetes.io/kube-apiserver-client-kubelet
+  resources:
+  - signers
+  verbs:
+  - approve
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - live.cast.ai
+  resources:
+  - '*'
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+  - create
+  - delete
+  - update
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resourceNames:
+  - castai-cluster-controller
+  - castai-evictor
+  - castai-agent
+  - castai-spot-handler
+  - castai-kvisor
+  - castai-kvisor-controller
+  - castai-egressd
+  - castai-pod-pinner
+  - castai-ai-optimizer-proxy
+  resources:
+  - roles
+  verbs:
+  - get
+  - patch
+  - update
+  - delete
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resourceNames:
+  - castai-cluster-controller
+  - castai-evictor
+  - castai-agent
+  - castai-spot-handler
+  - castai-kvisor
+  - castai-kvisor-controller
+  - castai-egressd
+  - castai-pod-pinner
+  - castai-ai-optimizer-proxy
+  resources:
+  - clusterroles
+  - clusterrolebindings
+  verbs:
+  - get
+  - delete
+- apiGroups:
+  - ""
+  resourceNames:
+  - castai-agent
+  resources:
+  - namespaces
+  verbs:
+  - delete
+- apiGroups:
+  - ""
+  resourceNames:
+  - castai-llms
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - delete
+- apiGroups:
+  - admissionregistration.k8s.io
+  resourceNames:
+  - castai-pod-pinner
+  resources:
+  - mutatingwebhookconfigurations
+  verbs:
+  - get
+  - patch
+- apiGroups:
+  - pod-mutations.cast.ai
+  resources:
+  - '*'
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+  - create
+  - delete
+  - update
+- apiGroups:
+  - storage.k8s.io
+  resources:
+  - volumeattachments
+  verbs:
+  - get
+  - list
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: "{{ .Release.Namespace }}"
+  name: {{ include "castware-operator.fullname" . }}-namespace-role-binding-ext
+  labels:
+    castware.cast.ai/extended-permissions: "true"
+    {{- include "castware-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: castware-operator-namespace-role-ext
+subjects:
+- kind: ServiceAccount
+  name: {{ include "castware-operator.fullname" . }}-controller-manager
+  namespace: castai-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-manager-rolebinding-ext
+  labels:
+    castware.cast.ai/extended-permissions: "true"
+    {{- include "castware-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: castware-operator-manager-role-ext
+subjects:
+- kind: ServiceAccount
+  name: {{ include "castware-operator.fullname" . }}-controller-manager
+  namespace: castai-agent
+{{- end }}
