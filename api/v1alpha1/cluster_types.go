@@ -51,6 +51,7 @@ type ClusterSpec struct {
 
 	// Terraform flag indicates if the operator was onboarded through terraform
 	// or not. Should be set to true when we onboard it through TF.
+	//+optional
 	//+kubebuilder:default:=false
 	Terraform bool `json:"terraform"`
 }
