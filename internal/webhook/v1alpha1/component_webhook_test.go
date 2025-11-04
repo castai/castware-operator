@@ -201,7 +201,7 @@ var _ = Describe("Component Webhook", func() {
 			obj.SetNamespace("default")
 
 			err := defaulter.Default(ctx, obj)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(obj.Labels).To(HaveKeyWithValue(castwarev1alpha1.LabelHelmChart, "test-helm-chart"))
 		})
 	})
