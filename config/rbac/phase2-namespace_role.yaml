@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: namespace-role-ext
+  namespace: castai-agent
+  labels:
+    castware.cast.ai/extended-permissions: "true"
+rules:
+  # Operator has full access in castai-agent namespace in phase2. This is required to fully manage cluster controller and all other components.
+  - apiGroups: [ "*" ]
+    resources: [ "*" ]
+    verbs: [ "*" ]

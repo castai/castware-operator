@@ -1,0 +1,14 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    castware.cast.ai/extended-permissions: "true"
+  name: manager-rolebinding-ext
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: manager-role-ext
+subjects:
+- kind: ServiceAccount
+  name: controller-manager
+  namespace: system

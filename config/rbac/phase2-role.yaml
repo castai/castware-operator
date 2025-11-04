@@ -1,0 +1,196 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role-ext
+  labels:
+    castware.cast.ai/extended-permissions: "true"
+rules:
+  # Readonly.
+  - apiGroups: [ "" ]
+    resources:
+      - "pods"
+      - "nodes"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
+  - apiGroups: [ "" ]
+    resources:
+      - "namespaces"
+    verbs:
+      - "get"
+  - apiGroups: [ "" ]
+    resources:
+      - "events"
+    verbs:
+      - "list"
+    # For CAST autoscaling CRDs management.
+  - apiGroups:
+      - "autoscaling.cast.ai"
+    resources:
+      - "*"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
+      - "patch"
+      - "create"
+      - "delete"
+      - "update"
+  # For advertising extended resources
+  - apiGroups: [ "" ]
+    resources:
+      - "nodes/status"
+    verbs:
+      - "patch"
+  # For node draining and patching.
+  - apiGroups: [ "" ]
+    resources:
+      - "nodes"
+    verbs:
+      - "patch"
+      - "update"
+  - apiGroups: [ "" ]
+    resources:
+      - "pods"
+    verbs:
+      - "delete"
+  - apiGroups: [ "" ]
+    resources:
+      - "pods/eviction"
+    verbs:
+      - "create"
+  # For node deletion.
+  - apiGroups: [ "" ]
+    resources:
+      - "nodes"
+    verbs:
+      - "delete"
+  # For csr approval.
+  - apiGroups:
+      - "certificates.k8s.io"
+    resources:
+      - "certificatesigningrequests"
+    verbs:
+      - "get"
+      - "list"
+      - "delete"
+      - "create"
+      - "watch"
+  - apiGroups:
+      - "certificates.k8s.io"
+    resources:
+      - "certificatesigningrequests/approval"
+    verbs:
+      - "patch"
+      - "update"
+  - apiGroups:
+      - "certificates.k8s.io"
+    resources:
+      - "signers"
+    resourceNames:
+      - "kubernetes.io/kubelet-serving"
+      - "kubernetes.io/kube-apiserver-client-kubelet"
+    verbs:
+      - "approve"
+  # For creating events.
+  - apiGroups: [ "" ]
+    resources: [ "events" ]
+    verbs: [ "create", "patch" ]
+  # For live migration
+  - apiGroups:
+      - "live.cast.ai"
+    resources:
+      - "*"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
+      - "patch"
+      - "create"
+      - "delete"
+      - "update"
+  # For installing/updating CAST AI components.
+  - apiGroups:
+      - "rbac.authorization.k8s.io"
+    resources:
+      - "roles"
+    resourceNames:
+      - castai-cluster-controller
+      - castai-evictor
+      - castai-agent
+      - castai-spot-handler
+      - castai-kvisor
+      - castai-kvisor-controller
+      - castai-egressd
+      - castai-pod-pinner
+      - castai-ai-optimizer-proxy
+    verbs:
+      - "get"
+      - "patch"
+      - "update"
+      - "delete"
+  - apiGroups:
+      - "rbac.authorization.k8s.io"
+    resources:
+      - "clusterroles"
+      - "clusterrolebindings"
+    resourceNames:
+      # `-ext` ClusterRoles should not be added here, because we do not want to touch them after installation.
+      - castai-cluster-controller
+      - castai-evictor
+      - castai-agent
+      - castai-spot-handler
+      - castai-kvisor
+      - castai-kvisor-controller
+      - castai-egressd
+      - castai-pod-pinner
+      - castai-ai-optimizer-proxy
+    verbs:
+      - "get"
+      - "delete"
+  - apiGroups: [ "" ]
+    resources:
+      - "namespaces"
+    resourceNames:
+      - "castai-agent"
+    verbs:
+      - "delete"
+  - apiGroups: [ "" ]
+    resources:
+      - "namespaces"
+    resourceNames:
+      - "castai-llms"
+    verbs:
+      - "get"
+      - "delete"
+  - apiGroups:
+      - "admissionregistration.k8s.io"
+    resourceNames:
+      - "castai-pod-pinner"
+    resources:
+      - "mutatingwebhookconfigurations"
+    verbs:
+      - "get"
+      - "patch"
+  # For creating pod mutations-related custom resources
+  - apiGroups:
+      - "pod-mutations.cast.ai"
+    resources: [ "*" ]
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
+      - "patch"
+      - "create"
+      - "delete"
+      - "update"
+  - apiGroups:
+      - "storage.k8s.io"
+    resources:
+      - volumeattachments
+    verbs:
+      - get
+      - list
+      - delete

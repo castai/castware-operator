@@ -85,6 +85,9 @@ apiKeySecret:
   # The actual API key value (should be set via --set apiKeySecret.apiKey=YOUR_API_KEY)
   apiKey: ""
 
+# Whether to create the extended permissions for the operator, needed for phase2 components
+extendedPermissions: false
+
 # Default cluster configuration
 defaultCluster:
   enabled: true

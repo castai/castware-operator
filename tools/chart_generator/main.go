@@ -24,7 +24,10 @@ var rbacKindOrder = map[string]int{
 }
 
 func parseManifests(r io.Reader) ([]*unstructured.Unstructured, error) {
-	var rbacObjs []*unstructured.Unstructured
+	var (
+		rbacObjs                []*unstructured.Unstructured
+		extendedPermissionsObjs []*unstructured.Unstructured
+	)
 
 	dec := yamlutil.NewYAMLOrJSONDecoder(r, 4096)
 
@@ -44,12 +47,36 @@ func parseManifests(r io.Reader) ([]*unstructured.Unstructured, error) {
 		// filter by kind
 		switch u.GetKind() {
 		case "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding":
-			rbacObjs = append(rbacObjs, u)
+			if u.GetLabels()["castware.cast.ai/extended-permissions"] == "true" {
+				extendedPermissionsObjs = append(extendedPermissionsObjs, u)
+			} else {
+				rbacObjs = append(rbacObjs, u)
+			}
+
 		}
 
 	}
 
 	// Sort RBAC objects to have a repeatable code generation.
+	rbacObjs = sortRbacObjs(rbacObjs)
+	extendedPermissionsObjs = sortRbacObjs(extendedPermissionsObjs)
+
+	if err := injectAndWrite(rbacObjs, "charts/castai-castware-operator/templates/rbac.yaml", "", ""); err != nil {
+		return nil, err
+	}
+
+	if err := injectAndWrite(
+		extendedPermissionsObjs,
+		"charts/castai-castware-operator/templates/rbac-ext.yaml",
+		"{{- if .Values.extendedPermissions }}",
+		"{{- end }}",
+	); err != nil {
+		return nil, err
+	}
+
+	return rbacObjs, nil
+}
+func sortRbacObjs(rbacObjs []*unstructured.Unstructured) []*unstructured.Unstructured {
 	sort.Slice(rbacObjs, func(i, j int) bool {
 		oi, oj := rbacObjs[i], rbacObjs[j]
 
@@ -62,12 +89,7 @@ func parseManifests(r io.Reader) ([]*unstructured.Unstructured, error) {
 		// same kind → sort by metadata.name
 		return oi.GetName() < oj.GetName()
 	})
-
-	if err := injectAndWrite(rbacObjs, "charts/castai-castware-operator/templates/rbac.yaml", "", ""); err != nil {
-		return nil, err
-	}
-
-	return rbacObjs, nil
+	return rbacObjs
 }
 
 func injectAndWrite(objs []*unstructured.Unstructured, outFilePath, header, footer string) error {
@@ -130,11 +152,16 @@ func injectTemplating(in []byte, obj *unstructured.Unstructured) []byte {
 				out = append(out, indent+`  namespace: `+namespace)
 			}
 
+			extendedPermissions := obj.GetLabels()["castware.cast.ai/extended-permissions"] == "true"
+
 			out = append(out,
 				indent+`  name: `+strings.Replace(obj.GetName(), "castware-operator", `{{ include "castware-operator.fullname" . }}`, 1), // nolint:lll
 				indent+"  labels:",
-				indent+"    {{- include \"castware-operator.labels\" . | nindent 4 }}",
 			)
+			if extendedPermissions {
+				out = append(out, indent+"    castware.cast.ai/extended-permissions: \"true\"")
+			}
+			out = append(out, indent+"    {{- include \"castware-operator.labels\" . | nindent 4 }}")
 
 			// skip the original metadata block
 			i++
