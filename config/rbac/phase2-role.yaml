@@ -194,5 +194,3 @@ rules:
       - get
       - list
       - delete
-
-#time="2025-11-04T12:04:38Z" level=warning msg="Helm install failed: Release \"cluster-controller\" failed: 2 errors occurred:\n\t* clusterroles.rbac.authorization.k8s.io \"castai-cluster-controller-ext\" is forbidden: user \"system:serviceaccount:castai-agent:castware-operator-controller-manager\" (groups=[\"system:serviceaccounts\" \"system:serviceaccounts:castai-agent\" \"system:authenticated\"]) is attempting to grant RBAC permissions not currently held:\n{APIGroups:[\"storage.k8s.io\"], Resources:[\"volumeattachments\"], Verbs:[\"get\" \"list\" \"delete\"]}\n\t* clusterroles.rbac.authorization.k8s.io \"castai-cluster-controller-ext\" not found\n\n" cluster=castai component=castai-agent/cluster-controller gitCommit=undefined version=local
