@@ -88,7 +88,7 @@ func (d *ComponentCustomDefaulter) Default(ctx context.Context, obj runtime.Obje
 	}
 
 	// If version is empty we set it to the latest available.
-	if component.Spec.Version == "" {
+	if component.Spec.Version == "" && !component.IsInitiliazedByTerraform() {
 		if c.LatestVersion == "" {
 			log.Error("component latest version not returned by api")
 			return errors.New("component latest version not returned by api")
@@ -196,9 +196,12 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 		return nil, err
 	}
 
-	// check that the version exists
-	if err := v.validateVersion(ctx, castComponent.HelmChart, c); err != nil {
-		return nil, fmt.Errorf("failed to validate version %s for chart '%s': %w", c.Spec.Version, castComponent.HelmChart, err)
+	// we skip if initialized by terraform and version is empty as validation will fail as version is empty
+	if !(c.IsInitiliazedByTerraform() && c.Spec.Version == "") {
+		// check that the version exists
+		if err := v.validateVersion(ctx, castComponent.HelmChart, c); err != nil {
+			return nil, fmt.Errorf("failed to validate version %s for chart '%s': %w", c.Spec.Version, castComponent.HelmChart, err)
+		}
 	}
 
 	// check that the helm chart for the component to migrate is already installed.
@@ -411,7 +414,7 @@ func (v *ComponentCustomValidator) checkExtendedPermissionsExist(ctx context.Con
 // validateTerraformMigration validates the combination of terraform migration, cluster mode, and version
 func (v *ComponentCustomValidator) validateTerraformMigration(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) error {
 	// Only validate if migration is terraform
-	if component.Spec.Migration != castwarev1alpha1.ComponentMigrationTerraform || !cluster.Spec.Terraform {
+	if !component.IsInitiliazedByTerraform() || !cluster.Spec.Terraform {
 		return nil
 	}
 

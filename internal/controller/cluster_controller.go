@@ -270,7 +270,7 @@ func (r *ClusterReconciler) syncTerraformComponents(ctx context.Context, cluster
 	}
 
 	// Component CR exists, check if it needs terraform migration handling
-	if component.Spec.Migration != castwarev1alpha1.ComponentMigrationTerraform {
+	if !component.IsInitiliazedByTerraform() {
 		// Not a terraform migration, nothing to do
 		return false, nil
 	}

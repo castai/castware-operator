@@ -254,6 +254,7 @@ spec:
                 enum:
                 - yaml
                 - helm
+                - terraform
                 - ""
                 type: string
               readonly:

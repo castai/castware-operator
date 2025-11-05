@@ -675,12 +675,6 @@ var _ = Describe("Component Webhook", func() {
 			obj.Spec.Version = ""
 			obj.SetNamespace("default")
 
-			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
-				RepoURL: "",
-				Name:    "test-helm-chart",
-				Version: "",
-			})
-
 			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).ToNot(HaveOccurred())
 		})
@@ -691,12 +685,6 @@ var _ = Describe("Component Webhook", func() {
 			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationTerraform
 			obj.Spec.Version = ""
 			obj.SetNamespace("default")
-
-			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
-				RepoURL: "",
-				Name:    "test-helm-chart",
-				Version: "",
-			})
 
 			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).ToNot(HaveOccurred())

@@ -48,7 +48,7 @@ type ComponentSpec struct {
 
 	// Migration tells the operator if there is an existing component to migrate
 	// or just a new component to install.
-	//+kubebuilder:validation:Enum=yaml;helm;""
+	//+kubebuilder:validation:Enum=yaml;helm;terraform;""
 	//+kubebuilder:default:=""
 	Migration string `json:"migration,omitempty"`
 
@@ -86,6 +86,10 @@ func (c Component) HelmChartName() string {
 	}
 	// Fallback to the component name if there is no helm chart label.
 	return c.Spec.Component
+}
+
+func (c Component) IsInitiliazedByTerraform() bool {
+	return c.Spec.Migration == ComponentMigrationTerraform
 }
 
 //+kubebuilder:object:root=true

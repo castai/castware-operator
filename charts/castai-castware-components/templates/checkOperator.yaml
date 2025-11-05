@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: check-operator-ready
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+    "helm.sh/hook-weight": "-1"
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: check-operator
+      restartPolicy: Never
+      securityContext:
+        {{- toYaml .Values.checkOperator.podSecurityContext | nindent 8 }}
+      containers:
+        - name: check
+          image: "{{ .Values.checkOperator.image.repository }}:{{ .Values.checkOperator.image.tag }}"
+          imagePullPolicy: {{ .Values.checkOperator.image.pullPolicy }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e  # Exit on any error
+              
+              echo "Checking if castware-operator deployment exists..."
+              if ! kubectl get deployment castware-operator -n castai-agent; then
+                echo "ERROR: castware-operator deployment not found"
+                exit 1
+              fi
+              
+              echo "Waiting for castware-operator pod to be running..."
+              if ! kubectl wait --for=condition=ready pod \
+                -l app.kubernetes.io/name=castware-operator \
+                -n castai-agent \
+                --timeout=300s; then
+                echo "ERROR: Timeout waiting for operator pod to be ready"
+                echo "Pod status:"
+                kubectl get pods -n castai-agent
+                kubectl get pods -l app.kubernetes.io/name=castware-operator -n castai-agent
+                exit 1
+              fi
+              
+              echo "Operator is ready!"
+          securityContext:
+            {{- toYaml .Values.checkOperator.securityContext | nindent 12 }}
