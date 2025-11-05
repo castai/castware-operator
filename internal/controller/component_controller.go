@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	components "github.com/castai/castware-operator/internal/component"
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/storage/driver"
@@ -151,7 +152,8 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		log.WithError(err).Error("Failed to get cluster")
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
-	if !meta.IsStatusConditionTrue(cluster.Status.Conditions, typeAvailableCluster) {
+	if !meta.IsStatusConditionTrue(cluster.Status.Conditions, typeAvailableCluster) ||
+		cluster.Spec.Cluster == nil || cluster.Spec.Cluster.ClusterID == "" {
 		log.Info("Waiting for cluster to be available")
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
@@ -329,10 +331,22 @@ func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Compone
 			return nil, err
 		}
 	}
-	overrides["apiURL"] = cluster.Spec.API.APIURL
-	overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
-	overrides["provider"] = cluster.Spec.Provider
-	overrides["createNamespace"] = false
+
+	// Component specific overrides
+	switch component.Spec.Component {
+	case components.ComponentNameClusterController:
+		overrides["castai"] = map[string]any{
+			"clusterID":       cluster.Spec.Cluster.ClusterID,
+			"apiKeySecretRef": cluster.Spec.APIKeySecret,
+			"apiURL":          cluster.Spec.API.APIURL,
+		}
+	default:
+		overrides["apiURL"] = cluster.Spec.API.APIURL
+		overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
+		overrides["provider"] = cluster.Spec.Provider
+		overrides["createNamespace"] = false
+	}
+
 	return overrides, nil
 }
 

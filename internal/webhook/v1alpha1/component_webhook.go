@@ -11,6 +11,7 @@ import (
 
 	"github.com/castai/castware-operator/internal/helm"
 
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -26,6 +27,11 @@ import (
 	"github.com/castai/castware-operator/internal/castai/auth"
 	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/internal/config"
+)
+
+const (
+	extendedPermissionsLabel = "castware.cast.ai/extended-permissions"
+	extendedPermissionsValue = "true"
 )
 
 // nolint:unused
@@ -154,6 +160,18 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 	// validate that config supports the component
 	if !components.IsSupported(c.Spec.Component) {
 		return nil, fmt.Errorf("component '%s' is not supported", c.Spec.Component)
+	}
+
+	if components.RequiresExtendedPermissions(c.Spec.Component) {
+		ok, err := v.checkExtendedPermissionsExist(ctx, c.Namespace)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check extended permissions: %w", err)
+		}
+		if !ok {
+			return nil, fmt.Errorf("component '%s' requires extended permissions, please run "+
+				"`helm upgrade castware-operator -n castai-agent --set extendedPermissions=\"true\" --reuse-values castai-helm/castware-operator`",
+				c.Spec.Component)
+		}
 	}
 
 	// validate that cluster exists
@@ -356,4 +374,32 @@ func (v *ComponentCustomValidator) validateComponentUpgrade(ctx context.Context,
 	}
 
 	return nil
+}
+
+// checkExtendedPermissionsExist checks if RoleBinding and ClusterRoleBinding with
+// 'castware.cast.ai/extended-permissions: "true"' label exist in the given namespace.
+// Returns (roleBindingExists, clusterRoleBindingExists, error).
+func (v *ComponentCustomValidator) checkExtendedPermissionsExist(ctx context.Context, namespace string) (bool, error) {
+
+	// Check for RoleBindings with the extended-permissions label
+	roleBindingList := &rbacv1.RoleBindingList{}
+	if err := v.client.List(ctx, roleBindingList,
+		client.InNamespace(namespace),
+		client.MatchingLabels{extendedPermissionsLabel: extendedPermissionsValue},
+	); err != nil {
+		return false, fmt.Errorf("failed to list RoleBindings: %w", err)
+	}
+
+	// Check for ClusterRoleBindings with the extended-permissions label
+	clusterRoleBindingList := &rbacv1.ClusterRoleBindingList{}
+	if err := v.client.List(ctx, clusterRoleBindingList,
+		client.MatchingLabels{extendedPermissionsLabel: extendedPermissionsValue},
+	); err != nil {
+		return false, fmt.Errorf("failed to list ClusterRoleBindings: %w", err)
+	}
+
+	roleBindingExists := len(roleBindingList.Items) > 0
+	clusterRoleBindingExists := len(clusterRoleBindingList.Items) > 0
+
+	return roleBindingExists && clusterRoleBindingExists, nil
 }

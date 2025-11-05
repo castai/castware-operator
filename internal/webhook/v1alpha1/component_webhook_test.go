@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 
+	components "github.com/castai/castware-operator/internal/component"
 	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/release"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -300,6 +302,13 @@ var _ = Describe("Component Webhook", func() {
 			Expect(err).Error().To(MatchError("failed to validate existing helm release: helm chart is in failed status"))
 		})
 
+		It("Should deny creation if component requires extended permissions and operator does not have them enabled", func() {
+			By("simulating an invalid creation scenario")
+			obj.Spec.Component = components.ComponentNameClusterController
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).Error().To(MatchError("component 'cluster-controller' requires extended permissions, please run `helm upgrade castware-operator -n castai-agent --set extendedPermissions=\"true\" --reuse-values castai-helm/castware-operator`"))
+		})
+
 		It("Should admit creation", func() {
 			By("simulating a valid creation scenario")
 			obj.Spec.Component = componentName
@@ -329,6 +338,63 @@ var _ = Describe("Component Webhook", func() {
 				ReleaseName: obj.Spec.Component,
 			}).Return(&release.Release{Info: &release.Info{Status: release.StatusDeployed}}, nil)
 
+			Expect(validator.ValidateCreate(ctx, obj)).To(BeNil())
+		})
+
+		It("Should deny creation if component requires extended permissions and they are enabled", func() {
+			By("simulating a valid creation scenario")
+			obj.Spec.Component = components.ComponentNameClusterController
+			obj.Spec.Cluster = clusterName
+			obj.SetNamespace("default")
+			extendedRoleBinding := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-extended-permissions-rolebinding",
+					Namespace: obj.Namespace,
+					Labels: map[string]string{
+						"castware.cast.ai/extended-permissions": "true",
+					},
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind:      "ServiceAccount",
+						Name:      "test-service-account",
+						Namespace: obj.Namespace,
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: "rbac.authorization.k8s.io",
+					Kind:     "Role",
+					Name:     "test-extended-permissions-role",
+				},
+			}
+			extendedClusterRoleBinding := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-extended-permissions-rolebinding",
+					Labels: map[string]string{
+						"castware.cast.ai/extended-permissions": "true",
+					},
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind:      "ServiceAccount",
+						Name:      "test-service-account",
+						Namespace: obj.Namespace,
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: "rbac.authorization.k8s.io",
+					Kind:     "ClusterRole",
+					Name:     "test-extended-permissions-cluster-role",
+				},
+			}
+			Expect(k8sClient.Create(ctx, extendedRoleBinding)).To(Succeed())
+			Expect(k8sClient.Create(ctx, extendedClusterRoleBinding)).To(Succeed())
+
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: "",
+			})
 			Expect(validator.ValidateCreate(ctx, obj)).To(BeNil())
 		})
 
