@@ -109,6 +109,12 @@ spec:
               provider:
                 description: Provider is the cloud provider where Castware is installed.
                 type: string
+              terraform:
+                default: false
+                description: |-
+                  Terraform flag indicates if the operator was onboarded through terraform
+                  or not. Should be set to true when we onboard it through TF.
+                type: boolean
             required:
             - api
             - apiKeySecret

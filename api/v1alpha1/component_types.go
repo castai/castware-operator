@@ -9,9 +9,11 @@ import (
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
 const (
-	ComponentMigrationHelm = "helm"
-	ComponentMigrationYaml = "yaml"
-	LabelHelmChart         = "castware.cast.ai/helm-chart"
+	ComponentMigrationHelm      = "helm"
+	ComponentMigrationYaml      = "yaml"
+	ComponentMigrationTerraform = "terraform"
+
+	LabelHelmChart = "castware.cast.ai/helm-chart"
 )
 
 // ComponentSpec defines the desired state of Component

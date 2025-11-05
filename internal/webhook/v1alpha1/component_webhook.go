@@ -181,6 +181,10 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 		return nil, fmt.Errorf("cluster '%s' does not exist", c.Spec.Cluster)
 	}
 
+	if err := v.validateTerraformMigration(c, cluster); err != nil {
+		return nil, err
+	}
+
 	castAiClient, err := v.getCastAIClient(ctx, cluster)
 	if err != nil {
 		return nil, err
@@ -402,4 +406,23 @@ func (v *ComponentCustomValidator) checkExtendedPermissionsExist(ctx context.Con
 	clusterRoleBindingExists := len(clusterRoleBindingList.Items) > 0
 
 	return roleBindingExists && clusterRoleBindingExists, nil
+}
+
+// validateTerraformMigration validates the combination of terraform migration, cluster mode, and version
+func (v *ComponentCustomValidator) validateTerraformMigration(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) error {
+	// Only validate if migration is terraform
+	if component.Spec.Migration != castwarev1alpha1.ComponentMigrationTerraform || !cluster.Spec.Terraform {
+		return nil
+	}
+
+	// If migration is terraform AND version is set AND cluster is in autoupgrade mode -> reject
+	if component.Spec.Version != "" && cluster.Spec.MigrationMode == castwarev1alpha1.ClusterMigrationModeAutoupgrade {
+		return fmt.Errorf(
+			"cannot set explicit version in terraform with autoupgrade mode true: " +
+				"in autoupgrade mode, the operator automatically detects and uses the latest version. " +
+				"Either remove the version field from the Component CR or change the Cluster migration mode to 'write'",
+		)
+	}
+
+	return nil
 }

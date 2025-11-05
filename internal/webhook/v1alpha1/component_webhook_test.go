@@ -25,6 +25,8 @@ import (
 	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
 )
 
+const componentVersion = "1.5.0"
+
 var _ = Describe("Component Webhook", func() {
 	const (
 		componentName      = "castai-agent"
@@ -600,6 +602,222 @@ var _ = Describe("Component Webhook", func() {
 
 			// No ValidateComponentUpgrade API call should be made
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).ToNot(HaveOccurred())
+		})
+	})
+
+	Context("When validating terraform migration mode", Ordered, func() {
+		var apiServer *httptest.Server
+		var terraformCluster *castwarev1alpha1.Cluster
+		const (
+			terraformClusterWrite       = "terraform-cluster-write"
+			terraformClusterAutoupgrade = "terraform-cluster-autoupgrade"
+			testApiKeyTerraform         = "test-api-key-terraform"
+		)
+
+		BeforeAll(func() {
+			apiServer = newMockAPIServer()
+
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testApiKeyTerraform,
+					Namespace: "default",
+				},
+				Data: map[string][]byte{
+					"API_KEY": []byte("dummy-api-key"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+			terraformCluster = &castwarev1alpha1.Cluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      terraformClusterWrite,
+					Namespace: "default",
+				},
+				Spec: castwarev1alpha1.ClusterSpec{
+					Provider:      "test",
+					APIKeySecret:  testApiKeyTerraform,
+					Terraform:     true,
+					MigrationMode: castwarev1alpha1.ClusterMigrationModeWrite,
+					API: castwarev1alpha1.APISpec{
+						APIURL: apiServer.URL,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, terraformCluster)).To(Succeed())
+
+			clusterAutoupgrade := &castwarev1alpha1.Cluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      terraformClusterAutoupgrade,
+					Namespace: "default",
+				},
+				Spec: castwarev1alpha1.ClusterSpec{
+					Provider:      "test",
+					APIKeySecret:  testApiKeyTerraform,
+					Terraform:     true,
+					MigrationMode: castwarev1alpha1.ClusterMigrationModeAutoupgrade,
+					API: castwarev1alpha1.APISpec{
+						APIURL: apiServer.URL,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, clusterAutoupgrade)).To(Succeed())
+		})
+
+		AfterAll(func() {
+			apiServer.Close()
+		})
+
+		It("Should admit creation with terraform migration, empty version, and write mode", func() {
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = terraformClusterWrite
+			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationTerraform
+			obj.Spec.Version = ""
+			obj.SetNamespace("default")
+
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: "",
+			})
+
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("Should admit creation with terraform migration, empty version, and autoupgrade mode", func() {
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = terraformClusterAutoupgrade
+			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationTerraform
+			obj.Spec.Version = ""
+			obj.SetNamespace("default")
+
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: "",
+			})
+
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("Should admit creation with terraform migration, set version, and write mode", func() {
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = terraformClusterWrite
+			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationTerraform
+			obj.Spec.Version = componentVersion
+			obj.SetNamespace("default")
+
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: componentVersion,
+			})
+
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("Should deny creation with terraform migration, set version, and autoupgrade mode", func() {
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = terraformClusterAutoupgrade
+			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationTerraform
+			obj.Spec.Version = componentVersion
+			obj.SetNamespace("default")
+
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("cannot set explicit version in terraform with autoupgrade mode"))
+			Expect(err.Error()).To(ContainSubstring("remove the version field"))
+		})
+
+		It("Should admit creation without terraform migration regardless of version and mode", func() {
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = terraformClusterAutoupgrade
+			obj.Spec.Migration = ""
+			obj.Spec.Version = componentVersion
+			obj.SetNamespace("default")
+
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: componentVersion,
+			})
+
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("Should admit creation with helm migration regardless of version and autoupgrade mode", func() {
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = terraformClusterAutoupgrade
+			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
+			obj.Spec.Version = componentVersion
+			obj.SetNamespace("default")
+
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: componentVersion,
+			})
+			helmClient.EXPECT().GetRelease(helm.GetReleaseOptions{
+				Namespace:   obj.Namespace,
+				ReleaseName: obj.Spec.Component,
+			}).Return(&release.Release{Info: &release.Info{Status: release.StatusDeployed}}, nil)
+
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("Should admit creation with yaml migration regardless of version and autoupgrade mode", func() {
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = terraformClusterAutoupgrade
+			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationYaml
+			obj.Spec.Version = componentVersion
+			obj.SetNamespace("default")
+
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: componentVersion,
+			})
+
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("Should admit creation with terraform migration but cluster terraform flag is false", func() {
+			clusterNoTerraform := &castwarev1alpha1.Cluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cluster-no-terraform",
+					Namespace: "default",
+				},
+				Spec: castwarev1alpha1.ClusterSpec{
+					Provider:      "test",
+					APIKeySecret:  testApiKeyTerraform,
+					Terraform:     false,
+					MigrationMode: castwarev1alpha1.ClusterMigrationModeAutoupgrade,
+					API: castwarev1alpha1.APISpec{
+						APIURL: apiServer.URL,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, clusterNoTerraform)).To(Succeed())
+
+			obj.Spec.Component = componentName
+			obj.Spec.Cluster = "cluster-no-terraform"
+			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationTerraform
+			obj.Spec.Version = componentVersion
+			obj.SetNamespace("default")
+
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: componentVersion,
+			})
+
+			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).ToNot(HaveOccurred())
 		})
 	})

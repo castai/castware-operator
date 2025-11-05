@@ -70,6 +70,12 @@ const (
 	operatorServiceAccountName         = "castware-operator-controller-manager"
 )
 
+type existingComponentVersion struct {
+	Version         string
+	ComponentConfig map[string]any
+	MigrationMode   string
+}
+
 // ClusterReconciler reconciles a Cluster object
 type ClusterReconciler struct {
 	client.Client
@@ -217,6 +223,15 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
 
+	reconcile, err = r.syncTerraformComponents(ctx, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to sync terraform components")
+		// Don't block on terraform sync errors, continue to scan and poll actions
+	}
+	if reconcile {
+		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+	}
+
 	reconcile, err = r.scanExistingComponents(ctx, cluster)
 	// If an error occurred while scanning existing components, we just poll actions for a minute and then retry.
 	// This is to avoid that the controller gets stuck on component scanning and stops executing actions.
@@ -230,7 +245,105 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return r.pollActions(ctx, castAiClient, cluster)
 }
 
+// syncTerraformComponents handles Component CRs that are created by Terraform with migration mode
+func (r *ClusterReconciler) syncTerraformComponents(ctx context.Context, cluster *castwarev1alpha1.Cluster) (bool, error) {
+	// Only process if terraform flag is set
+	if !cluster.Spec.Terraform {
+		return false, nil
+	}
+
+	log := r.Log.WithField("action", "sync-terraform-components")
+
+	// For now, only agent is supported
+	componentName := components.ComponentNameAgent
+
+	component := &castwarev1alpha1.Component{}
+	err := r.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: componentName}, component)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// CR doesn't exist yet, requeue to give Terraform time to create it
+			log.Debug("Component CR not found, requeueing to wait for Terraform")
+			return true, nil
+		}
+		log.WithError(err).Error("Failed to get component")
+		return false, err
+	}
+
+	// Component CR exists, check if it needs terraform migration handling
+	if component.Spec.Migration != castwarev1alpha1.ComponentMigrationTerraform {
+		// Not a terraform migration, nothing to do
+		return false, nil
+	}
+
+	log.Info("Processing terraform migration for component")
+	return r.handleComponentTerraformMigration(ctx, cluster, component)
+}
+
+// handleComponentTerraformMigration processes a Component CR with terraform migration mode
+func (r *ClusterReconciler) handleComponentTerraformMigration(ctx context.Context, cluster *castwarev1alpha1.Cluster, component *castwarev1alpha1.Component) (bool, error) {
+	log := r.Log.WithFields(logrus.Fields{
+		"component": component.Name,
+		"migration": component.Spec.Migration,
+		"version":   component.Spec.Version,
+	})
+
+	updatedComponent := component.DeepCopy()
+
+	// Case 1: Version is already set in the CR
+	if component.Spec.Version != "" {
+		log.Info("Version already set in terraform migration, clearing migration flag")
+		updatedComponent.Spec.Migration = ""
+	} else {
+		// Case 2: No version set, need to detect based on cluster migration mode
+		switch cluster.Spec.MigrationMode {
+		case castwarev1alpha1.ClusterMigrationModeAutoupgrade:
+			// Leave version empty - component controller or mutating webhook will handle it and set latest version
+			updatedComponent.Spec.Migration = ""
+		default:
+			// Write mode (or empty/default) - must detect version from existing installation
+			log.Info("Write mode: detecting version from existing installation")
+			existingVersion, err := r.detectComponentVersion(ctx, log, cluster, component.Spec.Component)
+			if err != nil {
+				log.WithError(err).Warn("Failed to detect component version")
+			}
+
+			if existingVersion != nil && existingVersion.Version != "" {
+				log.Infof("Detected version: %s", existingVersion.Version)
+				updatedComponent.Spec.Version = existingVersion.Version
+
+				// Also sync values if they exist and were not set by TF
+				if existingVersion.ComponentConfig != nil && component.Spec.Values == nil {
+					values, err := json.Marshal(existingVersion.ComponentConfig)
+					if err != nil {
+						log.WithError(err).Warn("Failed to marshal component config")
+					} else {
+						updatedComponent.Spec.Values = &v1.JSON{Raw: values}
+					}
+				}
+
+				updatedComponent.Spec.Migration = ""
+			} else {
+				log.Info("No existing installation found for terraform migration in write mode")
+				// In write mode without existing installation, leave version empty for latest
+				updatedComponent.Spec.Migration = ""
+			}
+		}
+	}
+
+	err := r.Client.Patch(ctx, updatedComponent, client.MergeFrom(component))
+	if err != nil {
+		log.WithError(err).Error("Failed to patch component")
+		return false, err
+	}
+	log.Info("Successfully processed terraform migration")
+	return true, nil
+}
+
 func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, cluster *castwarev1alpha1.Cluster) (bool, error) {
+	if cluster.Spec.Terraform {
+		// Component CR will be handled separetly and we don't want to create a new one if we are in TF.
+		return false, nil
+	}
 	// Now only the agent is supported, so we can scan for it and return the result directly.
 	return r.scanExistingComponent(ctx, cluster, components.ComponentNameAgent)
 }
@@ -251,74 +364,81 @@ func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, cluster *
 		return false, err
 	}
 
-	// Component not found, check if it's installed with helm or yaml manifests.
-	agentRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
-		Namespace:   cluster.Namespace,
-		ReleaseName: componentName,
-	})
-	if err != nil {
-		if !errors.Is(err, driver.ErrReleaseNotFound) {
-			// If the error is not ErrReleaseNotFound, something is wrong with helm or component configuration
-			log.WithError(err).Error("Failed to get helm release")
-			return false, err
-		}
+	compVersion, err := r.detectComponentVersion(ctx, log, cluster, componentName)
 
-		// Helm release not found, we search for yaml manifests if the component supports it (agent only)
-		if componentName != components.ComponentNameAgent {
-			log.Debug("Component not found, but it's not an agent, migration from yaml manifests is not supported")
-			return false, nil
-		}
-		var deploymentList appsv1.DeploymentList
-		err = r.List(ctx, &deploymentList, &client.ListOptions{
-			Namespace:     cluster.Namespace,
-			LabelSelector: labels.SelectorFromSet(labels.Set{nameLabelKey: components.ComponentNameAgent}),
-		})
-		if err != nil {
-			return false, err
-		}
-		if len(deploymentList.Items) > 0 {
-			versionLabel := deploymentList.Items[0].Labels["helm.sh/chart"]
-			version := strings.TrimPrefix(versionLabel, fmt.Sprintf("%s-", componentName))
-			if version == "" {
-				log.Warnf("Failed to get version from deployment label, upgrading to latest version")
-			}
-
-			component = newComponent(componentName, version, cluster)
-			component.Spec.Migration = castwarev1alpha1.ComponentMigrationYaml
-			valueOverrides, err := json.Marshal(map[string]interface{}{
-				"replicaCount": deploymentList.Items[0].Spec.Replicas,
-			})
-			if err != nil {
-				log.WithError(err).Error("Failed to marshal value overrides")
-				return false, err
-			}
-			component.Spec.Values = &v1.JSON{Raw: valueOverrides}
-
-			err = r.Create(ctx, component)
-			if err != nil {
-				return false, err
-			}
-			log.Info("component resource created")
-			return true, nil
-		}
-		return false, err
-
-	}
-	// Release found, create agent CR
-	log.Infof("Helm release found, creating new component resource: %v", agentRelease.Name)
-	values, err := json.Marshal(agentRelease.Config)
 	if err != nil {
 		return false, err
 	}
-	component = newComponent(componentName, agentRelease.Chart.Metadata.Version, cluster)
+
+	if compVersion == nil {
+		return false, nil
+	}
+
+	log.Info("Version found for existing component, creating new component resource")
+	values, err := json.Marshal(compVersion.ComponentConfig)
+	if err != nil {
+		return false, err
+	}
+	component = newComponent(componentName, compVersion.Version, cluster)
 	component.Spec.Values = &v1.JSON{Raw: values}
-	component.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
+	component.Spec.Migration = compVersion.MigrationMode
 	err = r.Create(ctx, component)
 	if err != nil {
 		return false, err
 	}
 	log.Info("component resource created")
 	return true, nil
+}
+
+func (r *ClusterReconciler) detectComponentVersion(ctx context.Context, log logrus.FieldLogger, cluster *castwarev1alpha1.Cluster, componentName string) (*existingComponentVersion, error) {
+	agentRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+		Namespace:   cluster.Namespace,
+		ReleaseName: componentName,
+	})
+
+	if err == nil {
+		return &existingComponentVersion{
+			Version:         agentRelease.Chart.Metadata.Version,
+			ComponentConfig: agentRelease.Config,
+			MigrationMode:   castwarev1alpha1.ComponentMigrationHelm,
+		}, nil
+	}
+
+	if !errors.Is(err, driver.ErrReleaseNotFound) {
+		// If the error is not ErrReleaseNotFound, something is wrong with helm or component configuration
+		log.WithError(err).Error("Failed to get helm release")
+		return nil, err
+	}
+
+	// Helm release not found, we search for yaml manifests if the component supports it (agent only)
+	if componentName != components.ComponentNameAgent {
+		log.Debug("Component not found, but it's not an agent, migration from yaml manifests is not supported")
+		return nil, nil
+	}
+	var deploymentList appsv1.DeploymentList
+	err = r.List(ctx, &deploymentList, &client.ListOptions{
+		Namespace:     cluster.Namespace,
+		LabelSelector: labels.SelectorFromSet(labels.Set{nameLabelKey: components.ComponentNameAgent}),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(deploymentList.Items) > 0 {
+		versionLabel := deploymentList.Items[0].Labels["helm.sh/chart"]
+		version := strings.TrimPrefix(versionLabel, fmt.Sprintf("%s-", componentName))
+		if version == "" {
+			log.Warnf("Failed to get version from deployment label, upgrading to latest version")
+		}
+		valueOverrides := map[string]interface{}{"replicaCount": deploymentList.Items[0].Spec.Replicas}
+
+		return &existingComponentVersion{
+			Version:         version,
+			ComponentConfig: valueOverrides,
+			MigrationMode:   castwarev1alpha1.ComponentMigrationYaml,
+		}, nil
+	}
+
+	return nil, nil
 }
 
 func (r *ClusterReconciler) reconcileSecret(ctx context.Context, cluster *castwarev1alpha1.Cluster) (bool, error) {

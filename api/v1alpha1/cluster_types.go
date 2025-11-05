@@ -48,6 +48,12 @@ type ClusterSpec struct {
 	//+kubebuilder:validation:Enum=write;read;autoUpgrade
 	//+kubebuilder:default:="write"
 	MigrationMode string `json:"migrationMode,omitempty"`
+
+	// Terraform flag indicates if the operator was onboarded through terraform
+	// or not. Should be set to true when we onboard it through TF.
+	//+optional
+	//+kubebuilder:default:=false
+	Terraform bool `json:"terraform"`
 }
 
 // APISpec groups HTTP/gRPC endpoints for Mothership and related services.
