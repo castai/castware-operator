@@ -119,7 +119,6 @@ spec:
             required:
             - api
             - apiKeySecret
-            - terraform
             type: object
           status:
             description: ClusterStatus defines the observed state of Cluster

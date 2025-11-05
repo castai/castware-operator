@@ -2,6 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: check-operator-ready
+  namespace: {{ .Release.Namespace }}
   annotations:
     "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
@@ -12,9 +13,12 @@ spec:
     spec:
       serviceAccountName: check-operator
       restartPolicy: Never
+      securityContext:
+        {{- toYaml .Values.checkOperator.podSecurityContext | nindent 8 }}
       containers:
         - name: check
-          image: bitnami/kubectl:latest
+          image: "{{ .Values.checkOperator.image.repository }}:{{ .Values.checkOperator.image.tag }}"
+          imagePullPolicy: {{ .Values.checkOperator.image.pullPolicy }}
           command: ["/bin/sh", "-c"]
           args:
             - |
@@ -39,3 +43,5 @@ spec:
               fi
               
               echo "Operator is ready!"
+          securityContext:
+            {{- toYaml .Values.checkOperator.securityContext | nindent 12 }}
