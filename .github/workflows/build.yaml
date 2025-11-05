@@ -9,6 +9,14 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      chart:
+        description: 'Which chart to release'
+        required: true
+        type: choice
+        options:
+          - components
 
 jobs:
   build:
@@ -156,8 +164,8 @@ jobs:
       - name: Run E2E tests
         run: make test-e2e
 
-  release_chart:
-    name: Release Helm Chart
+  release_chart_operator:
+    name: Release Helm Chart Operator
     runs-on: ubuntu-24.04
     if: github.event_name == 'release'
     needs: build
@@ -173,6 +181,17 @@ jobs:
           helm-charts-repo-token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
           chart-path: "${{ github.workspace }}/charts/castai-castware-operator"
           chart-releaser-configfile: "${{ github.workspace }}/cr.yaml"
+
+  release_chart_components:
+    name: Release Helm Chart Components
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.chart == 'components'
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Release castware-components chart
         uses: castai/helm-charts/.github/actions/remote-release@d0da50bfa6e6a6593fe50e80644f4e80ec1cb309
