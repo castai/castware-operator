@@ -60,7 +60,7 @@ var ErrNothingToRollback = errors.New("nothing to rollback")
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components/finalizers,verbs=update
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings;clusterroles;clusterrolebindings,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=pods;nodes;services;events;configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods;nodes;services;events,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets;replicasets,verbs=get;list;watch
 
 // +kubebuilder:rbac:groups="",resources=limitranges;namespaces;persistentvolumeclaims;persistentvolumes;replicationcontrollers;resourcequotas,verbs=get;list;watch

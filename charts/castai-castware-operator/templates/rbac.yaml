@@ -7,13 +7,13 @@ metadata:
     {{- include "castware-operator.labels" . | nindent 4 }}
 rules:
 - apiGroups:
-  - rbac.authorization.k8s.io
+  - ""
   resources:
-  - roles
-  - rolebindings
+  - configmaps
   verbs:
   - get
-  - delete
+  - list
+  - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -174,6 +174,13 @@ rules:
   - pods/log
   verbs:
   - get
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -185,7 +192,6 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - configmaps
   - events
   - limitranges
   - namespaces
@@ -261,17 +267,8 @@ rules:
   - batch
   resources:
   - cronjobs
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - batch
-  resources:
   - jobs
   verbs:
-  - create
-  - delete
   - get
   - list
   - watch
