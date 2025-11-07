@@ -1,0 +1,6 @@
+# Binary
+role-diff
+
+# Go build artifacts
+*.test
+*.out

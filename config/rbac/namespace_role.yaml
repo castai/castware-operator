@@ -133,3 +133,13 @@ rules:
       - pods/log
     verbs:
       - get
+  # ---
+  # castware-operator - Required for self upgrade job.
+  # ---
+  - apiGroups:
+      - batch
+    resources:
+      - jobs
+    verbs:
+      - create
+      - delete
