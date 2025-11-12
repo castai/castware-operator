@@ -79,7 +79,7 @@ func TestOperatorUpgrade(t *testing.T) {
 
 		// Verify cluster status was updated to Progressing
 		actualCluster := &castwarev1alpha1.Cluster{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
 		r.NoError(err)
 
 		progressingCondition := meta.FindStatusCondition(actualCluster.Status.Conditions, typeProgressingCluster)
@@ -93,7 +93,7 @@ func TestOperatorUpgrade(t *testing.T) {
 
 		// Verify job exists
 		job := &batchv1.Job{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{
+		err = testOps.sut.Get(ctx, client.ObjectKey{
 			Namespace: cluster.Namespace,
 			Name:      actualCluster.Status.UpgradeJobName,
 		}, job)
@@ -145,7 +145,7 @@ func TestOperatorUpgrade(t *testing.T) {
 
 		// Verify no job was created and no status was updated
 		actualCluster := &castwarev1alpha1.Cluster{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
 		r.NoError(err)
 		r.Empty(actualCluster.Status.UpgradeJobName)
 	})
@@ -179,7 +179,7 @@ func TestOperatorUpgrade(t *testing.T) {
 
 		// Verify cluster still has upgradeJobName (not cleared)
 		actualCluster := &castwarev1alpha1.Cluster{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
 		r.NoError(err)
 		r.Equal(jobName, actualCluster.Status.UpgradeJobName)
 	})
@@ -211,7 +211,7 @@ func TestOperatorUpgrade(t *testing.T) {
 
 		// Verify cluster status updated
 		actualCluster := &castwarev1alpha1.Cluster{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
 		r.NoError(err)
 		r.Empty(actualCluster.Status.UpgradeJobName)
 
@@ -284,7 +284,7 @@ func TestOperatorUpgrade(t *testing.T) {
 
 		// Verify cluster status updated to Degraded
 		actualCluster := &castwarev1alpha1.Cluster{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
 		r.NoError(err)
 		r.Empty(actualCluster.Status.UpgradeJobName)
 
@@ -316,7 +316,7 @@ func TestOperatorUpgrade(t *testing.T) {
 
 		// Verify cluster status cleared
 		actualCluster := &castwarev1alpha1.Cluster{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
 		r.NoError(err)
 		r.Empty(actualCluster.Status.UpgradeJobName)
 
@@ -373,14 +373,14 @@ func TestOperatorUpgrade(t *testing.T) {
 		// Update cluster's LastSecretVersion to match the secret's ResourceVersion
 		// This prevents reconcileSecret from trying to validate the API key
 		actualSecret := &corev1.Secret{}
-		err := testOps.sut.Client.Get(ctx, client.ObjectKey{
+		err := testOps.sut.Get(ctx, client.ObjectKey{
 			Namespace: cluster.Namespace,
 			Name:      "api-key-secret",
 		}, actualSecret)
 		r.NoError(err)
 
 		actualCluster := &castwarev1alpha1.Cluster{}
-		err2 := testOps.sut.Client.Get(ctx, client.ObjectKey{
+		err2 := testOps.sut.Get(ctx, client.ObjectKey{
 			Namespace: cluster.Namespace,
 			Name:      cluster.Name,
 		}, actualCluster)
@@ -402,7 +402,7 @@ func TestOperatorUpgrade(t *testing.T) {
 
 		// Verify still only one job exists
 		actualCluster2 := &castwarev1alpha1.Cluster{}
-		err4 := testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster2)
+		err4 := testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster2)
 		r.NoError(err4)
 		r.Equal("existing-upgrade-job", actualCluster2.Status.UpgradeJobName)
 	})

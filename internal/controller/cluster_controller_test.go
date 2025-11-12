@@ -182,8 +182,8 @@ func TestPollActions(t *testing.T) {
 		r.NoError(err)
 
 		actualCR := &castwarev1alpha1.Component{}
-		r.NoError(testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualCR))
-		r.Equal(cluster.Namespace, actualCR.ObjectMeta.Namespace)
+		r.NoError(testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualCR))
+		r.Equal(cluster.Namespace, actualCR.Namespace)
 		r.Equal(cluster.Name, actualCR.Spec.Cluster)
 		r.Equal("test-component", actualCR.Name)
 	})
@@ -259,7 +259,7 @@ func TestPollActions(t *testing.T) {
 		r.NoError(err)
 
 		actualComponent := &castwarev1alpha1.Component{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
 		r.NoError(err)
 
 		r.Equal("0.2", actualComponent.Spec.Version)
@@ -340,7 +340,7 @@ func TestPollActions(t *testing.T) {
 		r.NoError(err)
 
 		actualComponent := &castwarev1alpha1.Component{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: component1.Name}, actualComponent)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: component1.Name}, actualComponent)
 		r.NoError(err)
 		r.Equal("0.2", actualComponent.Spec.Version)
 		actualValues := map[string]interface{}{}
@@ -349,7 +349,7 @@ func TestPollActions(t *testing.T) {
 		r.Equal("value1-value", actualValues["value1"])
 
 		actualComponent = &castwarev1alpha1.Component{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: component2.Name}, actualComponent)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: component2.Name}, actualComponent)
 		r.NoError(err)
 		r.Equal("0.2", actualComponent.Spec.Version)
 		actualValues = map[string]interface{}{}
@@ -360,7 +360,7 @@ func TestPollActions(t *testing.T) {
 		r.Equal("value3-value", actualValues["value3"])
 
 		actualComponent = &castwarev1alpha1.Component{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: component3.Name}, actualComponent)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: component3.Name}, actualComponent)
 		r.NoError(err)
 		r.Equal("0.2", actualComponent.Spec.Version)
 		actualValues = map[string]interface{}{}
@@ -405,7 +405,7 @@ func TestPollActions(t *testing.T) {
 		r.NoError(err)
 
 		actualComponent := &castwarev1alpha1.Component{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
 		r.Error(err)
 		r.True(apierrors.IsNotFound(err))
 	})
@@ -452,7 +452,7 @@ func TestPollActions(t *testing.T) {
 		r.NoError(err)
 
 		actualComponent := &castwarev1alpha1.Component{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
 		r.NoError(err)
 		r.True(actualComponent.Status.Rollback)
 	})
@@ -592,7 +592,7 @@ func TestPollActions(t *testing.T) {
 		r.NoError(err)
 
 		actualComponent := &castwarev1alpha1.Component{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
 		r.NoError(err)
 		r.False(actualComponent.Status.Rollback)
 	})
@@ -634,7 +634,7 @@ func TestPollActions(t *testing.T) {
 		r.NoError(err)
 
 		actualComponent := &castwarev1alpha1.Component{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
 		r.NoError(err)
 
 		r.Equal("0.2", actualComponent.Spec.Version)
@@ -720,7 +720,7 @@ func TestScanExistingComponent(t *testing.T) {
 		r.True(reconcile)
 
 		actualComponent := &castwarev1alpha1.Component{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
 		r.NoError(err)
 		r.Equal("test-component", actualComponent.Name)
 		r.Equal(cluster.Namespace, actualComponent.Namespace)
@@ -786,7 +786,7 @@ func TestReconcileCluster(t *testing.T) {
 		r.NoError(err)
 
 		actualCluster := &castwarev1alpha1.Cluster{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
 		r.NoError(err)
 		r.NotEmpty(actualCluster.Spec.Cluster.ClusterID)
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
@@ -803,7 +803,7 @@ func TestReconcileCluster(t *testing.T) {
 
 		_, err = testOps.sut.Reconcile(ctx, req)
 		r.NoError(err)
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
 		r.NoError(err)
 
 		availableCondition := meta.FindStatusCondition(actualCluster.Status.Conditions, typeAvailableCluster)
@@ -960,7 +960,7 @@ func TestSyncTerraformComponents(t *testing.T) {
 		r.True(reconcile)
 
 		actualComponent := &castwarev1alpha1.Component{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualComponent)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualComponent)
 		r.NoError(err)
 		r.Equal("", actualComponent.Spec.Migration)
 		r.Equal("1.5.0", actualComponent.Spec.Version)
@@ -995,7 +995,7 @@ func TestSyncTerraformComponents(t *testing.T) {
 		r.True(reconcile)
 
 		actualComponent := &castwarev1alpha1.Component{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualComponent)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualComponent)
 		r.NoError(err)
 		r.Equal("", actualComponent.Spec.Migration)
 		r.Equal("", actualComponent.Spec.Version)
@@ -1047,7 +1047,7 @@ func TestSyncTerraformComponents(t *testing.T) {
 		r.True(reconcile)
 
 		actualComponent := &castwarev1alpha1.Component{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualComponent)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualComponent)
 		r.NoError(err)
 		r.Equal("", actualComponent.Spec.Migration)
 		r.Equal("1.2.3", actualComponent.Spec.Version)
@@ -1093,7 +1093,7 @@ func TestSyncTerraformComponents(t *testing.T) {
 		r.True(reconcile)
 
 		actualComponent := &castwarev1alpha1.Component{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualComponent)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualComponent)
 		r.NoError(err)
 		r.Equal("", actualComponent.Spec.Migration)
 		r.Equal("", actualComponent.Spec.Version)
@@ -1118,7 +1118,7 @@ func TestScanExistingComponentsWithTerraform(t *testing.T) {
 		r.False(reconcile)
 
 		actualComponent := &castwarev1alpha1.Component{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualComponent)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualComponent)
 		r.Error(err)
 		r.True(apierrors.IsNotFound(err))
 	})
@@ -1243,7 +1243,7 @@ func newTestApiServer(t *testing.T) *httptest.Server {
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"id": "%s", "organizationId": "%s"}`, uuid.NewString(), uuid.NewString())))
+			_, _ = fmt.Fprintf(w, `{"id": "%s", "organizationId": "%s"}`, uuid.NewString(), uuid.NewString())
 
 			w.WriteHeader(http.StatusOK)
 			return

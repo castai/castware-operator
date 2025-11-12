@@ -173,7 +173,7 @@ func injectTemplating(in []byte, obj *unstructured.Unstructured) []byte {
 			}
 			continue
 		}
-		line = strings.Replace(line, "castware-operator-controller-manager", "{{ include \"castware-operator.fullname\" . }}-controller-manager", -1) // nolint:lll
+		line = strings.ReplaceAll(line, "castware-operator-controller-manager", "{{ include \"castware-operator.fullname\" . }}-controller-manager") // nolint:lll
 		out = append(out, line)
 		i++
 	}

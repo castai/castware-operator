@@ -51,7 +51,7 @@ func TestReconcile(t *testing.T) {
 			r.NoError(err)
 
 			var actualComponent castwarev1alpha1.Component
-			err = testOps.sut.Client.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+			err = testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
 			r.NoError(err)
 
 			r.Len(actualComponent.Finalizers, 1)
@@ -98,7 +98,7 @@ func TestReconcile(t *testing.T) {
 			r.NoError(err)
 
 			var actualComponent castwarev1alpha1.Component
-			err = testOps.sut.Client.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+			err = testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
 			r.NoError(err)
 
 			r.Equal("0.1.2", actualComponent.Status.CurrentVersion)
@@ -157,7 +157,7 @@ func TestReconcile(t *testing.T) {
 			r.NoError(err)
 
 			var actualComponent castwarev1alpha1.Component
-			err = testOps.sut.Client.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+			err = testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
 			r.NoError(err)
 
 			r.Equal("0.1.1", actualComponent.Status.CurrentVersion)
@@ -238,7 +238,7 @@ func TestReconcile(t *testing.T) {
 			r.NoError(err)
 
 			var actualComponent castwarev1alpha1.Component
-			err = testOps.sut.Client.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+			err = testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
 			r.NoError(err)
 
 			r.Len(actualComponent.Finalizers, 1)
@@ -284,7 +284,7 @@ func TestReconcile(t *testing.T) {
 			r.NoError(err)
 
 			var actualComponent castwarev1alpha1.Component
-			err = testOps.sut.Client.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+			err = testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
 			r.NoError(err)
 
 			r.Len(actualComponent.Status.Conditions, 1)
@@ -350,7 +350,7 @@ func TestReconcile(t *testing.T) {
 			r.NoError(err)
 
 			var actualComponent castwarev1alpha1.Component
-			err = testOps.sut.Client.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+			err = testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
 			r.NoError(err)
 
 			r.Equal("0.1.2", actualComponent.Status.CurrentVersion)
@@ -392,7 +392,7 @@ func TestReconcile(t *testing.T) {
 			r.NoError(err)
 
 			var actualComponent castwarev1alpha1.Component
-			err = testOps.sut.Client.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+			err = testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
 			r.NoError(err)
 
 			r.Equal("0.2.1", actualComponent.Status.CurrentVersion)
@@ -419,7 +419,7 @@ func TestReconcile(t *testing.T) {
 			r.Equal(time.Second*30, result.RequeueAfter)
 
 			var actualComponent castwarev1alpha1.Component
-			err = testOps.sut.Client.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+			err = testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
 			r.NoError(err)
 
 			r.Empty(actualComponent.Finalizers)
