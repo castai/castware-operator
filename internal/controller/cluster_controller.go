@@ -167,7 +167,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		// Set cluster ID from register cluster result
 		updatedCluster := cluster.DeepCopy()
 		updatedCluster.Spec.Cluster = &castwarev1alpha1.ClusterMetadataSpec{ClusterID: clusterID}
-		err = r.Client.Patch(ctx, updatedCluster, client.MergeFrom(cluster))
+		err = r.Patch(ctx, updatedCluster, client.MergeFrom(cluster))
 		if err != nil {
 			log.WithError(err).Error("Failed to set cluster id")
 			// TODO: retry logic
@@ -329,7 +329,7 @@ func (r *ClusterReconciler) handleComponentTerraformMigration(ctx context.Contex
 		}
 	}
 
-	err := r.Client.Patch(ctx, updatedComponent, client.MergeFrom(component))
+	err := r.Patch(ctx, updatedComponent, client.MergeFrom(component))
 	if err != nil {
 		log.WithError(err).Error("Failed to patch component")
 		return false, err
@@ -645,7 +645,7 @@ func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castware
 			updatedComponent.Spec.Values = &v1.JSON{Raw: b}
 		}
 
-		return r.Client.Patch(ctx, updatedComponent, client.MergeFrom(component))
+		return r.Patch(ctx, updatedComponent, client.MergeFrom(component))
 	})
 }
 
@@ -716,7 +716,7 @@ func (r *ClusterReconciler) handleUninstall(ctx context.Context, cluster *castwa
 			return err
 		}
 
-		return r.Client.Delete(ctx, component)
+		return r.Delete(ctx, component)
 	})
 }
 

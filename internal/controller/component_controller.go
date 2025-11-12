@@ -95,7 +95,7 @@ type ComponentReconciler struct {
 
 // nolint:gocyclo
 func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res ctrl.Result, retErr error) {
-	log := r.Log.WithField("component", req.NamespacedName.String())
+	log := r.Log.WithField("component", req.String())
 	log.Debug("Reconciling Component")
 
 	component := &castwarev1alpha1.Component{}
@@ -236,7 +236,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				log.Warn("Migration timeout exceeded, the component will be set as readonly")
 				updatedComponent := component.DeepCopy()
 				updatedComponent.Spec.Readonly = true
-				err = r.Client.Patch(ctx, updatedComponent, client.MergeFrom(component))
+				err = r.Patch(ctx, updatedComponent, client.MergeFrom(component))
 				// Patch failure is a recoverable error.
 				if err != nil {
 					log.WithError(err).Error("Failed to patch component")
@@ -549,7 +549,7 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 			log.Warnf("Helm release not found, reverting CRD version to %s", helmRelease.Chart.Metadata.Version)
 			updatedComponent := component.DeepCopy()
 			updatedComponent.Spec.Version = helmRelease.Chart.Metadata.Version
-			err = r.Client.Patch(ctx, updatedComponent, client.MergeFrom(component))
+			err = r.Patch(ctx, updatedComponent, client.MergeFrom(component))
 			// Patch failure is a recoverable error.
 			if err != nil {
 				recordErr = fmt.Errorf("failed to reset component CRD version: %w", err)
@@ -610,7 +610,7 @@ func (r *ComponentReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 	// otherwise the reconcile loop will try upgrade it again.
 	updatedComponent := component.DeepCopy()
 	updatedComponent.Spec.Version = previousRelease.Chart.Metadata.Version
-	err = r.Client.Patch(ctx, updatedComponent, client.MergeFrom(component))
+	err = r.Patch(ctx, updatedComponent, client.MergeFrom(component))
 	if err != nil {
 		log.WithError(err).Error("Failed to reset component CRD version")
 		return ctrl.Result{}, err
