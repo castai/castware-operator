@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"castai-agent/pkg/services/providers/gke"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,13 +12,7 @@ import (
 	"testing"
 	"time"
 
-	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
-	"github.com/castai/castware-operator/internal/castai"
-	mock_castai "github.com/castai/castware-operator/internal/castai/mock"
-	castaitest "github.com/castai/castware-operator/internal/castai/test"
-	"github.com/castai/castware-operator/internal/config"
-	"github.com/castai/castware-operator/internal/helm"
-	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
+	"castai-agent/pkg/services/providers/gke"
 	"github.com/golang/mock/gomock"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
@@ -39,6 +32,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
+	"github.com/castai/castware-operator/internal/castai"
+	mock_castai "github.com/castai/castware-operator/internal/castai/mock"
+	castaitest "github.com/castai/castware-operator/internal/castai/test"
+	"github.com/castai/castware-operator/internal/config"
+	"github.com/castai/castware-operator/internal/helm"
+	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
 )
 
 var _ = Describe("Cluster Controller", func() {
@@ -752,7 +753,6 @@ func TestReconcileCluster(t *testing.T) {
 	})
 
 	t.Run("should register a new cluster", func(t *testing.T) {
-		t.Parallel()
 		r := require.New(t)
 		ctx := context.Background()
 		// clusterID := uuid.NewString()
@@ -805,6 +805,67 @@ func TestReconcileCluster(t *testing.T) {
 		r.NoError(err)
 		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
 		r.NoError(err)
+
+		availableCondition := meta.FindStatusCondition(actualCluster.Status.Conditions, typeAvailableCluster)
+		r.NotNil(availableCondition)
+		r.Equal(metav1.ConditionTrue, availableCondition.Status)
+	})
+
+	t.Run("should re-register cluster with operator install method when already registered but LastRegistrationVersion is empty", func(t *testing.T) {
+		r := require.New(t)
+		ctx := context.Background()
+
+		existingClusterID := uuid.NewString()
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				MigrationMode: castwarev1alpha1.ClusterMigrationModeWrite,
+				Provider:      gke.Name,
+				APIKeySecret:  "api-key-secret",
+				API: castwarev1alpha1.APISpec{
+					APIURL: apiServer.URL,
+				},
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: existingClusterID,
+				},
+			},
+		}
+		apiKeySecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "api-key-secret",
+				Namespace: "test-namespace",
+			},
+			Data: map[string][]byte{"API_KEY": []byte("api-key")},
+		}
+
+		testOps := newClusterTestOps(t, cluster, apiKeySecret)
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   "test-namespace",
+			ReleaseName: "castware-operator",
+		}).Return(&release.Release{
+			Name: "castware-operator",
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "1.2.3",
+				},
+			},
+		}, nil)
+
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: cluster.Name, Namespace: cluster.Namespace}}
+
+		_, err := testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+
+		actualCluster := &castwarev1alpha1.Cluster{}
+		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
+		r.NoError(err)
+
+		r.Equal(existingClusterID, actualCluster.Spec.Cluster.ClusterID)
+		r.NotEmpty(actualCluster.Status.LastRegistrationVersion)
+		r.Equal("0.0.1-test", actualCluster.Status.LastRegistrationVersion)
 
 		availableCondition := meta.FindStatusCondition(actualCluster.Status.Conditions, typeAvailableCluster)
 		r.NotNil(availableCondition)
@@ -1074,6 +1135,13 @@ func newClusterTestOps(t *testing.T, objs ...client.Object) *clusterTestOps {
 	r := require.New(t)
 	scheme := runtime.NewScheme()
 
+	// Set a default test version for the castai client
+	castai.SetVersion(config.CastwareOperatorVersion{
+		Version:   "v0.0.1-test",
+		GitCommit: "test-commit",
+		GitRef:    "test-ref",
+	})
+
 	err := castwarev1alpha1.AddToScheme(scheme)
 	r.NoError(err)
 
@@ -1159,6 +1227,21 @@ func newTestApiServer(t *testing.T) *httptest.Server {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 				return
 			}
+
+			var reqBody map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+
+			if installMethod, ok := reqBody["castware_install_method"]; ok {
+				if installMethod != float64(1) {
+					t.Errorf("Expected castware_install_method to be 1 (OPERATOR), got %v", installMethod)
+				}
+			} else {
+				t.Error("Expected castware_install_method to be present in request body")
+			}
+
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"id": "%s", "organizationId": "%s"}`, uuid.NewString(), uuid.NewString())))
 

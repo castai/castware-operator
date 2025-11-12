@@ -47,6 +47,10 @@ func SetVersion(v config.CastwareOperatorVersion) {
 	version = v
 }
 
+func GetVersion() config.CastwareOperatorVersion {
+	return version
+}
+
 // NewClient returns new Client for communicating with Cast AI.
 func NewClient(log logrus.FieldLogger, config *config.Config, rest *resty.Client) CastAIClient {
 	return &Client{

@@ -526,3 +526,146 @@ func newComponentTestOpsWithCastAIClient(t *testing.T, objs ...client.Object) *c
 
 	return opts
 }
+
+func TestProgressingStatusSetBeforeOperation(t *testing.T) {
+	t.Run("when installing component", func(t *testing.T) {
+		t.Run("should set progressing status before calling helm install", func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			r := require.New(t)
+
+			testCluster := newTestCluster(t, uuid.NewString(), true)
+			testComponent := newTestComponent(t, testCluster.Name, "test-component")
+
+			testOps := newComponentTestOps(t, testCluster, testComponent)
+
+			// Track the order of operations
+			var operationOrder []string
+
+			// Mock GetRelease to return not found (triggering install)
+			testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+				Namespace:   testComponent.Namespace,
+				ReleaseName: testComponent.Spec.Component,
+			}).DoAndReturn(func(opts helm.GetReleaseOptions) (*release.Release, error) {
+				operationOrder = append(operationOrder, "GetRelease")
+				return nil, driver.ErrReleaseNotFound
+			})
+
+			// Mock Install - this should be called AFTER progressing status is set
+			testOps.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(ctx context.Context, opts helm.InstallOptions) (*release.Release, error) {
+					operationOrder = append(operationOrder, "Install")
+
+					// At this point, the component should have progressing status set
+					var component castwarev1alpha1.Component
+					err := testOps.sut.Client.Get(ctx, client.ObjectKey{
+						Name:      testComponent.Name,
+						Namespace: testComponent.Namespace,
+					}, &component)
+					r.NoError(err)
+
+					// Verify progressing status is true
+					progressingCondition := meta.FindStatusCondition(component.Status.Conditions, typeProgressingComponent)
+					r.NotNil(progressingCondition, "progressing condition should be set before helm install")
+					r.Equal(metav1.ConditionTrue, progressingCondition.Status, "progressing should be true before helm install")
+					r.Equal(progressingReasonInstalling, progressingCondition.Reason)
+
+					return &release.Release{
+						Name: testComponent.Spec.Component,
+						Info: &release.Info{Status: release.StatusDeployed},
+						Chart: &chart.Chart{
+							Metadata: &chart.Metadata{
+								Version: testComponent.Spec.Version,
+							},
+						},
+					}, nil
+				})
+
+			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+			_, err := testOps.sut.Reconcile(ctx, req)
+			r.NoError(err)
+
+			// Verify operations happened in correct order
+			r.Equal([]string{"GetRelease", "Install"}, operationOrder, "GetRelease should be called before Install")
+		})
+	})
+
+	t.Run("when upgrading component", func(t *testing.T) {
+		t.Run("should set progressing status before calling helm upgrade", func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			r := require.New(t)
+
+			testCluster := newTestCluster(t, uuid.NewString(), true)
+			testComponent := newTestComponent(t, testCluster.Name, "test-component")
+			testComponent.Spec.Version = "v0.2.0" // New version
+
+			// Set component as already installed with older version
+			testComponent.Status.CurrentVersion = "v0.1.0"
+			meta.SetStatusCondition(&testComponent.Status.Conditions, metav1.Condition{
+				Type:   typeAvailableComponent,
+				Status: metav1.ConditionTrue,
+				Reason: reasonInstalled,
+			})
+
+			testOps := newComponentTestOps(t, testCluster, testComponent)
+
+			// Track the order of operations
+			var operationOrder []string
+
+			// Mock GetRelease to return existing release
+			testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+				Namespace:   testComponent.Namespace,
+				ReleaseName: testComponent.Spec.Component,
+			}).DoAndReturn(func(opts helm.GetReleaseOptions) (*release.Release, error) {
+				operationOrder = append(operationOrder, "GetRelease")
+				return &release.Release{
+					Name: testComponent.Spec.Component,
+					Info: &release.Info{Status: release.StatusDeployed},
+					Chart: &chart.Chart{
+						Metadata: &chart.Metadata{
+							Version: "v0.1.0",
+						},
+					},
+				}, nil
+			})
+
+			// Mock Upgrade - this should be called AFTER progressing status is set
+			testOps.mockHelm.EXPECT().Upgrade(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(ctx context.Context, opts helm.UpgradeOptions) (*release.Release, error) {
+					operationOrder = append(operationOrder, "Upgrade")
+
+					// At this point, the component should have progressing status set
+					var component castwarev1alpha1.Component
+					err := testOps.sut.Client.Get(ctx, client.ObjectKey{
+						Name:      testComponent.Name,
+						Namespace: testComponent.Namespace,
+					}, &component)
+					r.NoError(err)
+
+					// Verify progressing status is true
+					progressingCondition := meta.FindStatusCondition(component.Status.Conditions, typeProgressingComponent)
+					r.NotNil(progressingCondition, "progressing condition should be set before helm upgrade")
+					r.Equal(metav1.ConditionTrue, progressingCondition.Status, "progressing should be true before helm upgrade")
+					r.Equal(progressingReasonUpgrading, progressingCondition.Reason)
+
+					return &release.Release{
+						Name: testComponent.Spec.Component,
+						Info: &release.Info{Status: release.StatusDeployed},
+						Chart: &chart.Chart{
+							Metadata: &chart.Metadata{
+								Version: testComponent.Spec.Version,
+							},
+						},
+					}, nil
+				})
+
+			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+			_, err := testOps.sut.Reconcile(ctx, req)
+			r.NoError(err)
+
+			// Verify operations happened in correct order
+			r.Equal([]string{"GetRelease", "Upgrade"}, operationOrder, "GetRelease should be called before Upgrade")
+		})
+	})
+}

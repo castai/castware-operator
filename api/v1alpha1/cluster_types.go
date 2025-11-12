@@ -107,6 +107,10 @@ type ClusterStatus struct {
 	LastSecretVersion string             `json:"lastSecretVersion,omitempty"`
 	// UpgradeJobName is the name of an upgrade operator job
 	UpgradeJobName string `json:"upgradeJobName,omitempty"`
+	// LastRegistrationVersion is the operator version when the cluster was last registered with castware_install_method=operator.
+	// Format is semantic version without 'v' prefix (e.g., "0.0.24").
+	// Empty value indicates the cluster has not been registered by the operator yet.
+	LastRegistrationVersion string `json:"lastRegistrationVersion,omitempty"`
 }
 
 //+kubebuilder:object:root=true
