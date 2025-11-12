@@ -558,7 +558,7 @@ func TestProgressingStatusSetBeforeOperation(t *testing.T) {
 
 					// At this point, the component should have progressing status set
 					var component castwarev1alpha1.Component
-					err := testOps.sut.Client.Get(ctx, client.ObjectKey{
+					err := testOps.sut.Get(ctx, client.ObjectKey{
 						Name:      testComponent.Name,
 						Namespace: testComponent.Namespace,
 					}, &component)
@@ -637,7 +637,7 @@ func TestProgressingStatusSetBeforeOperation(t *testing.T) {
 
 					// At this point, the component should have progressing status set
 					var component castwarev1alpha1.Component
-					err := testOps.sut.Client.Get(ctx, client.ObjectKey{
+					err := testOps.sut.Get(ctx, client.ObjectKey{
 						Name:      testComponent.Name,
 						Namespace: testComponent.Namespace,
 					}, &component)

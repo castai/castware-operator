@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"castai-agent/pkg/services/providers/gke"
 	"github.com/golang/mock/gomock"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
@@ -32,6 +31,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	"castai-agent/pkg/services/providers/gke"
 
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 	"github.com/castai/castware-operator/internal/castai"
@@ -860,7 +861,7 @@ func TestReconcileCluster(t *testing.T) {
 		r.NoError(err)
 
 		actualCluster := &castwarev1alpha1.Cluster{}
-		err = testOps.sut.Client.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, actualCluster)
 		r.NoError(err)
 
 		r.Equal(existingClusterID, actualCluster.Spec.Cluster.ClusterID)
