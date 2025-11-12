@@ -29,7 +29,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v3
         with:
-          go-version: 1.24.4
+          go-version: 1.25.4
 
       - name: Cache Go modules
         uses: actions/cache@v3
@@ -133,7 +133,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v3
         with:
-          go-version: 1.24.4
+          go-version: 1.25.4
 
       - name: Cache Go modules
         uses: actions/cache@v3
