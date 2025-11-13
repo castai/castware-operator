@@ -69,6 +69,15 @@ resources: {}
 # CRD installation
 installCRDs: true
 
+# CRD upgrade configuration
+# This enables automatic CRD upgrade during helm upgrade operations
+crdUpgrade:
+  enabled: true
+  image:
+    repository: bitnami/kubectl
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
 # Webhook configuration
 webhook:
   enabled: true

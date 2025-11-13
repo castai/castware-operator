@@ -195,6 +195,10 @@ func (r *ClusterReconciler) ensureClusterRegistration(ctx context.Context, clust
 		return clusterID, nil
 	}
 
+	if clusterID != "" {
+		log.Infof("Re-registering cluster, cluster id: %v", clusterID)
+	}
+
 	p, err := GetProvider(ctx, r.Log, cluster)
 	if err != nil {
 		log.WithError(err).Error("Failed to get provider")
