@@ -74,8 +74,8 @@ installCRDs: true
 crdUpgrade:
   enabled: true
   image:
-    repository: bitnami/kubectl
-    tag: "latest"
+    repository: lachlanevenson/k8s-kubectl
+    tag: "v1.25.4"
     pullPolicy: IfNotPresent
 
 # Webhook configuration
