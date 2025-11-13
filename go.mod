@@ -195,4 +195,4 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 )
 
-replace castai-agent => github.com/castai/k8s-agent v0.0.0-20251112103026-0b36006df9f8
+replace castai-agent => github.com/castai/k8s-agent v0.105.1-0.20251113092534-02aab11e943c
