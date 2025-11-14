@@ -163,6 +163,7 @@ rules:
   - castai-egressd
   - castai-pod-pinner
   - castai-ai-optimizer-proxy
+  - castai-cluster-controller-ext
   resources:
   - clusterroles
   - clusterrolebindings
