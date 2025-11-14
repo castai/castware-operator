@@ -134,8 +134,8 @@ rules:
   - apiGroups:
       - "rbac.authorization.k8s.io"
     resources:
-      - "clusterroles"
-      - "clusterrolebindings"
+      - clusterroles
+      - clusterrolebindings
     resourceNames:
       # `-ext` ClusterRoles should not be added here, because we do not want to touch them after installation.
       - castai-cluster-controller
@@ -147,6 +147,7 @@ rules:
       - castai-egressd
       - castai-pod-pinner
       - castai-ai-optimizer-proxy
+      - castai-cluster-controller-ext
     verbs:
       - "get"
       - "delete"
