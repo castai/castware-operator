@@ -110,6 +110,7 @@ type ClusterStatus struct {
 	// LastRegistrationVersion is the operator version when the cluster was last registered with castware_install_method=operator.
 	// Format is semantic version without 'v' prefix (e.g., "0.0.24").
 	// Empty value indicates the cluster has not been registered by the operator yet.
+	// +optional
 	LastRegistrationVersion string `json:"lastRegistrationVersion,omitempty"`
 }
 
