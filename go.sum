@@ -66,8 +66,8 @@ github.com/bombsimon/logrusr/v4 v4.1.0 h1:uZNPbwusB0eUXlO8hIUwStE6Lr5bLN6IgYgG+7
 github.com/bombsimon/logrusr/v4 v4.1.0/go.mod h1:pjfHC5e59CvjTBIU3V3sGhFWFAnsnhOR03TRc6im0l8=
 github.com/bshuster-repo/logrus-logstash-hook v1.0.0 h1:e+C0SB5R1pu//O4MQ3f9cFuPGoOVeF2fE4Og9otCc70=
 github.com/bshuster-repo/logrus-logstash-hook v1.0.0/go.mod h1:zsTqEiSzDgAa/8GZR7E1qaXrhYNDKBYy5/dWPTIflbk=
-github.com/castai/k8s-agent v0.105.1-0.20251113092534-02aab11e943c h1:qw0WDrHQhJJzqB/XpLk2Hl5sX7OzbrZLIGLUmJqmKUE=
-github.com/castai/k8s-agent v0.105.1-0.20251113092534-02aab11e943c/go.mod h1:5UZ+ryvTWDEo3Ff35wYvo+veXI478K1lzGCbHkb9nxw=
+github.com/castai/k8s-agent v0.106.0 h1:cNMHXDX0aAtbA1eS5fRhjDnmbGjEj2UmJPwvNzgbQZA=
+github.com/castai/k8s-agent v0.106.0/go.mod h1:5UZ+ryvTWDEo3Ff35wYvo+veXI478K1lzGCbHkb9nxw=
 github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=
 github.com/cenkalti/backoff/v4 v4.3.0/go.mod h1:Y3VNntkOUPxTVeUxJ/G5vcM//AlwfmyYozVcomhLiZE=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

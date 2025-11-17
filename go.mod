@@ -5,7 +5,7 @@ go 1.25.0
 godebug default=go1.25.0
 
 require (
-	castai-agent v0.0.0-00010101000000-000000000000
+	castai-agent v0.106.0
 	github.com/bombsimon/logrusr/v4 v4.1.0
 	github.com/go-resty/resty/v2 v2.16.5
 	github.com/golang/mock v1.6.0
@@ -195,4 +195,4 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 )
 
-replace castai-agent => github.com/castai/k8s-agent v0.105.1-0.20251113092534-02aab11e943c
+replace castai-agent => github.com/castai/k8s-agent v0.106.0
