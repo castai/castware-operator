@@ -12,7 +12,7 @@ linters:
     - misspell
     - nakedret
     - prealloc
-#    - revive
+    - revive
     - unconvert
     - unparam
   settings:
