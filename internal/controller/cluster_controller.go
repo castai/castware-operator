@@ -1,10 +1,6 @@
 package controller
 
 import (
-	"castai-agent/pkg/services/providers/aks"
-	"castai-agent/pkg/services/providers/eks"
-	"castai-agent/pkg/services/providers/gke"
-	providers "castai-agent/pkg/services/providers/types"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +10,12 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	agentcastai "castai-agent/pkg/castai"
+	"castai-agent/pkg/services/providers/aks"
+	"castai-agent/pkg/services/providers/eks"
+	"castai-agent/pkg/services/providers/gke"
+	providers "castai-agent/pkg/services/providers/types"
 
 	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
@@ -94,15 +96,13 @@ type ClusterReconciler struct {
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=mutatingwebhookconfigurations,verbs=get;list;watch;patch;update
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingwebhookconfigurations,verbs=get;list;watch;patch;update
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
-// +kubebuilder:rbac:groups="apiextensions.k8s.io",resources=customresourcedefinitions,resourceNames=components.castware.cast.ai;clusters.castware.cast.ai,verbs=get;list;delete
+// +kubebuilder:rbac:groups="apiextensions.k8s.io",resources=customresourcedefinitions,resourceNames=components.castware.cast.ai;clusters.castware.cast.ai,verbs=get;list;delete;create;patch;update
 
 func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log
 
 	cluster := &castwarev1alpha1.Cluster{}
-	err := r.Get(ctx, req.NamespacedName, cluster)
-	if err != nil {
+	if err := r.Get(ctx, req.NamespacedName, cluster); err != nil {
 		if apierrors.IsNotFound(err) {
 			// If the custom resource is not found then it usually means that it was deleted or not created
 			// In this way, we will stop the reconciliation
@@ -126,93 +126,17 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	clusterMetadata := cluster.Spec.Cluster
-	if clusterMetadata == nil || clusterMetadata.ClusterID == "" {
-		// TODO: check agent deployment for already registered cluster
-		clusterID, err := r.extractClusterIDFromAgentLogs(ctx, cluster.Namespace)
-		if err != nil {
-			log.WithError(err).Warn("Failed to extract cluster id from agent logs, registering cluster")
-		}
-
-		if clusterID != "" {
-			log.Infof("Cluster already registered by the agent, cluster id: %v", clusterID)
-		} else {
-			p, err := GetProvider(ctx, r.Log, cluster)
-			if err != nil {
-				// TODO: handle error
-				log.WithError(err).Error("Failed to get provider")
-				return ctrl.Result{}, err
-			}
-
-			result, err := p.RegisterCluster(ctx, castAiClient)
-			if err != nil {
-				log.WithError(err).Error("Failed to register cluster")
-				meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
-					Type:    typeDegradedCluster,
-					Status:  metav1.ConditionUnknown,
-					Reason:  "ClusterRegistrationFailed",
-					Message: fmt.Sprintf("Failed to register cluster: %v", err),
-				})
-				err = r.Status().Update(ctx, cluster)
-				if err != nil {
-					log.WithError(err).Errorf("Failed to set '%s' status", typeDegradedCluster)
-				}
-				// TODO: retry logic
-				return ctrl.Result{RequeueAfter: time.Minute * 1}, err
-			}
-			clusterID = result.ClusterID
-			log.Infof("Cluster registered, cluster id: %v", clusterID)
-		}
-
-		// Set cluster ID from register cluster result
-		updatedCluster := cluster.DeepCopy()
-		updatedCluster.Spec.Cluster = &castwarev1alpha1.ClusterMetadataSpec{ClusterID: clusterID}
-		err = r.Patch(ctx, updatedCluster, client.MergeFrom(cluster))
-		if err != nil {
-			log.WithError(err).Error("Failed to set cluster id")
-			// TODO: retry logic
-			return ctrl.Result{RequeueAfter: time.Minute * 1}, err
-		}
-		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+	clusterID, err := r.ensureClusterRegistration(ctx, cluster, castAiClient)
+	if err != nil {
+		return ctrl.Result{RequeueAfter: time.Minute * 1}, err
 	}
 
-	if clusterMetadata.ClusterID != "" && !meta.IsStatusConditionTrue(cluster.Status.Conditions, typeAvailableCluster) {
-		castAiClient, err := r.getCastaiClient(ctx, cluster)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
-			Namespace:   r.Config.PodNamespace,
-			ReleaseName: r.Config.HelmReleaseName,
-		})
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		err = castAiClient.RecordActionResult(ctx, clusterMetadata.ClusterID, &castai.ComponentActionResult{
-			Name:           components.ComponentNameOperator,
-			Action:         castai.Action_INSTALL,
-			CurrentVersion: helmRelease.Chart.Metadata.Version,
-			Version:        helmRelease.Chart.Metadata.Version,
-			Status:         castai.Status_OK,
-			ImageVersions:  nil,
-			ReleaseName:    helmRelease.Name,
-			Message:        "Operator installed",
-		})
-		if err != nil {
-			log.WithError(err).Error("Failed to record action result")
-			// Error may be recoverable, we wait and retry.
-			// If it can't be recovered the cluster stays in "unavailable" state.
-			return ctrl.Result{RequeueAfter: time.Minute}, nil
-		}
+	if result, err := r.ensureClusterIDInSpec(ctx, cluster, clusterID); err != nil || result.RequeueAfter > 0 {
+		return result, err
+	}
 
-		log.Info("Cluster reconciled")
-		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{Type: typeAvailableCluster, Status: metav1.ConditionTrue, Reason: "ClusterIdAvailable", Message: "Cluster reconciled"})
-		err = r.Status().Update(ctx, cluster)
-		if err != nil {
-			log.WithError(err).Error("Failed to set available status")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+	if result, err := r.completeInitialSetup(ctx, cluster, castAiClient); err != nil || result.RequeueAfter > 0 {
+		return result, err
 	}
 
 	reconcile, err := r.reconcileSecret(ctx, cluster)
@@ -242,6 +166,130 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	return r.pollActions(ctx, castAiClient, cluster)
+}
+
+func isClusterIDMissing(clusterMetadata *castwarev1alpha1.ClusterMetadataSpec) bool {
+	return clusterMetadata == nil || clusterMetadata.ClusterID == ""
+}
+
+func (r *ClusterReconciler) ensureClusterRegistration(ctx context.Context, cluster *castwarev1alpha1.Cluster, castAiClient castai.CastAIClient) (clusterID string, err error) {
+	log := r.Log
+	clusterMetadata := cluster.Spec.Cluster
+
+	needsRegistration := cluster.Status.LastRegistrationVersion == ""
+
+	if isClusterIDMissing(clusterMetadata) {
+		clusterID, err = r.extractClusterIDFromAgentLogs(ctx, cluster.Namespace)
+		if err != nil {
+			log.WithError(err).Warn("Failed to extract cluster id from agent logs, registering cluster")
+			needsRegistration = true
+		}
+
+		if clusterID != "" {
+			log.Infof("Cluster already registered by the agent, cluster id: %v", clusterID)
+		}
+	}
+
+	if !needsRegistration {
+		return clusterID, nil
+	}
+
+	if clusterID != "" {
+		log.Infof("Re-registering cluster, cluster id: %v", clusterID)
+	}
+
+	p, err := GetProvider(ctx, r.Log, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to get provider")
+		return "", err
+	}
+
+	installMethod := agentcastai.CastwareInstallMethodOperator
+	result, err := p.RegisterClusterWithInstallMethod(ctx, castAiClient, &installMethod)
+	if err != nil {
+		log.WithError(err).Error("Failed to register cluster")
+		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type:    typeDegradedCluster,
+			Status:  metav1.ConditionUnknown,
+			Reason:  "ClusterRegistrationFailed",
+			Message: fmt.Sprintf("Failed to register cluster: %v", err),
+		})
+		if statusErr := r.Status().Update(ctx, cluster); statusErr != nil {
+			log.WithError(statusErr).Errorf("Failed to set '%s' status", typeDegradedCluster)
+		}
+		return "", err
+	}
+
+	if clusterID == "" {
+		clusterID = result.ClusterID
+	}
+
+	operatorVersion := strings.TrimPrefix(castai.GetVersion().Version, "v")
+	cluster.Status.LastRegistrationVersion = operatorVersion
+	if err := r.Status().Update(ctx, cluster); err != nil {
+		log.WithError(err).Error("Failed to update LastRegistrationVersion in status")
+		return "", err
+	}
+
+	return clusterID, nil
+}
+
+func (r *ClusterReconciler) ensureClusterIDInSpec(ctx context.Context, cluster *castwarev1alpha1.Cluster, clusterID string) (ctrl.Result, error) {
+	log := r.Log
+
+	if !isClusterIDMissing(cluster.Spec.Cluster) {
+		return ctrl.Result{}, nil
+	}
+
+	updatedCluster := cluster.DeepCopy()
+	updatedCluster.Spec.Cluster = &castwarev1alpha1.ClusterMetadataSpec{ClusterID: clusterID}
+	err := r.Patch(ctx, updatedCluster, client.MergeFrom(cluster))
+	if err != nil {
+		log.WithError(err).Error("Failed to set cluster id")
+		return ctrl.Result{RequeueAfter: time.Minute * 1}, err
+	}
+	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+}
+
+func (r *ClusterReconciler) completeInitialSetup(ctx context.Context, cluster *castwarev1alpha1.Cluster, castAiClient castai.CastAIClient) (ctrl.Result, error) {
+	log := r.Log
+	clusterMetadata := cluster.Spec.Cluster
+
+	if clusterMetadata.ClusterID == "" || meta.IsStatusConditionTrue(cluster.Status.Conditions, typeAvailableCluster) {
+		return ctrl.Result{}, nil
+	}
+
+	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+		Namespace:   r.Config.PodNamespace,
+		ReleaseName: r.Config.HelmReleaseName,
+	})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	err = castAiClient.RecordActionResult(ctx, clusterMetadata.ClusterID, &castai.ComponentActionResult{
+		Name:           components.ComponentNameOperator,
+		Action:         castai.Action_INSTALL,
+		CurrentVersion: helmRelease.Chart.Metadata.Version,
+		Version:        helmRelease.Chart.Metadata.Version,
+		Status:         castai.Status_OK,
+		ImageVersions:  nil,
+		ReleaseName:    helmRelease.Name,
+		Message:        "Operator installed",
+	})
+	if err != nil {
+		log.WithError(err).Error("Failed to record action result")
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+
+	log.Info("Cluster reconciled")
+	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{Type: typeAvailableCluster, Status: metav1.ConditionTrue, Reason: "ClusterIdAvailable", Message: "Cluster reconciled"})
+	err = r.Status().Update(ctx, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to set available status")
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: time.Second * 5}, nil
 }
 
 // syncTerraformComponents handles Component CRs that are created by Terraform with migration mode

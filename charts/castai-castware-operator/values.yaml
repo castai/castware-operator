@@ -69,6 +69,15 @@ resources: {}
 # CRD installation
 installCRDs: true
 
+# CRD upgrade configuration
+# This enables automatic CRD upgrade during helm upgrade operations
+crdUpgrade:
+  enabled: true
+  image:
+    repository: lachlanevenson/k8s-kubectl
+    tag: "v1.25.4"
+    pullPolicy: IfNotPresent
+
 # Webhook configuration
 webhook:
   enabled: true
