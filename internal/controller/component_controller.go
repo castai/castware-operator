@@ -81,6 +81,7 @@ var ErrNothingToRollback = errors.New("nothing to rollback")
 // +kubebuilder:rbac:groups=pod-mutations.cast.ai,resources=podmutations,verbs=create;update;get;list;watch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=delete,resourceNames=castai-agent
 // +kubebuilder:rbac:groups=resource.k8s.io,resources=deviceclasses;devicetaintrules;resourceclaims;resourceclaimtemplates;resourceslices,verbs=get;list;watch
+// +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects;scaledjobs,verbs=get;list;watch
 
 // ComponentReconciler reconciles a Component object
 type ComponentReconciler struct {
