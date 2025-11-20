@@ -331,7 +331,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{RequeueAfter: time.Minute * 15}, nil
 }
 
-func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]any, error) {
+func (r *ComponentReconciler) valueOverrides(ctx context.Context, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]any, error) {
 	overrides := map[string]any{}
 	if component.Spec.Values != nil {
 		if err := json.Unmarshal(component.Spec.Values.Raw, &overrides); err != nil {
@@ -342,10 +342,17 @@ func (r *ComponentReconciler) valueOverrides(component *castwarev1alpha1.Compone
 	// Component specific overrides
 	switch component.Spec.Component {
 	case components.ComponentNameClusterController:
+		// Woop requires a secret named "cluster-controller" containing the api key to work
+		// apiKey will be changes back to apiKeySecretRef after implementing operator support for Woop.
+		auth := auth.NewAuth(cluster.Namespace, cluster.Name)
+		apiKey, err := auth.GetApiKey(ctx, r.Client)
+		if err != nil {
+			return nil, err
+		}
 		overrides["castai"] = map[string]any{
-			"clusterID":       cluster.Spec.Cluster.ClusterID,
-			"apiKeySecretRef": cluster.Spec.APIKeySecret,
-			"apiURL":          cluster.Spec.API.APIURL,
+			"clusterID": cluster.Spec.Cluster.ClusterID,
+			"apiKey":    apiKey,
+			"apiURL":    cluster.Spec.API.APIURL,
 		}
 	default:
 		overrides["apiURL"] = cluster.Spec.API.APIURL
@@ -413,7 +420,7 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 	}
 
 	// TODO: (after mvp) validate json overrides in webhook?
-	overrides, err := r.valueOverrides(component, cluster)
+	overrides, err := r.valueOverrides(ctx, component, cluster)
 	if err != nil {
 		recordErr = fmt.Errorf("failed to set value overrides: %w", err)
 		log.WithError(err).Error("Failed to set helm value overrides")
@@ -509,7 +516,7 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 		return ctrl.Result{}, err
 	}
 
-	overrides, err := r.valueOverrides(component, cluster)
+	overrides, err := r.valueOverrides(ctx, component, cluster)
 	if err != nil {
 		recordErr = fmt.Errorf("failed to set value overrides: %w", err)
 		log.WithError(err).Error("Failed to set helm value overrides")
