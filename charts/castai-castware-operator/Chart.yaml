@@ -2,5 +2,5 @@ apiVersion: v2
 name: castware-operator
 description: CAST AI operator for managing Castware components.
 type: application
-version: 0.0.28
-appVersion: "v0.0.28"
+version: 0.0.29
+appVersion: "v0.0.29"
