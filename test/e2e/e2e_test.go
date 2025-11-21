@@ -3,15 +3,15 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
 
+	"github.com/castai/castware-operator/test/utils"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	"github.com/castai/castware-operator/test/utils"
 )
 
 // namespace where the project is deployed in
@@ -28,6 +28,9 @@ const metricsRoleBindingName = "castware-operator-metrics-binding"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
+	var clusterID string
+	var apiKey string
+	var apiURL = "https://api.dev-master.cast.ai"
 
 	// Before running the tests, set up the environment by creating the namespace,
 	// enforce the restricted security policy to the namespace, installing CRDs,
@@ -53,6 +56,26 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("patching controller-manager deployment with GKE environment variables for e2e tests")
+		deploymentName := "castware-operator-controller-manager"
+		patchJSON := `[
+			{"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"GKE_CLUSTER_NAME","value":"castware-operator-e2e"}},
+			{"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"GKE_LOCATION","value":"e2e"}},
+			{"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"GKE_PROJECT_ID","value":"e2e"}},
+			{"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"GKE_REGION","value":"e2e"}}
+		]`
+		cmd = exec.Command("kubectl", "patch", "deployment", deploymentName,
+			"-n", namespace,
+			"--type=json",
+			"-p", patchJSON)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to patch controller-manager deployment with GKE env vars")
+
+		By("waiting for controller-manager to restart with new environment variables")
+		cmd = exec.Command("kubectl", "rollout", "status", "deployment/"+deploymentName, "-n", namespace, "--timeout=2m")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to wait for controller-manager rollout")
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
@@ -61,6 +84,28 @@ var _ = Describe("Manager", Ordered, func() {
 		By("cleaning up the curl pod for metrics")
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
 		_, _ = utils.Run(cmd)
+
+		// Delete cluster from Cast AI API if cluster ID was set
+		if clusterID != "" && apiKey != "" && apiURL != "" {
+			By(fmt.Sprintf("deleting cluster from Cast AI API: %s", clusterID))
+			deleteURL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s", apiURL, clusterID)
+			req, err := http.NewRequest(http.MethodDelete, deleteURL, nil)
+			if err == nil {
+				req.Header.Set("X-API-Key", apiKey)
+				client := &http.Client{Timeout: 30 * time.Second}
+				resp, err := client.Do(req)
+				if err == nil {
+					defer resp.Body.Close()
+					if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+						_, _ = fmt.Fprintf(GinkgoWriter, "Successfully deleted cluster %s from Cast AI API\n", clusterID)
+					} else {
+						_, _ = fmt.Fprintf(GinkgoWriter, "Failed to delete cluster from Cast AI API: HTTP %d\n", resp.StatusCode)
+					}
+				} else {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Failed to send delete request to Cast AI API: %v\n", err)
+				}
+			}
+		}
 
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
@@ -272,6 +317,70 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(len(vwhOutput)).To(BeNumerically(">", 10))
 			}
 			Eventually(verifyCAInjection).Should(Succeed())
+		})
+
+		It("should onboard a cluster and get a cluster ID", func() {
+			apiKey = os.Getenv("API_KEY")
+			Expect(apiKey).NotTo(BeEmpty(), "API_KEY env variable is not set")
+
+			secretName := "castware-api-key-test"
+			clusterName := "castai"
+
+			By("creating API key secret")
+			cmd := exec.Command("kubectl", "create", "secret", "generic", secretName,
+				"--from-literal=API_KEY="+apiKey,
+				"-n", namespace)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create API key secret")
+
+			// Clean up the secret after the test
+			defer func() {
+				cmd := exec.Command("kubectl", "delete", "secret", secretName, "-n", namespace, "--ignore-not-found=true")
+				_, _ = utils.Run(cmd)
+			}()
+
+			By("creating a cluster custom resource")
+			clusterYAML := fmt.Sprintf(`apiVersion: castware.cast.ai/v1alpha1
+kind: Cluster
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  provider: gke
+  apiKeySecret: %s
+  api:
+    apiUrl: "%s"
+  migrationMode: "autoUpgrade"
+  terraform: false
+`, clusterName, namespace, secretName, apiURL)
+
+			clusterFile := filepath.Join("/tmp", fmt.Sprintf("%s-cluster.yaml", clusterName))
+			err = os.WriteFile(clusterFile, []byte(clusterYAML), os.FileMode(0o644))
+			Expect(err).NotTo(HaveOccurred(), "Failed to write cluster manifest")
+
+			cmd = exec.Command("kubectl", "apply", "-f", clusterFile)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create cluster CR")
+
+			By("waiting for the cluster to be onboarded and get a cluster ID")
+			verifyClusterID := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "cluster", clusterName, "-n", namespace, "-o", "jsonpath={.spec.cluster.clusterID}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get cluster CR")
+				g.Expect(output).NotTo(BeEmpty(), "Cluster ID is not set")
+				// Verify it's a valid UUID format
+				g.Expect(output).To(MatchRegexp(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89ABab][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`),
+					"Cluster ID does not match UUID format")
+				// Store the cluster ID for cleanup
+				clusterID = output
+			}
+			Eventually(verifyClusterID, 5*time.Minute).Should(Succeed())
+
+			By("verifying cluster name and location are also populated")
+			cmd = exec.Command("kubectl", "get", "cluster", clusterName, "-n", namespace, "-o", "jsonpath={.spec.cluster}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get cluster metadata")
+			Expect(output).To(ContainSubstring("clusterID"), "Cluster metadata should contain clusterID")
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
