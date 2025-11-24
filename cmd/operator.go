@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"os"
@@ -8,9 +9,11 @@ import (
 	"strconv"
 
 	"github.com/bombsimon/logrusr/v4"
+	"github.com/castai/castware-operator/config/crd/bases"
 	"github.com/castai/castware-operator/internal/castai"
 	"github.com/castai/castware-operator/internal/config"
 	"github.com/castai/castware-operator/internal/controller"
+	"github.com/castai/castware-operator/internal/crd"
 	"github.com/castai/castware-operator/internal/helm"
 	"github.com/castai/castware-operator/internal/webhook/v1alpha1"
 	"github.com/open-policy-agent/cert-controller/pkg/rotator"
@@ -177,6 +180,19 @@ func runOperator(args operatorArgs) error {
 
 	log.Info("Starting manager")
 	restConfig := controllerruntime.GetConfigOrDie()
+
+	ctx := context.Background()
+
+	crdInstaller, err := crd.NewInstaller(restConfig, log)
+	if err != nil {
+		setupLog.Error(err, "unable to create CRD installer")
+		os.Exit(1)
+	}
+
+	if err := crdInstaller.EnsureFromFS(ctx, bases.Files, bases.Filenames); err != nil {
+		setupLog.Error(err, "unable to install CRDs")
+		os.Exit(1)
+	}
 
 	// Create Kubernetes clientset for direct API access
 	clientset, err := kubernetes.NewForConfig(restConfig)
