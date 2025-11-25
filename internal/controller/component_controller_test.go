@@ -833,6 +833,7 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 		testCluster := newTestCluster(t, uuid.NewString(), true)
 		testComponent := newTestComponent(t, testCluster.Name, "spot-handler")
 		testComponent.Spec.Component = "spot-handler"
+		testComponent.Spec.Cluster = testCluster.Name
 		testComponent.Status.CurrentVersion = "v0.1.0"
 		testComponent.Spec.Version = "v0.1.0"
 		meta.SetStatusCondition(&testComponent.Status.Conditions, metav1.Condition{
@@ -844,10 +845,10 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 		apiKeySecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      testCluster.Name,
-				Namespace: testCluster.Namespace,
+				Namespace: testComponent.Namespace,
 			},
 			Data: map[string][]byte{
-				"api-key": []byte("test-api-key"),
+				"API_KEY": []byte("test-api-key"),
 			},
 		}
 
@@ -889,15 +890,22 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 
 		testOps.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), testCluster.Spec.Cluster.ClusterID, gomock.Any()).Return(nil).AnyTimes()
 
-		testOps.mockHelm.EXPECT().Upgrade(gomock.Any(), gomock.Any()).Return(&release.Release{
-			Name: testComponent.Spec.Component,
-			Info: &release.Info{Status: release.StatusDeployed},
-			Chart: &chart.Chart{
-				Metadata: &chart.Metadata{
-					Version: "v0.1.0",
-				},
-			},
-		}, nil)
+		testOps.mockHelm.EXPECT().Upgrade(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(ctx context.Context, opts helm.UpgradeOptions) (*release.Release, error) {
+				phase2, ok := opts.ValuesOverrides["phase2Permissions"].(bool)
+				r.True(ok, "phase2Permissions should be present in overrides")
+				r.True(phase2, "phase2Permissions should be true")
+
+				return &release.Release{
+					Name: testComponent.Spec.Component,
+					Info: &release.Info{Status: release.StatusDeployed},
+					Chart: &chart.Chart{
+						Metadata: &chart.Metadata{
+							Version: "v0.1.0",
+						},
+					},
+				}, nil
+			})
 
 		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
 		_, err := testOps.sut.Reconcile(ctx, req)

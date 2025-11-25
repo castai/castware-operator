@@ -143,3 +143,17 @@ rules:
     verbs:
       - create
       - delete
+  # ---
+  # castai-spot-handler - Required for daemon, used for spot instances scheduled events monitoring.
+  # ---
+  - apiGroups:
+      - "apps"
+    resources:
+      - daemonsets
+    verbs:
+      - create
+      - get
+      - list
+      - patch
+      - update
+      - delete

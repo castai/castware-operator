@@ -29,11 +29,6 @@ import (
 	"github.com/castai/castware-operator/internal/config"
 )
 
-const (
-	extendedPermissionsLabel = "castware.cast.ai/extended-permissions"
-	extendedPermissionsValue = "true"
-)
-
 // nolint:unused
 // log is for logging in this package.
 var componentlog = logf.Log.WithName("component-resource")

@@ -56,9 +56,6 @@ const (
 	reasonUpgradeFailed   = "UpgradeFailed"
 	reasonUpgradeStarted  = "UpgradeStarted"
 	reasonMigrationFailed = "MigrationFailed"
-
-	extendedPermissionsLabel = "castware.cast.ai/extended-permissions"
-	extendedPermissionsValue = "true"
 )
 
 var ErrNothingToRollback = errors.New("nothing to rollback")
