@@ -6,6 +6,7 @@ const (
 	ComponentNameAgent             = "castai-agent"
 	ComponentNameOperator          = "castware-operator"
 	ComponentNameClusterController = "cluster-controller"
+	ComponentNameSpotHandler       = "spot-handler"
 )
 
 func IsSupported(name string) bool {
@@ -13,6 +14,7 @@ func IsSupported(name string) bool {
 	supportedComponents := []string{
 		ComponentNameAgent,
 		ComponentNameClusterController,
+		ComponentNameSpotHandler,
 	}
 	return lo.Contains(supportedComponents, name)
 }

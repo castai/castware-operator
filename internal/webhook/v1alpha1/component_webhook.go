@@ -10,8 +10,8 @@ import (
 	"helm.sh/helm/v3/pkg/release"
 
 	"github.com/castai/castware-operator/internal/helm"
+	"github.com/castai/castware-operator/internal/utils"
 
-	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -163,7 +163,7 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 	}
 
 	if components.RequiresExtendedPermissions(c.Spec.Component) {
-		ok, err := v.checkExtendedPermissionsExist(ctx, c.Namespace)
+		ok, err := utils.CheckExtendedPermissionsExist(ctx, v.client, c.Namespace)
 		if err != nil {
 			return nil, fmt.Errorf("failed to check extended permissions: %w", err)
 		}
@@ -381,34 +381,6 @@ func (v *ComponentCustomValidator) validateComponentUpgrade(ctx context.Context,
 	}
 
 	return nil
-}
-
-// checkExtendedPermissionsExist checks if RoleBinding and ClusterRoleBinding with
-// 'castware.cast.ai/extended-permissions: "true"' label exist in the given namespace.
-// Returns (roleBindingExists, clusterRoleBindingExists, error).
-func (v *ComponentCustomValidator) checkExtendedPermissionsExist(ctx context.Context, namespace string) (bool, error) {
-
-	// Check for RoleBindings with the extended-permissions label
-	roleBindingList := &rbacv1.RoleBindingList{}
-	if err := v.client.List(ctx, roleBindingList,
-		client.InNamespace(namespace),
-		client.MatchingLabels{extendedPermissionsLabel: extendedPermissionsValue},
-	); err != nil {
-		return false, fmt.Errorf("failed to list RoleBindings: %w", err)
-	}
-
-	// Check for ClusterRoleBindings with the extended-permissions label
-	clusterRoleBindingList := &rbacv1.ClusterRoleBindingList{}
-	if err := v.client.List(ctx, clusterRoleBindingList,
-		client.MatchingLabels{extendedPermissionsLabel: extendedPermissionsValue},
-	); err != nil {
-		return false, fmt.Errorf("failed to list ClusterRoleBindings: %w", err)
-	}
-
-	roleBindingExists := len(roleBindingList.Items) > 0
-	clusterRoleBindingExists := len(clusterRoleBindingList.Items) > 0
-
-	return roleBindingExists && clusterRoleBindingExists, nil
 }
 
 // validateTerraformMigration validates the combination of terraform migration, cluster mode, and version

@@ -170,6 +170,7 @@ rules:
   - apps
   resources:
   - deployments
+  - daemonsets
   verbs:
   - create
   - get
