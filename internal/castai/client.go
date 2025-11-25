@@ -2,18 +2,20 @@
 package castai
 
 import (
-	"castai-agent/pkg/castai"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 
-	"github.com/castai/castware-operator/internal/castai/auth"
-	"github.com/castai/castware-operator/internal/config"
+	"castai-agent/pkg/castai"
+
 	"github.com/go-resty/resty/v2"
 	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
+
+	"github.com/castai/castware-operator/internal/castai/auth"
+	"github.com/castai/castware-operator/internal/config"
 )
 
 const (
@@ -93,6 +95,20 @@ func (c *Client) toError(resp *resty.Response) error {
 		return fmt.Errorf("error calling api %s: %d - %s", resp.Request.URL, resp.StatusCode(), string(resp.Body()))
 	}
 	return fmt.Errorf("error calling api %s: %d - %s", resp.Request.URL, resp.StatusCode(), apiError.Message)
+}
+
+// toValidationError converts an unsuccessful response to an error
+func (c *Client) toValidationError(resp *resty.Response) error {
+	validationError := ValidationError{}
+	err := json.Unmarshal(resp.Body(), &validationError)
+	if err != nil {
+		return fmt.Errorf("error calling api %s: %d - %s", resp.Request.URL, resp.StatusCode(), string(resp.Body()))
+	}
+	if validationError.Allowed {
+		return nil
+	}
+
+	return errors.New(validationError.BlockReason)
 }
 
 // Me gets profile for current user.
@@ -277,9 +293,11 @@ func (c *Client) ValidateComponentUpgrade(ctx context.Context, req *ValidateComp
 	if err != nil {
 		return nil, err
 	}
-	err = c.toError(resp)
+	err = c.toValidationError(resp)
 	if err != nil {
-		return nil, err
+		result.Allowed = false
+		result.BlockReason = err.Error()
 	}
+
 	return result, nil
 }

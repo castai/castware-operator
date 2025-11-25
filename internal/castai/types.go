@@ -9,6 +9,11 @@ type ApiError struct {
 	FieldViolations []interface{} `json:"fieldViolations"`
 }
 
+type ValidationError struct {
+	Allowed     bool   `json:"allowed"`
+	BlockReason string `json:"blockReason"`
+}
+
 type User struct {
 	ID       string `json:"id"`
 	Username string `json:"username"`
@@ -178,5 +183,5 @@ type ValidateComponentUpgradeRequest struct {
 
 type ValidateComponentUpgradeResponse struct {
 	Allowed     bool   `json:"allowed"`
-	BlockReason string `json:"block_reason,omitempty"`
+	BlockReason string `json:"blockReason,omitempty"`
 }
