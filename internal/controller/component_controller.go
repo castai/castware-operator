@@ -1,6 +1,9 @@
 package controller
 
 import (
+	"castai-agent/pkg/services/providers/aks"
+	"castai-agent/pkg/services/providers/eks"
+	"castai-agent/pkg/services/providers/gke"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +11,7 @@ import (
 	"time"
 
 	components "github.com/castai/castware-operator/internal/component"
+	"github.com/castai/castware-operator/internal/rolebindings"
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/storage/driver"
@@ -326,12 +330,26 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.rollback(ctx, log, updatedComponent)
 	}
 
+	// Check if spot-handler needs phase2Permissions update
+	if component.Spec.Component == components.ComponentNameSpotHandler &&
+		meta.IsStatusConditionTrue(component.Status.Conditions, typeAvailableComponent) {
+		needsUpdate, err := r.checkAndUpdatePhase2Permissions(ctx, log, component)
+		if err != nil {
+			log.WithError(err).Error("Failed to check/update phase2Permissions")
+			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+		}
+		if needsUpdate {
+			log.Info("Extended permissions detected, upgrading spot-handler with phase2Permissions=true")
+			return r.upgradeComponent(ctx, log.WithField("action", "upgrade-phase2"), component)
+		}
+	}
+
 	log.Debug("Component reconciled")
 
 	return ctrl.Result{RequeueAfter: time.Minute * 15}, nil
 }
 
-func (r *ComponentReconciler) valueOverrides(ctx context.Context, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]any, error) {
+func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]any, error) {
 	overrides := map[string]any{}
 	if component.Spec.Values != nil {
 		if err := json.Unmarshal(component.Spec.Values.Raw, &overrides); err != nil {
@@ -354,6 +372,41 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, component *cas
 			"apiKey":    apiKey,
 			"apiURL":    cluster.Spec.API.APIURL,
 		}
+	case components.ComponentNameSpotHandler:
+		auth := auth.NewAuth(cluster.Namespace, cluster.Name)
+		apiKey, err := auth.GetApiKey(ctx, r.Client)
+		if err != nil {
+			return nil, err
+		}
+		// 	Cloud provider (azure, gcp, aws).
+		var spotHandlerProvider string
+		switch cluster.Spec.Provider {
+		case eks.Name:
+			spotHandlerProvider = "aws"
+		case gke.Name:
+			spotHandlerProvider = "gcp"
+		case aks.Name:
+			spotHandlerProvider = "azure"
+		default:
+			return nil, fmt.Errorf("unsupported provider: %s", cluster.Spec.Provider)
+		}
+
+		overrides["castai"] = map[string]any{
+			"clusterID": cluster.Spec.Cluster.ClusterID,
+			"apiURL":    cluster.Spec.API.APIURL,
+			"provider":  spotHandlerProvider,
+			"apiKey":    apiKey,
+		}
+
+		phase2Permissions := false
+		extendedPermsExist, err := rolebindings.CheckExtendedPermissionsExist(ctx, r.Client, component.Namespace)
+		if err != nil {
+			log.WithError(err).Error("failed to check extended permissions")
+		}
+		if extendedPermsExist {
+			phase2Permissions = true
+		}
+		overrides["phase2Permissions"] = phase2Permissions
 	default:
 		overrides["apiURL"] = cluster.Spec.API.APIURL
 		overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
@@ -420,7 +473,7 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 	}
 
 	// TODO: (after mvp) validate json overrides in webhook?
-	overrides, err := r.valueOverrides(ctx, component, cluster)
+	overrides, err := r.valueOverrides(ctx, log, component, cluster)
 	if err != nil {
 		recordErr = fmt.Errorf("failed to set value overrides: %w", err)
 		log.WithError(err).Error("Failed to set helm value overrides")
@@ -516,7 +569,7 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 		return ctrl.Result{}, err
 	}
 
-	overrides, err := r.valueOverrides(ctx, component, cluster)
+	overrides, err := r.valueOverrides(ctx, log, component, cluster)
 	if err != nil {
 		recordErr = fmt.Errorf("failed to set value overrides: %w", err)
 		log.WithError(err).Error("Failed to set helm value overrides")
@@ -826,6 +879,38 @@ func (r *ComponentReconciler) getCastaiClient(ctx context.Context, cluster *cast
 	client := castai.NewClient(nil, r.Config, rest)
 
 	return client, nil
+}
+
+func (r *ComponentReconciler) checkAndUpdatePhase2Permissions(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (bool, error) {
+	extendedPermsExist, err := rolebindings.CheckExtendedPermissionsExist(ctx, r.Client, component.Namespace)
+	if err != nil {
+		return false, fmt.Errorf("failed to check extended permissions: %w", err)
+	}
+
+	if !extendedPermsExist {
+		return false, nil
+	}
+
+	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+		Namespace:   component.Namespace,
+		ReleaseName: component.Spec.Component,
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to get helm release: %w", err)
+	}
+
+	// Check current phase2Permissions value in helm values
+	currentPhase2, ok := helmRelease.Config["phase2Permissions"].(bool)
+	if !ok {
+		currentPhase2 = false
+	}
+
+	if !currentPhase2 {
+		log.Info("Extended permissions detected but phase2Permissions is false, triggering upgrade")
+		return true, nil
+	}
+
+	return false, nil
 }
 
 func actionFromProgressingReason(reason string) castai.ActionType {

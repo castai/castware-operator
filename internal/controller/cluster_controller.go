@@ -309,7 +309,7 @@ func (r *ClusterReconciler) syncTerraformComponents(ctx context.Context, cluster
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			// CR doesn't exist yet, requeue to give Terraform time to create it
-			log.Debug("Component CR not found, requeueing to wait for Terraform")
+			log.Debug("Component CR not found, requeuing to wait for Terraform")
 			return true, nil
 		}
 		log.WithError(err).Error("Failed to get component")

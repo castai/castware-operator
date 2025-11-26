@@ -15,6 +15,7 @@ import (
 	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/storage/driver"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -467,6 +468,9 @@ func newComponentTestOps(t *testing.T, objs ...client.Object) *componentTestOps 
 	err = corev1.AddToScheme(scheme)
 	r.NoError(err)
 
+	err = rbacv1.AddToScheme(scheme)
+	r.NoError(err)
+
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).WithStatusSubresource(objs...).Build()
 
 	ctrl := gomock.NewController(t)
@@ -498,6 +502,9 @@ func newComponentTestOpsWithCastAIClient(t *testing.T, objs ...client.Object) *c
 	r.NoError(err)
 
 	err = corev1.AddToScheme(scheme)
+	r.NoError(err)
+
+	err = rbacv1.AddToScheme(scheme)
 	r.NoError(err)
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).WithStatusSubresource(objs...).Build()
@@ -667,5 +674,343 @@ func TestProgressingStatusSetBeforeOperation(t *testing.T) {
 			// Verify operations happened in correct order
 			r.Equal([]string{"GetRelease", "Upgrade"}, operationOrder, "GetRelease should be called before Upgrade")
 		})
+	})
+}
+
+func TestCheckAndUpdatePhase2Permissions(t *testing.T) {
+	t.Run("should return true when extended permissions exist and phase2Permissions is false", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "test-component")
+
+		roleBinding := &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-rolebinding",
+				Namespace: testComponent.Namespace,
+				Labels: map[string]string{
+					"castware.cast.ai/extended-permissions": "true",
+				},
+			},
+		}
+
+		clusterRoleBinding := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-clusterrolebinding",
+				Labels: map[string]string{
+					"castware.cast.ai/extended-permissions": "true",
+				},
+			},
+		}
+
+		testOps := newComponentTestOps(t, testCluster, testComponent, roleBinding, clusterRoleBinding)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   testComponent.Namespace,
+			ReleaseName: testComponent.Spec.Component,
+		}).Return(&release.Release{
+			Name: testComponent.Spec.Component,
+			Config: map[string]interface{}{
+				"phase2Permissions": false,
+			},
+		}, nil)
+
+		needsUpdate, err := testOps.sut.checkAndUpdatePhase2Permissions(ctx, logrus.New(), testComponent)
+		r.NoError(err)
+		r.True(needsUpdate)
+	})
+
+	t.Run("should return false when extended permissions exist and phase2Permissions is true", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "test-component")
+
+		roleBinding := &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-rolebinding",
+				Namespace: testComponent.Namespace,
+				Labels: map[string]string{
+					"castware.cast.ai/extended-permissions": "true",
+				},
+			},
+		}
+
+		clusterRoleBinding := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-clusterrolebinding",
+				Labels: map[string]string{
+					"castware.cast.ai/extended-permissions": "true",
+				},
+			},
+		}
+
+		testOps := newComponentTestOps(t, testCluster, testComponent, roleBinding, clusterRoleBinding)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   testComponent.Namespace,
+			ReleaseName: testComponent.Spec.Component,
+		}).Return(&release.Release{
+			Name: testComponent.Spec.Component,
+			Config: map[string]interface{}{
+				"phase2Permissions": true,
+			},
+		}, nil)
+
+		needsUpdate, err := testOps.sut.checkAndUpdatePhase2Permissions(ctx, logrus.New(), testComponent)
+		r.NoError(err)
+		r.False(needsUpdate)
+	})
+
+	t.Run("should return false when extended permissions do not exist", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "test-component")
+
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		needsUpdate, err := testOps.sut.checkAndUpdatePhase2Permissions(ctx, logrus.New(), testComponent)
+		r.NoError(err)
+		r.False(needsUpdate)
+	})
+
+	t.Run("should return true when phase2Permissions is not set in helm config", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "test-component")
+
+		roleBinding := &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-rolebinding",
+				Namespace: testComponent.Namespace,
+				Labels: map[string]string{
+					"castware.cast.ai/extended-permissions": "true",
+				},
+			},
+		}
+
+		clusterRoleBinding := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-clusterrolebinding",
+				Labels: map[string]string{
+					"castware.cast.ai/extended-permissions": "true",
+				},
+			},
+		}
+
+		testOps := newComponentTestOps(t, testCluster, testComponent, roleBinding, clusterRoleBinding)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   testComponent.Namespace,
+			ReleaseName: testComponent.Spec.Component,
+		}).Return(&release.Release{
+			Name:   testComponent.Spec.Component,
+			Config: map[string]interface{}{},
+		}, nil)
+
+		needsUpdate, err := testOps.sut.checkAndUpdatePhase2Permissions(ctx, logrus.New(), testComponent)
+		r.NoError(err)
+		r.True(needsUpdate)
+	})
+}
+
+func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
+	t.Run("should trigger upgrade when extended permissions are added after spot-handler is installed", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "spot-handler")
+		testComponent.Spec.Component = "spot-handler"
+		testComponent.Spec.Cluster = testCluster.Name
+		testComponent.Status.CurrentVersion = "v0.1.0"
+		testComponent.Spec.Version = "v0.1.0"
+		meta.SetStatusCondition(&testComponent.Status.Conditions, metav1.Condition{
+			Type:   typeAvailableComponent,
+			Status: metav1.ConditionTrue,
+			Reason: reasonInstalled,
+		})
+
+		apiKeySecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      testCluster.Name,
+				Namespace: testComponent.Namespace,
+			},
+			Data: map[string][]byte{
+				"API_KEY": []byte("test-api-key"),
+			},
+		}
+
+		roleBinding := &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-rolebinding",
+				Namespace: testComponent.Namespace,
+				Labels: map[string]string{
+					"castware.cast.ai/extended-permissions": "true",
+				},
+			},
+		}
+
+		clusterRoleBinding := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-clusterrolebinding",
+				Labels: map[string]string{
+					"castware.cast.ai/extended-permissions": "true",
+				},
+			},
+		}
+
+		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, testComponent, apiKeySecret, roleBinding, clusterRoleBinding)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   testComponent.Namespace,
+			ReleaseName: testComponent.Spec.Component,
+		}).Return(&release.Release{
+			Name: testComponent.Spec.Component,
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "v0.1.0",
+				},
+			},
+			Config: map[string]interface{}{
+				"phase2Permissions": false,
+			},
+		}, nil).Times(2)
+
+		testOps.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), testCluster.Spec.Cluster.ClusterID, gomock.Any()).Return(nil).AnyTimes()
+
+		testOps.mockHelm.EXPECT().Upgrade(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(ctx context.Context, opts helm.UpgradeOptions) (*release.Release, error) {
+				phase2, ok := opts.ValuesOverrides["phase2Permissions"].(bool)
+				r.True(ok, "phase2Permissions should be present in overrides")
+				r.True(phase2, "phase2Permissions should be true")
+
+				return &release.Release{
+					Name: testComponent.Spec.Component,
+					Info: &release.Info{Status: release.StatusDeployed},
+					Chart: &chart.Chart{
+						Metadata: &chart.Metadata{
+							Version: "v0.1.0",
+						},
+					},
+				}, nil
+			})
+
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+		_, err := testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+
+		var actualComponent castwarev1alpha1.Component
+		err = testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+		r.NoError(err)
+
+		progressingCondition := meta.FindStatusCondition(actualComponent.Status.Conditions, typeProgressingComponent)
+		r.NotNil(progressingCondition)
+		r.Equal(metav1.ConditionTrue, progressingCondition.Status)
+		r.Equal(progressingReasonUpgrading, progressingCondition.Reason)
+	})
+
+	t.Run("should not trigger upgrade when extended permissions do not exist", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "spot-handler")
+		testComponent.Spec.Component = "spot-handler"
+		testComponent.Status.CurrentVersion = "v0.1.1"
+		meta.SetStatusCondition(&testComponent.Status.Conditions, metav1.Condition{
+			Type:   typeAvailableComponent,
+			Status: metav1.ConditionTrue,
+			Reason: reasonInstalled,
+		})
+
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+		result, err := testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+		r.Equal(time.Minute*15, result.RequeueAfter)
+
+		var actualComponent castwarev1alpha1.Component
+		err = testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+		r.NoError(err)
+
+		progressingCondition := meta.FindStatusCondition(actualComponent.Status.Conditions, typeProgressingComponent)
+		if progressingCondition != nil {
+			r.Equal(metav1.ConditionFalse, progressingCondition.Status)
+		}
+	})
+
+	t.Run("should not trigger upgrade when phase2Permissions is already true", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "spot-handler")
+		testComponent.Spec.Component = "spot-handler"
+		testComponent.Status.CurrentVersion = "v0.1.1"
+		meta.SetStatusCondition(&testComponent.Status.Conditions, metav1.Condition{
+			Type:   typeAvailableComponent,
+			Status: metav1.ConditionTrue,
+			Reason: reasonInstalled,
+		})
+
+		roleBinding := &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-rolebinding",
+				Namespace: testComponent.Namespace,
+				Labels: map[string]string{
+					"castware.cast.ai/extended-permissions": "true",
+				},
+			},
+		}
+
+		clusterRoleBinding := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-clusterrolebinding",
+				Labels: map[string]string{
+					"castware.cast.ai/extended-permissions": "true",
+				},
+			},
+		}
+
+		testOps := newComponentTestOps(t, testCluster, testComponent, roleBinding, clusterRoleBinding)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   testComponent.Namespace,
+			ReleaseName: testComponent.Spec.Component,
+		}).Return(&release.Release{
+			Name: testComponent.Spec.Component,
+			Config: map[string]interface{}{
+				"phase2Permissions": true,
+			},
+		}, nil).Times(1)
+
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+		result, err := testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+		r.Equal(time.Minute*15, result.RequeueAfter)
+
+		var actualComponent castwarev1alpha1.Component
+		err = testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+		r.NoError(err)
+
+		progressingCondition := meta.FindStatusCondition(actualComponent.Status.Conditions, typeProgressingComponent)
+		if progressingCondition != nil {
+			r.Equal(metav1.ConditionFalse, progressingCondition.Status)
+		}
 	})
 }

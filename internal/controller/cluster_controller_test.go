@@ -1194,6 +1194,8 @@ func newTestCluster(t *testing.T, clusterID string, available bool) *castwarev1a
 			Cluster: &castwarev1alpha1.ClusterMetadataSpec{
 				ClusterID: clusterID,
 			},
+			APIKeySecret: "test-cluster",
+			Provider:     "eks",
 		},
 	}
 	if available {
