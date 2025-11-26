@@ -94,6 +94,17 @@ apiKeySecret:
   # The actual API key value (should be set via --set apiKeySecret.apiKey=YOUR_API_KEY)
   apiKey: ""
 
+# Node affinity configuration
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/os
+              operator: NotIn
+              values:
+                - windows
+
 # Whether to create the extended permissions for the operator, needed for phase2 components
 extendedPermissions: false
 
