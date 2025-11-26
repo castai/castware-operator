@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 
-	components "github.com/castai/castware-operator/internal/component"
 	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -20,6 +19,7 @@ import (
 
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 	castaitest "github.com/castai/castware-operator/internal/castai/test"
+	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/internal/config"
 	"github.com/castai/castware-operator/internal/helm"
 	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
@@ -86,8 +86,8 @@ var _ = Describe("Component Webhook", func() {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusOK)
 					validationResp := map[string]interface{}{
-						"allowed":      opts.validationEndpoint.allowed,
-						"block_reason": opts.validationEndpoint.blockReason,
+						"allowed":     opts.validationEndpoint.allowed,
+						"blockReason": opts.validationEndpoint.blockReason,
 					}
 					response, _ := json.Marshal(validationResp)
 					_, _ = w.Write(response)
