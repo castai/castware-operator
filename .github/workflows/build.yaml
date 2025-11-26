@@ -176,11 +176,12 @@ jobs:
           fetch-depth: 0
 
       - name: Release castware-operator chart
-        uses: castai/helm-charts/.github/actions/remote-release@d0da50bfa6e6a6593fe50e80644f4e80ec1cb309
+        uses: castai/helm-charts/.github/actions/remote-release@main
         with:
           helm-charts-repo-token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
           chart-path: "${{ github.workspace }}/charts/castai-castware-operator"
           chart-releaser-configfile: "${{ github.workspace }}/cr.yaml"
+          chart-version-from-tag: "true"
 
   release_chart_components:
     name: Release Helm Chart Components
@@ -194,9 +195,10 @@ jobs:
           fetch-depth: 0
 
       - name: Release castware-components chart
-        uses: castai/helm-charts/.github/actions/remote-release@d0da50bfa6e6a6593fe50e80644f4e80ec1cb309
+        uses: castai/helm-charts/.github/actions/remote-release@main
         with:
           helm-charts-repo-token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
           chart-path: "${{ github.workspace }}/charts/castai-castware-components"
           chart-releaser-configfile: "${{ github.workspace }}/cr.yaml"
+          chart-version-from-tag: "true"
 
