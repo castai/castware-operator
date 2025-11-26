@@ -1,4 +1,4 @@
-package utils
+package rolebindings
 
 import (
 	"context"

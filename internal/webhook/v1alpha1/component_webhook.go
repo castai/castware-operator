@@ -10,7 +10,7 @@ import (
 	"helm.sh/helm/v3/pkg/release"
 
 	"github.com/castai/castware-operator/internal/helm"
-	"github.com/castai/castware-operator/internal/utils"
+	"github.com/castai/castware-operator/internal/rolebindings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -158,7 +158,7 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 	}
 
 	if components.RequiresExtendedPermissions(c.Spec.Component) {
-		ok, err := utils.CheckExtendedPermissionsExist(ctx, v.client, c.Namespace)
+		ok, err := rolebindings.CheckExtendedPermissionsExist(ctx, v.client, c.Namespace)
 		if err != nil {
 			return nil, fmt.Errorf("failed to check extended permissions: %w", err)
 		}

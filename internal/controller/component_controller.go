@@ -11,7 +11,7 @@ import (
 	"time"
 
 	components "github.com/castai/castware-operator/internal/component"
-	"github.com/castai/castware-operator/internal/utils"
+	"github.com/castai/castware-operator/internal/rolebindings"
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/storage/driver"
@@ -399,7 +399,7 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.Fie
 		}
 
 		phase2Permissions := false
-		extendedPermsExist, err := utils.CheckExtendedPermissionsExist(ctx, r.Client, component.Namespace)
+		extendedPermsExist, err := rolebindings.CheckExtendedPermissionsExist(ctx, r.Client, component.Namespace)
 		if err != nil {
 			log.WithError(err).Error("failed to check extended permissions")
 		}
@@ -882,7 +882,7 @@ func (r *ComponentReconciler) getCastaiClient(ctx context.Context, cluster *cast
 }
 
 func (r *ComponentReconciler) checkAndUpdatePhase2Permissions(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (bool, error) {
-	extendedPermsExist, err := utils.CheckExtendedPermissionsExist(ctx, r.Client, component.Namespace)
+	extendedPermsExist, err := rolebindings.CheckExtendedPermissionsExist(ctx, r.Client, component.Namespace)
 	if err != nil {
 		return false, fmt.Errorf("failed to check extended permissions: %w", err)
 	}
