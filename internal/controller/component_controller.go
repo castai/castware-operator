@@ -346,7 +346,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	log.Debug("Component reconciled")
 
-	return ctrl.Result{RequeueAfter: time.Minute * 1}, nil
+	return ctrl.Result{RequeueAfter: time.Minute * 15}, nil
 }
 
 func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]any, error) {
