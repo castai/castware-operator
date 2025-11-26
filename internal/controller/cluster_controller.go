@@ -301,29 +301,40 @@ func (r *ClusterReconciler) syncTerraformComponents(ctx context.Context, cluster
 
 	log := r.Log.WithField("action", "sync-terraform-components")
 
-	// For now, only agent is supported
-	componentName := components.ComponentNameAgent
-
-	component := &castwarev1alpha1.Component{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: componentName}, component)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			// CR doesn't exist yet, requeue to give Terraform time to create it
-			log.Debug("Component CR not found, requeuing to wait for Terraform")
-			return true, nil
+	// TODO: in components package create this var and use it from there after cluster-controller is checked and it also works
+	// https://castai.atlassian.net/browse/WIRE-1904
+	supportedComponents := []string{
+		components.ComponentNameAgent,
+		components.ComponentNameSpotHandler,
+	}
+	reconcileNeeded := false
+	for _, componentName := range supportedComponents {
+		component := &castwarev1alpha1.Component{}
+		err := r.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: componentName}, component)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				// CR doesn't exist yet, continue checking other components
+				log.Debugf("Component CR %s not found, may be created by Terraform later", componentName)
+				continue
+			}
+			log.WithError(err).Errorf("Failed to get component %s", componentName)
+			return reconcileNeeded, err
 		}
-		log.WithError(err).Error("Failed to get component")
-		return false, err
+
+		// Component CR exists, check if it needs terraform migration handling
+		if component.IsInitiliazedByTerraform() {
+			log.Infof("Processing terraform migration for component %s", componentName)
+			needsReconcile, err := r.handleComponentTerraformMigration(ctx, cluster, component)
+			if err != nil {
+				return reconcileNeeded, err
+			}
+			if needsReconcile {
+				reconcileNeeded = true
+			}
+		}
 	}
 
-	// Component CR exists, check if it needs terraform migration handling
-	if !component.IsInitiliazedByTerraform() {
-		// Not a terraform migration, nothing to do
-		return false, nil
-	}
-
-	log.Info("Processing terraform migration for component")
-	return r.handleComponentTerraformMigration(ctx, cluster, component)
+	return reconcileNeeded, nil
 }
 
 // handleComponentTerraformMigration processes a Component CR with terraform migration mode
@@ -391,8 +402,22 @@ func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, cluster 
 		// Component CR will be handled separetly and we don't want to create a new one if we are in TF.
 		return false, nil
 	}
+
+	// TODO: in components package create an aaray and iterate it here after we test with cluster-controller as well https://castai.atlassian.net/browse/WIRE-1905
+	// Scan for agent
+	reconcileAgent, err := r.scanExistingComponent(ctx, cluster, components.ComponentNameAgent)
+	if err != nil {
+		return false, err
+	}
+
+	// Scan for spot-handler
+	reconcileSpotHandler, err := r.scanExistingComponent(ctx, cluster, components.ComponentNameSpotHandler)
+	if err != nil {
+		return false, err
+	}
+
 	// Now only the agent is supported, so we can scan for it and return the result directly.
-	return r.scanExistingComponent(ctx, cluster, components.ComponentNameAgent)
+	return reconcileAgent || reconcileSpotHandler, nil
 }
 
 // scanExistingComponent Checks if helm release or deployment exist for a given component, and if they do but
@@ -412,7 +437,6 @@ func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, cluster *
 	}
 
 	compVersion, err := r.detectComponentVersion(ctx, log, cluster, componentName)
-
 	if err != nil {
 		return false, err
 	}
@@ -457,32 +481,62 @@ func (r *ClusterReconciler) detectComponentVersion(ctx context.Context, log logr
 		return nil, err
 	}
 
-	// Helm release not found, we search for yaml manifests if the component supports it (agent only)
-	if componentName != components.ComponentNameAgent {
-		log.Debug("Component not found, but it's not an agent, migration from yaml manifests is not supported")
+	// TODO: here use components.IsSupported once we test for cluster-controller as well https://castai.atlassian.net/browse/WIRE-1905
+	if componentName != components.ComponentNameAgent && componentName != components.ComponentNameSpotHandler {
+		log.Debugf("Component %s not found, and YAML migration is not supported for this component", componentName)
 		return nil, nil
 	}
-	var deploymentList appsv1.DeploymentList
-	err = r.List(ctx, &deploymentList, &client.ListOptions{
-		Namespace:     cluster.Namespace,
-		LabelSelector: labels.SelectorFromSet(labels.Set{nameLabelKey: components.ComponentNameAgent}),
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(deploymentList.Items) > 0 {
-		versionLabel := deploymentList.Items[0].Labels["helm.sh/chart"]
-		version := strings.TrimPrefix(versionLabel, fmt.Sprintf("%s-", componentName))
-		if version == "" {
-			log.Warnf("Failed to get version from deployment label, upgrading to latest version")
-		}
-		valueOverrides := map[string]interface{}{"replicaCount": deploymentList.Items[0].Spec.Replicas}
 
-		return &existingComponentVersion{
-			Version:         version,
-			ComponentConfig: valueOverrides,
-			MigrationMode:   castwarev1alpha1.ComponentMigrationYaml,
-		}, nil
+	if componentName == components.ComponentNameAgent {
+		var deploymentList appsv1.DeploymentList
+		err = r.List(ctx, &deploymentList, &client.ListOptions{
+			Namespace:     cluster.Namespace,
+			LabelSelector: labels.SelectorFromSet(labels.Set{nameLabelKey: components.ComponentNameAgent}),
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(deploymentList.Items) > 0 {
+			versionLabel := deploymentList.Items[0].Labels["helm.sh/chart"]
+			version := strings.TrimPrefix(versionLabel, fmt.Sprintf("%s-", componentName))
+			if version == "" {
+				log.Warnf("Failed to get version from deployment label, upgrading to latest version")
+			}
+			valueOverrides := map[string]interface{}{"replicaCount": deploymentList.Items[0].Spec.Replicas}
+
+			return &existingComponentVersion{
+				Version:         version,
+				ComponentConfig: valueOverrides,
+				MigrationMode:   castwarev1alpha1.ComponentMigrationYaml,
+			}, nil
+		}
+	}
+
+	if componentName == components.ComponentNameSpotHandler {
+		componentHelmName := fmt.Sprintf("castai-%s", components.ComponentNameSpotHandler)
+		var daemonSetList appsv1.DaemonSetList
+		err = r.List(ctx, &daemonSetList, &client.ListOptions{
+			Namespace:     cluster.Namespace,
+			LabelSelector: labels.SelectorFromSet(labels.Set{nameLabelKey: componentHelmName}),
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(daemonSetList.Items) > 0 {
+			versionLabel := daemonSetList.Items[0].Labels["helm.sh/chart"]
+			version := strings.TrimPrefix(versionLabel, fmt.Sprintf("%s-", componentHelmName))
+			if version == "" {
+				log.Warnf("Failed to get version from daemonset label, upgrading to latest version")
+			}
+
+			valueOverrides := map[string]interface{}{}
+
+			return &existingComponentVersion{
+				Version:         version,
+				ComponentConfig: valueOverrides,
+				MigrationMode:   castwarev1alpha1.ComponentMigrationYaml,
+			}, nil
+		}
 	}
 
 	return nil, nil

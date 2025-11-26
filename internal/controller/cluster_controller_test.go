@@ -20,6 +20,7 @@ import (
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/storage/driver"
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -1125,6 +1126,393 @@ func TestScanExistingComponentsWithTerraform(t *testing.T) {
 	})
 }
 
+func TestScanExistingComponentSpotHandler(t *testing.T) {
+	t.Run("should create a new spot-handler component CR when helm chart is installed", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: clusterID,
+				},
+				MigrationMode: castwarev1alpha1.ClusterMigrationModeRead,
+			},
+		}
+		testOps := newClusterTestOps(t, cluster)
+
+		helmValues := map[string]interface{}{
+			"image": map[string]interface{}{
+				"repository": "castai/spot-handler",
+				"tag":        "v2.0.0",
+			},
+		}
+		helmValuesJSON, err := json.Marshal(helmValues)
+		r.NoError(err)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   cluster.Namespace,
+			ReleaseName: "spot-handler",
+		}).Return(&release.Release{
+			Name: "spot-handler",
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "2.0.0",
+				},
+			},
+			Config: helmValues,
+		}, nil)
+
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, cluster, "spot-handler")
+		r.NoError(err)
+		r.True(reconcile)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "spot-handler"}, actualComponent)
+		r.NoError(err)
+		r.Equal("spot-handler", actualComponent.Name)
+		r.Equal(cluster.Namespace, actualComponent.Namespace)
+		r.Equal(cluster.Name, actualComponent.Spec.Cluster)
+		r.Equal("spot-handler", actualComponent.Spec.Component)
+		r.True(actualComponent.Spec.Enabled)
+		r.True(actualComponent.Spec.Readonly)
+		r.Equal("2.0.0", actualComponent.Spec.Version)
+		r.Equal(castwarev1alpha1.ComponentMigrationHelm, actualComponent.Spec.Migration)
+		r.NotNil(actualComponent.Spec.Values)
+		r.Equal(helmValuesJSON, actualComponent.Spec.Values.Raw)
+	})
+
+	t.Run("should create spot-handler component CR from DaemonSet when helm release not found", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: clusterID,
+				},
+				MigrationMode: castwarev1alpha1.ClusterMigrationModeRead,
+			},
+		}
+
+		daemonSet := &appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "castai-spot-handler",
+				Namespace: "test-namespace",
+				Labels: map[string]string{
+					"app.kubernetes.io/name": "castai-spot-handler",
+					"helm.sh/chart":          "castai-spot-handler-2.5.0",
+				},
+			},
+		}
+
+		testOps := newClusterTestOps(t, cluster, daemonSet)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   cluster.Namespace,
+			ReleaseName: "spot-handler",
+		}).Return(nil, driver.ErrReleaseNotFound)
+
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, cluster, "spot-handler")
+		r.NoError(err)
+		r.True(reconcile)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "spot-handler"}, actualComponent)
+		r.NoError(err)
+		r.Equal("spot-handler", actualComponent.Name)
+		r.Equal("2.5.0", actualComponent.Spec.Version)
+		r.Equal(castwarev1alpha1.ComponentMigrationYaml, actualComponent.Spec.Migration)
+	})
+
+	t.Run("should handle spot-handler with empty version label from DaemonSet", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: clusterID,
+				},
+				MigrationMode: castwarev1alpha1.ClusterMigrationModeRead,
+			},
+		}
+
+		daemonSet := &appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "castai-spot-handler",
+				Namespace: "test-namespace",
+				Labels: map[string]string{
+					"app.kubernetes.io/name": "castai-spot-handler",
+				},
+			},
+		}
+
+		testOps := newClusterTestOps(t, cluster, daemonSet)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   cluster.Namespace,
+			ReleaseName: "spot-handler",
+		}).Return(nil, driver.ErrReleaseNotFound)
+
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, cluster, "spot-handler")
+		r.NoError(err)
+		r.True(reconcile)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "spot-handler"}, actualComponent)
+		r.NoError(err)
+		r.Equal("", actualComponent.Spec.Version)
+	})
+
+	t.Run("should not create spot-handler CR when neither helm nor DaemonSet found", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: clusterID,
+				},
+				MigrationMode: castwarev1alpha1.ClusterMigrationModeRead,
+			},
+		}
+
+		testOps := newClusterTestOps(t, cluster)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   cluster.Namespace,
+			ReleaseName: "spot-handler",
+		}).Return(nil, driver.ErrReleaseNotFound)
+
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, cluster, "spot-handler")
+		r.NoError(err)
+		r.False(reconcile)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "spot-handler"}, actualComponent)
+		r.Error(err)
+		r.True(apierrors.IsNotFound(err))
+	})
+}
+
+func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
+	t.Run("should detect and set spot-handler version from existing helm release in write mode", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+
+		cluster := newTestCluster(t, uuid.NewString(), true)
+		cluster.Spec.Terraform = true
+		cluster.Spec.MigrationMode = castwarev1alpha1.ClusterMigrationModeWrite
+
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "spot-handler",
+				Namespace: cluster.Namespace,
+			},
+			Spec: castwarev1alpha1.ComponentSpec{
+				Component: "spot-handler",
+				Cluster:   cluster.Name,
+				Migration: castwarev1alpha1.ComponentMigrationTerraform,
+				Version:   "",
+			},
+		}
+
+		testOps := newClusterTestOps(t, cluster, component)
+
+		helmValues := map[string]interface{}{
+			"nodeSelector": map[string]string{
+				"kubernetes.io/os": "linux",
+			},
+		}
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   cluster.Namespace,
+			ReleaseName: "spot-handler",
+		}).Return(&release.Release{
+			Name: "spot-handler",
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "2.1.0",
+				},
+			},
+			Config: helmValues,
+		}, nil)
+
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		r.NoError(err)
+		r.True(reconcile)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "spot-handler"}, actualComponent)
+		r.NoError(err)
+		r.Equal("", actualComponent.Spec.Migration)
+		r.Equal("2.1.0", actualComponent.Spec.Version)
+		r.NotNil(actualComponent.Spec.Values)
+
+		var actualValues map[string]interface{}
+		err = json.Unmarshal(actualComponent.Spec.Values.Raw, &actualValues)
+		r.NoError(err)
+		r.Equal("linux", (actualValues["nodeSelector"]).(map[string]interface{})["kubernetes.io/os"])
+	})
+
+	t.Run("should detect spot-handler version from DaemonSet in write mode when helm not found", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+
+		cluster := newTestCluster(t, uuid.NewString(), true)
+		cluster.Spec.Terraform = true
+		cluster.Spec.MigrationMode = castwarev1alpha1.ClusterMigrationModeWrite
+
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "spot-handler",
+				Namespace: cluster.Namespace,
+			},
+			Spec: castwarev1alpha1.ComponentSpec{
+				Component: "spot-handler",
+				Cluster:   cluster.Name,
+				Migration: castwarev1alpha1.ComponentMigrationTerraform,
+				Version:   "",
+			},
+		}
+
+		daemonSet := &appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "castai-spot-handler",
+				Namespace: cluster.Namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/name": "castai-spot-handler",
+					"helm.sh/chart":          "castai-spot-handler-2.3.0",
+				},
+			},
+		}
+
+		testOps := newClusterTestOps(t, cluster, component, daemonSet)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   cluster.Namespace,
+			ReleaseName: "spot-handler",
+		}).Return(nil, driver.ErrReleaseNotFound)
+
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		r.NoError(err)
+		r.True(reconcile)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "spot-handler"}, actualComponent)
+		r.NoError(err)
+		r.Equal("", actualComponent.Spec.Migration)
+		r.Equal("2.3.0", actualComponent.Spec.Version)
+	})
+
+	t.Run("should process both agent and spot-handler terraform migrations", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+
+		cluster := newTestCluster(t, uuid.NewString(), true)
+		cluster.Spec.Terraform = true
+		cluster.Spec.MigrationMode = castwarev1alpha1.ClusterMigrationModeWrite
+
+		agentComponent := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "castai-agent",
+				Namespace: cluster.Namespace,
+			},
+			Spec: castwarev1alpha1.ComponentSpec{
+				Component: "castai-agent",
+				Cluster:   cluster.Name,
+				Migration: castwarev1alpha1.ComponentMigrationTerraform,
+				Version:   "",
+			},
+		}
+
+		spotHandlerComponent := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "spot-handler",
+				Namespace: cluster.Namespace,
+			},
+			Spec: castwarev1alpha1.ComponentSpec{
+				Component: "spot-handler",
+				Cluster:   cluster.Name,
+				Migration: castwarev1alpha1.ComponentMigrationTerraform,
+				Version:   "",
+			},
+		}
+
+		testOps := newClusterTestOps(t, cluster, agentComponent, spotHandlerComponent)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   cluster.Namespace,
+			ReleaseName: "castai-agent",
+		}).Return(&release.Release{
+			Name: "castai-agent",
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "1.5.0",
+				},
+			},
+			Config: map[string]interface{}{},
+		}, nil)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   cluster.Namespace,
+			ReleaseName: "spot-handler",
+		}).Return(&release.Release{
+			Name: "spot-handler",
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "2.1.0",
+				},
+			},
+			Config: map[string]interface{}{},
+		}, nil)
+
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		r.NoError(err)
+		r.True(reconcile)
+
+		actualAgentComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualAgentComponent)
+		r.NoError(err)
+		r.Equal("", actualAgentComponent.Spec.Migration)
+		r.Equal("1.5.0", actualAgentComponent.Spec.Version)
+
+		actualSpotHandlerComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "spot-handler"}, actualSpotHandlerComponent)
+		r.NoError(err)
+		r.Equal("", actualSpotHandlerComponent.Spec.Migration)
+		r.Equal("2.1.0", actualSpotHandlerComponent.Spec.Version)
+	})
+}
+
 type clusterTestOps struct {
 	sut             *ClusterReconciler
 	mockHelm        *mock_helm.MockClient
@@ -1150,6 +1538,9 @@ func newClusterTestOps(t *testing.T, objs ...client.Object) *clusterTestOps {
 	r.NoError(err)
 
 	err = batchv1.AddToScheme(scheme)
+	r.NoError(err)
+
+	err = appsv1.AddToScheme(scheme)
 	r.NoError(err)
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).WithStatusSubresource(objs...).Build()
