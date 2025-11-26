@@ -96,6 +96,10 @@ spec:
       {{- end }}
       restartPolicy: Never
       serviceAccountName: {{ include "castware-operator.fullname" . }}-crd-upgrade
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: crd-upgrade
         image: {{ .Values.crdUpgrade.image.repository }}:{{ .Values.crdUpgrade.image.tag }}
