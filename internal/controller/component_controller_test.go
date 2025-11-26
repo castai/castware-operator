@@ -941,7 +941,7 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
 		result, err := testOps.sut.Reconcile(ctx, req)
 		r.NoError(err)
-		r.Equal(time.Minute*1, result.RequeueAfter)
+		r.Equal(time.Minute*15, result.RequeueAfter)
 
 		var actualComponent castwarev1alpha1.Component
 		err = testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
@@ -1002,7 +1002,7 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
 		result, err := testOps.sut.Reconcile(ctx, req)
 		r.NoError(err)
-		r.Equal(time.Minute*1, result.RequeueAfter)
+		r.Equal(time.Minute*15, result.RequeueAfter)
 
 		var actualComponent castwarev1alpha1.Component
 		err = testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
