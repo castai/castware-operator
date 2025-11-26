@@ -891,19 +891,20 @@ func TestSyncTerraformComponents(t *testing.T) {
 		r.False(reconcile)
 	})
 
-	t.Run("should return true and requeue when component CR does not exist yet", func(t *testing.T) {
+	t.Run("should return false and requeue when component CR does not exist yet", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx := context.Background()
 
 		cluster := newTestCluster(t, uuid.NewString(), true)
 		cluster.Spec.Terraform = true
+		cluster.Spec.MigrationMode = castwarev1alpha1.ClusterMigrationModeWrite
 
 		testOps := newClusterTestOps(t, cluster)
 
 		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
 		r.NoError(err)
-		r.True(reconcile)
+		r.False(reconcile)
 	})
 
 	t.Run("should return false when component CR exists but migration is not terraform", func(t *testing.T) {
