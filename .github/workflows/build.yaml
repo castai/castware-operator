@@ -176,7 +176,7 @@ jobs:
           fetch-depth: 0
 
       - name: Release castware-operator chart
-        uses: castai/helm-charts/.github/actions/remote-release@main
+        uses: castai/helm-charts/.github/actions/remote-release@63bde69f5e2672f08583b6963c555fde5fe13e6c
         with:
           helm-charts-repo-token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
           chart-path: "${{ github.workspace }}/charts/castai-castware-operator"
