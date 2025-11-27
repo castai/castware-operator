@@ -40,6 +40,7 @@ helm upgrade --install ${RELEASE_NAME} \
     --set apiKeySecret.apiKey="${API_KEY}" \
     --set defaultCluster.provider="${PROVIDER:-gke}" \
     --set defaultCluster.api.apiUrl="${API_URL}" \
+    --set defaultCluster.terraform=false \
     --set webhook.env.GKE_CLUSTER_NAME="${GKE_CLUSTER_NAME:-castware-operator-test}" \
     --set webhook.env.GKE_LOCATION="${GKE_LOCATION:-local}" \
     --set webhook.env.GKE_PROJECT_ID="${GKE_PROJECT_ID:-local-test}" \
