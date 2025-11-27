@@ -39,6 +39,7 @@ import (
 	"github.com/castai/castware-operator/internal/castai"
 	mock_castai "github.com/castai/castware-operator/internal/castai/mock"
 	castaitest "github.com/castai/castware-operator/internal/castai/test"
+	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/internal/config"
 	"github.com/castai/castware-operator/internal/helm"
 	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
@@ -54,6 +55,8 @@ var _ = Describe("Cluster Controller", func() {
 		})
 	})
 })
+
+const helmReleaseNameSpotHandler = "castai-spot-handler"
 
 func TestPollActions(t *testing.T) {
 
@@ -647,6 +650,8 @@ func TestScanExistingComponent(t *testing.T) {
 	t.Run("should return no error and not reconcile when the component CR exists", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 		ctx := context.Background()
 		clusterID := uuid.NewString()
 
@@ -670,7 +675,7 @@ func TestScanExistingComponent(t *testing.T) {
 		}
 		testOps := newClusterTestOps(t, cluster, component)
 
-		reconcile, err := testOps.sut.scanExistingComponent(ctx, cluster, "test-component")
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "test-component")
 		r.NoError(err)
 		r.False(reconcile)
 	})
@@ -679,6 +684,8 @@ func TestScanExistingComponent(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 		clusterID := uuid.NewString()
 
 		cluster := &castwarev1alpha1.Cluster{
@@ -717,7 +724,7 @@ func TestScanExistingComponent(t *testing.T) {
 			Config: helmValues,
 		}, nil)
 
-		reconcile, err := testOps.sut.scanExistingComponent(ctx, cluster, "test-component")
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "test-component")
 		r.NoError(err)
 		r.True(reconcile)
 
@@ -880,13 +887,15 @@ func TestSyncTerraformComponents(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 
 		cluster := newTestCluster(t, uuid.NewString(), true)
 		cluster.Spec.Terraform = false
 
 		testOps := newClusterTestOps(t, cluster)
 
-		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, mockClient, cluster)
 		r.NoError(err)
 		r.False(reconcile)
 	})
@@ -895,6 +904,8 @@ func TestSyncTerraformComponents(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 
 		cluster := newTestCluster(t, uuid.NewString(), true)
 		cluster.Spec.Terraform = true
@@ -902,7 +913,7 @@ func TestSyncTerraformComponents(t *testing.T) {
 
 		testOps := newClusterTestOps(t, cluster)
 
-		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, mockClient, cluster)
 		r.NoError(err)
 		r.False(reconcile)
 	})
@@ -911,6 +922,8 @@ func TestSyncTerraformComponents(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 
 		cluster := newTestCluster(t, uuid.NewString(), true)
 		cluster.Spec.Terraform = true
@@ -929,7 +942,7 @@ func TestSyncTerraformComponents(t *testing.T) {
 
 		testOps := newClusterTestOps(t, cluster, component)
 
-		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, mockClient, cluster)
 		r.NoError(err)
 		r.False(reconcile)
 	})
@@ -938,6 +951,8 @@ func TestSyncTerraformComponents(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 
 		cluster := newTestCluster(t, uuid.NewString(), true)
 		cluster.Spec.Terraform = true
@@ -958,7 +973,7 @@ func TestSyncTerraformComponents(t *testing.T) {
 
 		testOps := newClusterTestOps(t, cluster, component)
 
-		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, mockClient, cluster)
 		r.NoError(err)
 		r.True(reconcile)
 
@@ -973,6 +988,8 @@ func TestSyncTerraformComponents(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 
 		cluster := newTestCluster(t, uuid.NewString(), true)
 		cluster.Spec.Terraform = true
@@ -993,7 +1010,7 @@ func TestSyncTerraformComponents(t *testing.T) {
 
 		testOps := newClusterTestOps(t, cluster, component)
 
-		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, mockClient, cluster)
 		r.NoError(err)
 		r.True(reconcile)
 
@@ -1008,6 +1025,8 @@ func TestSyncTerraformComponents(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 
 		cluster := newTestCluster(t, uuid.NewString(), true)
 		cluster.Spec.Terraform = true
@@ -1045,7 +1064,7 @@ func TestSyncTerraformComponents(t *testing.T) {
 			Config: helmValues,
 		}, nil)
 
-		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, mockClient, cluster)
 		r.NoError(err)
 		r.True(reconcile)
 
@@ -1066,6 +1085,8 @@ func TestSyncTerraformComponents(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 
 		cluster := newTestCluster(t, uuid.NewString(), true)
 		cluster.Spec.Terraform = true
@@ -1091,12 +1112,14 @@ func TestSyncTerraformComponents(t *testing.T) {
 			ReleaseName: "castai-agent",
 		}).Return(nil, driver.ErrReleaseNotFound)
 
-		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameAgent).Return(&castai.Component{HelmChart: components.ComponentNameAgent}, nil)
+
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, mockClient, cluster)
 		r.NoError(err)
 		r.True(reconcile)
 
 		actualComponent := &castwarev1alpha1.Component{}
-		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "castai-agent"}, actualComponent)
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: components.ComponentNameAgent}, actualComponent)
 		r.NoError(err)
 		r.Equal("", actualComponent.Spec.Migration)
 		r.Equal("", actualComponent.Spec.Version)
@@ -1108,6 +1131,8 @@ func TestScanExistingComponentsWithTerraform(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 
 		cluster := newTestCluster(t, uuid.NewString(), true)
 		cluster.Spec.Terraform = true
@@ -1116,7 +1141,7 @@ func TestScanExistingComponentsWithTerraform(t *testing.T) {
 
 		testOps.mockHelm.EXPECT().GetRelease(gomock.Any()).Times(0)
 
-		reconcile, err := testOps.sut.scanExistingComponents(ctx, cluster)
+		reconcile, err := testOps.sut.scanExistingComponents(ctx, mockClient, cluster)
 		r.NoError(err)
 		r.False(reconcile)
 
@@ -1133,6 +1158,8 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 		r := require.New(t)
 		ctx := context.Background()
 		clusterID := uuid.NewString()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 
 		cluster := &castwarev1alpha1.Cluster{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1170,7 +1197,7 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 			Config: helmValues,
 		}, nil)
 
-		reconcile, err := testOps.sut.scanExistingComponent(ctx, cluster, "spot-handler")
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "spot-handler")
 		r.NoError(err)
 		r.True(reconcile)
 
@@ -1194,6 +1221,8 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 		r := require.New(t)
 		ctx := context.Background()
 		clusterID := uuid.NewString()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 
 		cluster := &castwarev1alpha1.Cluster{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1226,7 +1255,10 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 			ReleaseName: "spot-handler",
 		}).Return(nil, driver.ErrReleaseNotFound)
 
-		reconcile, err := testOps.sut.scanExistingComponent(ctx, cluster, "spot-handler")
+		mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
+			Return(&castai.Component{HelmChart: helmReleaseNameSpotHandler}, nil)
+
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "spot-handler")
 		r.NoError(err)
 		r.True(reconcile)
 
@@ -1242,6 +1274,8 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 		clusterID := uuid.NewString()
 
 		cluster := &castwarev1alpha1.Cluster{
@@ -1274,7 +1308,10 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 			ReleaseName: "spot-handler",
 		}).Return(nil, driver.ErrReleaseNotFound)
 
-		reconcile, err := testOps.sut.scanExistingComponent(ctx, cluster, "spot-handler")
+		mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
+			Return(&castai.Component{HelmChart: helmReleaseNameSpotHandler}, nil)
+
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "spot-handler")
 		r.NoError(err)
 		r.True(reconcile)
 
@@ -1287,6 +1324,8 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 	t.Run("should not create spot-handler CR when neither helm nor DaemonSet found", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 		ctx := context.Background()
 		clusterID := uuid.NewString()
 
@@ -1310,7 +1349,10 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 			ReleaseName: "spot-handler",
 		}).Return(nil, driver.ErrReleaseNotFound)
 
-		reconcile, err := testOps.sut.scanExistingComponent(ctx, cluster, "spot-handler")
+		mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
+			Return(&castai.Component{HelmChart: helmReleaseNameSpotHandler}, nil)
+
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "spot-handler")
 		r.NoError(err)
 		r.False(reconcile)
 
@@ -1326,6 +1368,8 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 
 		cluster := newTestCluster(t, uuid.NewString(), true)
 		cluster.Spec.Terraform = true
@@ -1365,7 +1409,7 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 			Config: helmValues,
 		}, nil)
 
-		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, mockClient, cluster)
 		r.NoError(err)
 		r.True(reconcile)
 
@@ -1385,6 +1429,8 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 	t.Run("should detect spot-handler version from DaemonSet in write mode when helm not found", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 		ctx := context.Background()
 
 		cluster := newTestCluster(t, uuid.NewString(), true)
@@ -1422,7 +1468,10 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 			ReleaseName: "spot-handler",
 		}).Return(nil, driver.ErrReleaseNotFound)
 
-		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
+			Return(&castai.Component{HelmChart: helmReleaseNameSpotHandler}, nil)
+
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, mockClient, cluster)
 		r.NoError(err)
 		r.True(reconcile)
 
@@ -1437,6 +1486,8 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
 
 		cluster := newTestCluster(t, uuid.NewString(), true)
 		cluster.Spec.Terraform = true
@@ -1496,7 +1547,7 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 			Config: map[string]interface{}{},
 		}, nil)
 
-		reconcile, err := testOps.sut.syncTerraformComponents(ctx, cluster)
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, mockClient, cluster)
 		r.NoError(err)
 		r.True(reconcile)
 
