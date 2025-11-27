@@ -403,7 +403,7 @@ func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, cluster 
 		return false, nil
 	}
 
-	// TODO: in components package create an aaray and iterate it here after we test with cluster-controller as well https://castai.atlassian.net/browse/WIRE-1905
+	// TODO: in components package create an array and iterate it here after we test with cluster-controller as well https://castai.atlassian.net/browse/WIRE-1905
 	// Scan for agent
 	reconcileAgent, err := r.scanExistingComponent(ctx, cluster, components.ComponentNameAgent)
 	if err != nil {
@@ -487,7 +487,8 @@ func (r *ClusterReconciler) detectComponentVersion(ctx context.Context, log logr
 		return nil, nil
 	}
 
-	if componentName == components.ComponentNameAgent {
+	switch componentName {
+	case components.ComponentNameAgent:
 		var deploymentList appsv1.DeploymentList
 		err = r.List(ctx, &deploymentList, &client.ListOptions{
 			Namespace:     cluster.Namespace,
@@ -510,9 +511,7 @@ func (r *ClusterReconciler) detectComponentVersion(ctx context.Context, log logr
 				MigrationMode:   castwarev1alpha1.ComponentMigrationYaml,
 			}, nil
 		}
-	}
-
-	if componentName == components.ComponentNameSpotHandler {
+	case components.ComponentNameSpotHandler:
 		componentHelmName := fmt.Sprintf("castai-%s", components.ComponentNameSpotHandler)
 		var daemonSetList appsv1.DaemonSetList
 		err = r.List(ctx, &daemonSetList, &client.ListOptions{
