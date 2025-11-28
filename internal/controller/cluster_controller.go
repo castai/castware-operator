@@ -120,24 +120,29 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return r.checkUpgradeJobStatus(ctx, cluster)
 	}
 
+	log.Info("getCastaiClient")
 	castAiClient, err := r.getCastaiClient(ctx, cluster)
 	if err != nil {
 		log.WithError(err).Error("Failed to get castaiClient")
 		return ctrl.Result{}, err
 	}
 
+	log.Info("ensureClusterRegistration")
 	clusterID, err := r.ensureClusterRegistration(ctx, cluster, castAiClient)
 	if err != nil {
 		return ctrl.Result{RequeueAfter: time.Minute * 1}, err
 	}
 
+	log.Info("ensureClusterIDInSpec")
 	if result, err := r.ensureClusterIDInSpec(ctx, cluster, clusterID); err != nil || result.RequeueAfter > 0 {
 		return result, err
 	}
 
+	log.Info("Completing initial setup")
 	if result, err := r.completeInitialSetup(ctx, cluster, castAiClient); err != nil || result.RequeueAfter > 0 {
 		return result, err
 	}
+	log.Info("Initial setup completed")
 
 	reconcile, err := r.reconcileSecret(ctx, cluster)
 	if err != nil {
@@ -145,6 +150,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	} else if reconcile {
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
+	log.Info("Secret reconciled")
 
 	reconcile, err = r.syncTerraformComponents(ctx, cluster)
 	if err != nil {
@@ -154,6 +160,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if reconcile {
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
+	log.Info("Terraform Components synced")
 
 	reconcile, err = r.scanExistingComponents(ctx, cluster)
 	// If an error occurred while scanning existing components, we just poll actions for a minute and then retry.
@@ -164,6 +171,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if reconcile {
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
+	log.Info("scan existing components done")
 
 	return r.pollActions(ctx, castAiClient, cluster)
 }
@@ -259,22 +267,37 @@ func (r *ClusterReconciler) completeInitialSetup(ctx context.Context, cluster *c
 		return ctrl.Result{}, nil
 	}
 
+	// Try to get Helm release. If not found (e.g., in E2E tests where operator is deployed via manifests),
+	// fall back to using the version from the binary.
+	var operatorVersion string
+	var releaseName string
+
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   r.Config.PodNamespace,
 		ReleaseName: r.Config.HelmReleaseName,
 	})
 	if err != nil {
-		return ctrl.Result{}, err
+		if errors.Is(err, driver.ErrReleaseNotFound) {
+			operatorVersion = strings.TrimPrefix(castai.GetVersion().Version, "v")
+			releaseName = components.ComponentNameOperator
+			log.WithField("version", operatorVersion).Warn("Helm release not found, using version from binary")
+		} else {
+			log.WithError(err).Error("Failed to get Helm release")
+			return ctrl.Result{}, err
+		}
+	} else {
+		operatorVersion = helmRelease.Chart.Metadata.Version
+		releaseName = helmRelease.Name
 	}
 
 	err = castAiClient.RecordActionResult(ctx, clusterMetadata.ClusterID, &castai.ComponentActionResult{
 		Name:           components.ComponentNameOperator,
 		Action:         castai.Action_INSTALL,
-		CurrentVersion: helmRelease.Chart.Metadata.Version,
-		Version:        helmRelease.Chart.Metadata.Version,
+		CurrentVersion: operatorVersion,
+		Version:        operatorVersion,
 		Status:         castai.Status_OK,
 		ImageVersions:  nil,
-		ReleaseName:    helmRelease.Name,
+		ReleaseName:    releaseName,
 		Message:        "Operator installed",
 	})
 	if err != nil {

@@ -3,15 +3,15 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
 
+	"github.com/castai/castware-operator/test/utils"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	"github.com/castai/castware-operator/test/utils"
 )
 
 // namespace where the project is deployed in
@@ -26,8 +26,43 @@ const metricsServiceName = "castware-operator-controller-manager-metrics-service
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "castware-operator-metrics-binding"
 
+const clusterYaml = `apiVersion: castware.cast.ai/v1alpha1
+kind: Cluster
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  provider: gke
+  apiKeySecret: %s
+  api:
+    apiUrl: "%s"
+  helmRepoURL: "https://castai.github.io/helm-charts"
+  terraform: false
+`
+
+const componentYaml = `apiVersion: castware.cast.ai/v1alpha1
+kind: Component
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  cluster: castai
+  component: %s
+  enabled: true
+  values:
+    additionalEnv:
+      GKE_CLUSTER_NAME: castware-operator-e2e
+      GKE_LOCATION: e2e
+      GKE_PROJECT_ID: e2e
+      GKE_REGION: e2e
+`
+
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
+	var clusterID string
+	var apiKey string
+	var apiURL = "https://api.dev-master.cast.ai"
+	var agentInstalled bool
 
 	// Before running the tests, set up the environment by creating the namespace,
 	// enforce the restricted security policy to the namespace, installing CRDs,
@@ -53,14 +88,63 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("patching controller-manager deployment with GKE environment variables for e2e tests")
+		deploymentName := "castware-operator-controller-manager"
+		patchJSON := `[
+			{"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"GKE_CLUSTER_NAME","value":"castware-operator-e2e"}},
+			{"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"GKE_LOCATION","value":"e2e"}},
+			{"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"GKE_PROJECT_ID","value":"e2e"}},
+			{"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"GKE_REGION","value":"e2e"}}
+		]`
+		cmd = exec.Command("kubectl", "patch", "deployment", deploymentName,
+			"-n", namespace,
+			"--type=json",
+			"-p", patchJSON)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to patch controller-manager deployment with GKE env vars")
+
+		By("waiting for controller-manager to restart with new environment variables")
+		cmd = exec.Command("kubectl", "rollout", "status", "deployment/"+deploymentName, "-n", namespace, "--timeout=2m")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to wait for controller-manager rollout")
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
 	// and deleting the namespace.
 	AfterAll(func() {
 		By("cleaning up the curl pod for metrics")
+
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
 		_, _ = utils.Run(cmd)
+
+		// Delete cluster from Cast AI API if cluster ID was set
+		if clusterID != "" && apiKey != "" && apiURL != "" {
+			By(fmt.Sprintf("deleting cluster from Cast AI API: %s", clusterID))
+			deleteURL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s", apiURL, clusterID)
+			req, err := http.NewRequest(http.MethodDelete, deleteURL, nil)
+			if err == nil {
+				req.Header.Set("X-API-Key", apiKey)
+				client := &http.Client{Timeout: 30 * time.Second}
+				resp, err := client.Do(req)
+				if err == nil {
+					defer resp.Body.Close()
+					if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+						_, _ = fmt.Fprintf(GinkgoWriter, "Successfully deleted cluster %s from Cast AI API\n", clusterID)
+					} else {
+						_, _ = fmt.Fprintf(GinkgoWriter, "Failed to delete cluster from Cast AI API: HTTP %d\n", resp.StatusCode)
+					}
+				} else {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Failed to send delete request to Cast AI API: %v\n", err)
+				}
+			}
+		}
+
+		By("deleting agent CR")
+		if agentInstalled {
+			cmd = exec.Command("kubectl", "delete", "component", "castai-agent", "-n", namespace)
+			_, _ = utils.Run(cmd)
+		}
 
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
@@ -274,16 +358,240 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyCAInjection).Should(Succeed())
 		})
 
-		// +kubebuilder:scaffold:e2e-webhooks-checks
+		It("should onboard a cluster and get a cluster ID", func() {
+			apiKey = os.Getenv("API_KEY")
+			Expect(apiKey).NotTo(BeEmpty(), "API_KEY env variable is not set")
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput := getMetricsOutput()
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+			secretName := "castware-api-key-test"
+			clusterName := "castai"
+
+			By("creating API key secret")
+			cmd := exec.Command("kubectl", "create", "secret", "generic", secretName,
+				"--from-literal=API_KEY="+apiKey,
+				"-n", namespace)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create API key secret")
+
+			By("creating a cluster custom resource")
+			clusterYAML := fmt.Sprintf(clusterYaml, clusterName, namespace, secretName, apiURL)
+
+			clusterFile := filepath.Join("/tmp", fmt.Sprintf("%s-cluster.yaml", clusterName))
+			err = os.WriteFile(clusterFile, []byte(clusterYAML), os.FileMode(0o644))
+			Expect(err).NotTo(HaveOccurred(), "Failed to write cluster manifest")
+
+			cmd = exec.Command("kubectl", "apply", "-f", clusterFile)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create cluster CR")
+
+			By("waiting for the cluster to be onboarded and get a cluster ID")
+			verifyClusterID := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "cluster", clusterName, "-n", namespace, "-o", "jsonpath={.spec.cluster.clusterID}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get cluster CR")
+				g.Expect(output).NotTo(BeEmpty(), "Cluster ID is not set")
+				// Verify it's a valid UUID format
+				g.Expect(output).To(MatchRegexp(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89ABab][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`),
+					"Cluster ID does not match UUID format")
+				// Store the cluster ID for cleanup
+				clusterID = output
+			}
+			Eventually(verifyClusterID, 5*time.Minute).Should(Succeed())
+
+			By("verifying cluster name and location are also populated")
+			cmd = exec.Command("kubectl", "get", "cluster", clusterName, "-n", namespace, "-o", "jsonpath={.spec.cluster}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get cluster metadata")
+			Expect(output).To(ContainSubstring("clusterID"), "Cluster metadata should contain clusterID")
+		})
+
+		It("should install castai-agent", func() {
+			componentName := "castai-agent"
+
+			By("creating a component custom resource")
+			componentYAML := fmt.Sprintf(componentYaml, componentName, namespace, componentName)
+
+			componentFile := filepath.Join("/tmp", fmt.Sprintf("%s-component.yaml", componentName))
+			err := os.WriteFile(componentFile, []byte(componentYAML), os.FileMode(0o644))
+			Expect(err).NotTo(HaveOccurred(), "Failed to write component manifest")
+
+			cmd := exec.Command("kubectl", "apply", "-f", componentFile)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create component CR")
+
+			By("waiting for castai-agent component to have a version")
+			verifyComponent := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.currentVersion}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get component CR")
+				g.Expect(output).NotTo(BeEmpty(), "Version is not set")
+			}
+			Eventually(verifyComponent, 5*time.Minute).Should(Succeed())
+
+			agentInstalled = true
+
+			By("verifying at least one castai-agent pod is in ready state")
+			verifyAgentPodReady := func(g Gomega) {
+				// Get pods with label app.kubernetes.io/name=castai-agent
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", "app.kubernetes.io/name=castai-agent",
+					"-n", namespace,
+					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent pods")
+				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
+
+				// Check that at least one pod has Ready=True
+				lines := utils.GetNonEmptyLines(output)
+				g.Expect(len(lines)).To(BeNumerically(">", 0), "No castai-agent pods found")
+
+				foundReady := false
+				for _, line := range lines {
+					if len(line) > 0 && (line[len(line)-4:] == "True" || line[len(line)-1:] == "T") {
+						foundReady = true
+						break
+					}
+				}
+				g.Expect(foundReady).To(BeTrue(), "No castai-agent pods are in Ready state")
+			}
+			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
+
+			By("verifying component status conditions")
+			cmd = exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.conditions}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get component metadata")
+			Expect(output).To(ContainSubstring(`"type":"Available"`), "Component should be in Available status")
+		})
+
+		It("should downgrade castai-agent", func() {
+			componentName := "castai-agent"
+
+			By("getting current castai-agent version")
+			cmd := exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.currentVersion}")
+			currentVersion, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get component current version")
+			Expect(currentVersion).NotTo(BeEmpty(), "Current version is not set")
+
+			By(fmt.Sprintf("current version is: %s", currentVersion))
+
+			// Define a known older version to downgrade to
+			downgradeVersion := "0.125.0"
+
+			By(fmt.Sprintf("patching component to downgrade to version %s", downgradeVersion))
+			patchJSON := fmt.Sprintf(`{"spec":{"version":"%s"}}`, downgradeVersion)
+			cmd = exec.Command("kubectl", "patch", "component", componentName,
+				"-n", namespace,
+				"--type=merge",
+				"-p", patchJSON)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to patch component with downgrade version")
+
+			By("waiting for the component to be downgraded")
+			verifyDowngrade := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.currentVersion}")
+				version, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get component version")
+				g.Expect(version).To(Equal(downgradeVersion), "Component version should match downgrade version")
+			}
+			Eventually(verifyDowngrade, 5*time.Minute).Should(Succeed())
+
+			By("verifying at least one castai-agent pod is ready after downgrade")
+			verifyAgentPodReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", "app.kubernetes.io/name=castai-agent",
+					"-n", namespace,
+					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent pods")
+				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
+
+				lines := utils.GetNonEmptyLines(output)
+				g.Expect(len(lines)).To(BeNumerically(">", 0), "No castai-agent pods found")
+
+				foundReady := false
+				for _, line := range lines {
+					if len(line) > 0 && (line[len(line)-4:] == "True" || line[len(line)-1:] == "T") {
+						foundReady = true
+						break
+					}
+				}
+				g.Expect(foundReady).To(BeTrue(), "No castai-agent pods are in Ready state after downgrade")
+			}
+			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
+
+			By("verifying component status is Available after downgrade")
+			cmd = exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.conditions}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get component status")
+			Expect(output).To(ContainSubstring(`"type":"Available"`), "Component should be in Available status after downgrade")
+		})
+
+		It("should upgrade castai-agent", func() {
+			componentName := "castai-agent"
+
+			By("getting current castai-agent version before upgrade")
+			cmd := exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.currentVersion}")
+			versionBeforeUpgrade, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get component current version")
+			Expect(versionBeforeUpgrade).NotTo(BeEmpty(), "Current version is not set")
+
+			By(fmt.Sprintf("current version before upgrade is: %s", versionBeforeUpgrade))
+
+			By("patching component to upgrade to latest version by setting version to empty string")
+			patchJSON := `{"spec":{"version":""}}`
+			cmd = exec.Command("kubectl", "patch", "component", componentName,
+				"-n", namespace,
+				"--type=merge",
+				"-p", patchJSON)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to patch component to upgrade")
+
+			By("waiting for the component to be upgraded to a newer version")
+			verifyUpgrade := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.currentVersion}")
+				currentVersion, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get component version")
+				g.Expect(currentVersion).NotTo(BeEmpty(), "Version should be set")
+				g.Expect(currentVersion).NotTo(Equal(versionBeforeUpgrade), "Version should have changed from previous version")
+			}
+			Eventually(verifyUpgrade, 5*time.Minute).Should(Succeed())
+
+			By("getting new version after upgrade")
+			cmd = exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.currentVersion}")
+			versionAfterUpgrade, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get component version after upgrade")
+			By(fmt.Sprintf("upgraded to version: %s", versionAfterUpgrade))
+
+			By("verifying at least one castai-agent pod is ready after upgrade")
+			verifyAgentPodReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", "app.kubernetes.io/name=castai-agent",
+					"-n", namespace,
+					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent pods")
+				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
+
+				lines := utils.GetNonEmptyLines(output)
+				g.Expect(len(lines)).To(BeNumerically(">", 0), "No castai-agent pods found")
+
+				foundReady := false
+				for _, line := range lines {
+					if len(line) > 0 && (line[len(line)-4:] == "True" || line[len(line)-1:] == "T") {
+						foundReady = true
+						break
+					}
+				}
+				g.Expect(foundReady).To(BeTrue(), "No castai-agent pods are in Ready state after upgrade")
+			}
+			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
+
+			By("verifying component status is Available after upgrade")
+			cmd = exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.conditions}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get component status")
+			Expect(output).To(ContainSubstring(`"type":"Available"`), "Component should be in Available status after upgrade")
+		})
+		// +kubebuilder:scaffold:e2e-webhooks-checks
 	})
 })
 
