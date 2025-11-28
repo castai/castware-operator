@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/test/utils"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -91,6 +92,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 		By("patching controller-manager deployment with GKE environment variables for e2e tests")
 		deploymentName := "castware-operator-controller-manager"
+		// nolint: lll
 		patchJSON := `[
 			{"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"GKE_CLUSTER_NAME","value":"castware-operator-e2e"}},
 			{"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"GKE_LOCATION","value":"e2e"}},
@@ -128,6 +130,7 @@ var _ = Describe("Manager", Ordered, func() {
 				client := &http.Client{Timeout: 30 * time.Second}
 				resp, err := client.Do(req)
 				if err == nil {
+					//nolint:errcheck
 					defer resp.Body.Close()
 					if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 						_, _ = fmt.Fprintf(GinkgoWriter, "Successfully deleted cluster %s from Cast AI API\n", clusterID)
@@ -385,11 +388,15 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("waiting for the cluster to be onboarded and get a cluster ID")
 			verifyClusterID := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "cluster", clusterName, "-n", namespace, "-o", "jsonpath={.spec.cluster.clusterID}")
+				cmd := exec.Command("kubectl", "get", "cluster", clusterName,
+					"-n", namespace,
+					"-o", "jsonpath={.spec.cluster.clusterID}",
+				)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get cluster CR")
 				g.Expect(output).NotTo(BeEmpty(), "Cluster ID is not set")
 				// Verify it's a valid UUID format
+				// nolint: lll
 				g.Expect(output).To(MatchRegexp(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89ABab][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`),
 					"Cluster ID does not match UUID format")
 				// Store the cluster ID for cleanup
@@ -405,12 +412,10 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should install castai-agent", func() {
-			componentName := "castai-agent"
-
 			By("creating a component custom resource")
-			componentYAML := fmt.Sprintf(componentYaml, componentName, namespace, componentName)
+			componentYAML := fmt.Sprintf(componentYaml, components.ComponentNameAgent, namespace, components.ComponentNameAgent)
 
-			componentFile := filepath.Join("/tmp", fmt.Sprintf("%s-component.yaml", componentName))
+			componentFile := filepath.Join("/tmp", fmt.Sprintf("%s-component.yaml", components.ComponentNameAgent))
 			err := os.WriteFile(componentFile, []byte(componentYAML), os.FileMode(0o644))
 			Expect(err).NotTo(HaveOccurred(), "Failed to write component manifest")
 
@@ -420,7 +425,10 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("waiting for castai-agent component to have a version")
 			verifyComponent := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.currentVersion}")
+				cmd := exec.Command("kubectl", "get", "component", components.ComponentNameAgent,
+					"-n", namespace,
+					"-o", "jsonpath={.status.currentVersion}",
+				)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get component CR")
 				g.Expect(output).NotTo(BeEmpty(), "Version is not set")
@@ -442,11 +450,11 @@ var _ = Describe("Manager", Ordered, func() {
 
 				// Check that at least one pod has Ready=True
 				lines := utils.GetNonEmptyLines(output)
-				g.Expect(len(lines)).To(BeNumerically(">", 0), "No castai-agent pods found")
+				g.Expect(lines).ToNot(BeEmpty(), "No castai-agent pods found")
 
 				foundReady := false
 				for _, line := range lines {
-					if len(line) > 0 && (line[len(line)-4:] == "True" || line[len(line)-1:] == "T") {
+					if podReady(line) {
 						foundReady = true
 						break
 					}
@@ -456,17 +464,21 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
 
 			By("verifying component status conditions")
-			cmd = exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.conditions}")
+			cmd = exec.Command("kubectl", "get", "component", components.ComponentNameAgent,
+				"-n", namespace,
+				"-o", "jsonpath={.status.conditions}",
+			)
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get component metadata")
 			Expect(output).To(ContainSubstring(`"type":"Available"`), "Component should be in Available status")
 		})
 
 		It("should downgrade castai-agent", func() {
-			componentName := "castai-agent"
-
 			By("getting current castai-agent version")
-			cmd := exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.currentVersion}")
+			cmd := exec.Command("kubectl", "get", "component", components.ComponentNameAgent,
+				"-n", namespace,
+				"-o", "jsonpath={.status.currentVersion}",
+			)
 			currentVersion, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get component current version")
 			Expect(currentVersion).NotTo(BeEmpty(), "Current version is not set")
@@ -478,7 +490,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By(fmt.Sprintf("patching component to downgrade to version %s", downgradeVersion))
 			patchJSON := fmt.Sprintf(`{"spec":{"version":"%s"}}`, downgradeVersion)
-			cmd = exec.Command("kubectl", "patch", "component", componentName,
+			cmd = exec.Command("kubectl", "patch", "component", components.ComponentNameAgent,
 				"-n", namespace,
 				"--type=merge",
 				"-p", patchJSON)
@@ -487,7 +499,10 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("waiting for the component to be downgraded")
 			verifyDowngrade := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.currentVersion}")
+				cmd := exec.Command("kubectl", "get", "component", components.ComponentNameAgent,
+					"-n", namespace,
+					"-o", "jsonpath={.status.currentVersion}",
+				)
 				version, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get component version")
 				g.Expect(version).To(Equal(downgradeVersion), "Component version should match downgrade version")
@@ -505,11 +520,11 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
 
 				lines := utils.GetNonEmptyLines(output)
-				g.Expect(len(lines)).To(BeNumerically(">", 0), "No castai-agent pods found")
+				g.Expect(lines).ToNot(BeEmpty(), "No castai-agent pods found")
 
 				foundReady := false
 				for _, line := range lines {
-					if len(line) > 0 && (line[len(line)-4:] == "True" || line[len(line)-1:] == "T") {
+					if podReady(line) {
 						foundReady = true
 						break
 					}
@@ -519,7 +534,10 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
 
 			By("verifying component status is Available after downgrade")
-			cmd = exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.conditions}")
+			cmd = exec.Command("kubectl", "get", "component", components.ComponentNameAgent,
+				"-n", namespace,
+				"-o", "jsonpath={.status.conditions}",
+			)
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get component status")
 			Expect(output).To(ContainSubstring(`"type":"Available"`), "Component should be in Available status after downgrade")
@@ -529,7 +547,10 @@ var _ = Describe("Manager", Ordered, func() {
 			componentName := "castai-agent"
 
 			By("getting current castai-agent version before upgrade")
-			cmd := exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.currentVersion}")
+			cmd := exec.Command("kubectl", "get", "component", componentName,
+				"-n", namespace,
+				"-o", "jsonpath={.status.currentVersion}",
+			)
 			versionBeforeUpgrade, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get component current version")
 			Expect(versionBeforeUpgrade).NotTo(BeEmpty(), "Current version is not set")
@@ -547,7 +568,10 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("waiting for the component to be upgraded to a newer version")
 			verifyUpgrade := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.currentVersion}")
+				cmd := exec.Command("kubectl", "get", "component", componentName,
+					"-n", namespace,
+					"-o", "jsonpath={.status.currentVersion}",
+				)
 				currentVersion, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get component version")
 				g.Expect(currentVersion).NotTo(BeEmpty(), "Version should be set")
@@ -556,7 +580,10 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyUpgrade, 5*time.Minute).Should(Succeed())
 
 			By("getting new version after upgrade")
-			cmd = exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.currentVersion}")
+			cmd = exec.Command("kubectl", "get", "component", componentName,
+				"-n", namespace,
+				"-o", "jsonpath={.status.currentVersion}",
+			)
 			versionAfterUpgrade, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get component version after upgrade")
 			By(fmt.Sprintf("upgraded to version: %s", versionAfterUpgrade))
@@ -572,11 +599,11 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
 
 				lines := utils.GetNonEmptyLines(output)
-				g.Expect(len(lines)).To(BeNumerically(">", 0), "No castai-agent pods found")
+				g.Expect(lines).ToNot(BeEmpty(), "No castai-agent pods found")
 
 				foundReady := false
 				for _, line := range lines {
-					if len(line) > 0 && (line[len(line)-4:] == "True" || line[len(line)-1:] == "T") {
+					if podReady(line) {
 						foundReady = true
 						break
 					}
@@ -586,7 +613,10 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
 
 			By("verifying component status is Available after upgrade")
-			cmd = exec.Command("kubectl", "get", "component", componentName, "-n", namespace, "-o", "jsonpath={.status.conditions}")
+			cmd = exec.Command("kubectl", "get", "component", componentName,
+				"-n", namespace,
+				"-o", "jsonpath={.status.conditions}",
+			)
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get component status")
 			Expect(output).To(ContainSubstring(`"type":"Available"`), "Component should be in Available status after upgrade")
@@ -644,6 +674,10 @@ func getMetricsOutput() string {
 	Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
 	Expect(metricsOutput).To(ContainSubstring("< HTTP/1.1 200 OK"))
 	return metricsOutput
+}
+
+func podReady(line string) bool {
+	return len(line) > 0 && (line[len(line)-4:] == "True" || line[len(line)-1:] == "T")
 }
 
 // tokenRequest is a simplified representation of the Kubernetes TokenRequest API response,
