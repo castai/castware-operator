@@ -131,7 +131,3 @@ defaultComponents:
       component: "castai-agent"
       cluster: "castai"
       enabled: true
-    spot-handler:
-      component: "spot-handler"
-      cluster: "castai"
-      enabled: true
