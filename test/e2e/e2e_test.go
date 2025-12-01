@@ -3,6 +3,7 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"github.com/castai/castware-operator/test/utils"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/samber/lo"
 )
 
 // namespace where the project is deployed in
@@ -61,9 +63,11 @@ spec:
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
 	var clusterID string
+	var organizationID string
 	var apiKey string
 	var apiURL = "https://api.dev-master.cast.ai"
 	var agentInstalled bool
+	var versionBeforeDowngrade string
 
 	// Before running the tests, set up the environment by creating the namespace,
 	// enforce the restricted security policy to the namespace, installing CRDs,
@@ -211,6 +215,36 @@ var _ = Describe("Manager", Ordered, func() {
 
 	SetDefaultEventuallyTimeout(5 * time.Minute)
 	SetDefaultEventuallyPollingInterval(time.Second)
+
+	fetchFromAPI := func(apiURL string, responseBody interface{}) error {
+		req, err := http.NewRequest(http.MethodGet, apiURL, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create HTTP request for URL %s: %w", apiURL, err)
+		}
+		req.Header.Set("X-API-Key", apiKey)
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to execute HTTP GET request to %s: %w", apiURL, err)
+		}
+		//nolint:errcheck
+		defer resp.Body.Close()
+
+		Expect(resp.StatusCode).To(Equal(http.StatusOK),
+			"expected HTTP 200 OK from Cast AI API at %s, got %d", apiURL, resp.StatusCode)
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read HTTP response body from %s: %w", apiURL, err)
+		}
+
+		if err = json.Unmarshal(body, responseBody); err != nil {
+			return fmt.Errorf("failed to unmarshal JSON response from %s: %w", apiURL, err)
+		}
+
+		return nil
+	}
 
 	Context("Manager", func() {
 		It("should run successfully", func() {
@@ -409,6 +443,12 @@ var _ = Describe("Manager", Ordered, func() {
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get cluster metadata")
 			Expect(output).To(ContainSubstring("clusterID"), "Cluster metadata should contain clusterID")
+
+			getClusterURL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s", apiURL, clusterID)
+			clusterResp := map[string]interface{}{}
+			err = fetchFromAPI(getClusterURL, &clusterResp)
+			Expect(err).ToNot(HaveOccurred())
+			organizationID = clusterResp["organizationId"].(string)
 		})
 
 		It("should install castai-agent", func() {
@@ -471,6 +511,13 @@ var _ = Describe("Manager", Ordered, func() {
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get component metadata")
 			Expect(output).To(ContainSubstring(`"type":"Available"`), "Component should be in Available status")
+
+			getClusterURL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s", apiURL, clusterID)
+			clusterResp := map[string]interface{}{}
+			err = fetchFromAPI(getClusterURL, &clusterResp)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(clusterResp["status"]).To(Equal("ready"))
+			Expect(clusterResp["castwareInstallMethod"]).To(Equal("OPERATOR"))
 		})
 
 		It("should downgrade castai-agent", func() {
@@ -484,6 +531,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(currentVersion).NotTo(BeEmpty(), "Current version is not set")
 
 			By(fmt.Sprintf("current version is: %s", currentVersion))
+			versionBeforeDowngrade = currentVersion
 
 			// Define a known older version to downgrade to
 			downgradeVersion := "0.125.0"
@@ -541,6 +589,19 @@ var _ = Describe("Manager", Ordered, func() {
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get component status")
 			Expect(output).To(ContainSubstring(`"type":"Available"`), "Component should be in Available status after downgrade")
+
+			getClusterURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components:view",
+				apiURL, organizationID, clusterID)
+			componentsResp := struct {
+				Components []component `json:"components"`
+			}{}
+			err = fetchFromAPI(getClusterURL, &componentsResp)
+			Expect(err).ToNot(HaveOccurred())
+			agentComponent, ok := lo.Find(componentsResp.Components, func(item component) bool {
+				return item.Name == components.ComponentNameAgent
+			})
+			Expect(ok).To(BeTrue(), "Failed to find castai-agent component")
+			Expect(agentComponent.UsedVersion).To(Equal(downgradeVersion))
 		})
 
 		It("should upgrade castai-agent", func() {
@@ -620,6 +681,20 @@ var _ = Describe("Manager", Ordered, func() {
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get component status")
 			Expect(output).To(ContainSubstring(`"type":"Available"`), "Component should be in Available status after upgrade")
+
+			getClusterURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components:view",
+				apiURL, organizationID, clusterID)
+			componentsResp := struct {
+				Components []component `json:"components"`
+			}{}
+			err = fetchFromAPI(getClusterURL, &componentsResp)
+			Expect(err).ToNot(HaveOccurred())
+			agentComponent, ok := lo.Find(componentsResp.Components, func(item component) bool {
+				return item.Name == components.ComponentNameAgent
+			})
+			Expect(ok).To(BeTrue(), "Failed to find castai-agent component")
+			Expect(agentComponent.LatestVersion).ToNot(BeEmpty(), "Failed to get latest version of castai-agent")
+			Expect(agentComponent.UsedVersion).To(Equal(versionBeforeDowngrade))
 		})
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 	})
@@ -686,4 +761,10 @@ type tokenRequest struct {
 	Status struct {
 		Token string `json:"token"`
 	} `json:"status"`
+}
+
+type component struct {
+	Name          string `json:"name"`
+	UsedVersion   string `json:"usedVersion"`
+	LatestVersion string `json:"latestVersion"`
 }
