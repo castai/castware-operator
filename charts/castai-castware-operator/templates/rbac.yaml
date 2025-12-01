@@ -281,6 +281,7 @@ rules:
 - apiGroups:
   - autoscaling.cast.ai
   resources:
+  - custommetricsexporterconfigs
   - recommendations
   verbs:
   - get
