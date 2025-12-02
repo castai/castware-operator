@@ -69,6 +69,38 @@ var _ = Describe("Manager", Ordered, func() {
 	var agentInstalled bool
 	var versionBeforeDowngrade string
 
+	fetchFromAPI := func(apiURL string, httpMethod string, responseBody interface{}) error {
+		req, err := http.NewRequest(httpMethod, apiURL, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create HTTP request for URL %s: %w", apiURL, err)
+		}
+		req.Header.Set("X-API-Key", apiKey)
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to execute HTTP GET request to %s: %w", apiURL, err)
+		}
+		//nolint:errcheck
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read HTTP response body from %s: %w", apiURL, err)
+		}
+		if resp.StatusCode > 299 {
+			return fmt.Errorf("failed to get response from Cast AI API at %s: %s", apiURL, string(body))
+		}
+
+		if responseBody != nil {
+			if err = json.Unmarshal(body, responseBody); err != nil {
+				return fmt.Errorf("failed to unmarshal JSON response from %s: %w", apiURL, err)
+			}
+		}
+
+		return nil
+	}
+
 	// Before running the tests, set up the environment by creating the namespace,
 	// enforce the restricted security policy to the namespace, installing CRDs,
 	// and deploying the controller.
@@ -128,22 +160,9 @@ var _ = Describe("Manager", Ordered, func() {
 		if clusterID != "" && apiKey != "" && apiURL != "" {
 			By(fmt.Sprintf("deleting cluster from Cast AI API: %s", clusterID))
 			deleteURL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s", apiURL, clusterID)
-			req, err := http.NewRequest(http.MethodDelete, deleteURL, nil)
-			if err == nil {
-				req.Header.Set("X-API-Key", apiKey)
-				client := &http.Client{Timeout: 30 * time.Second}
-				resp, err := client.Do(req)
-				if err == nil {
-					//nolint:errcheck
-					defer resp.Body.Close()
-					if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-						_, _ = fmt.Fprintf(GinkgoWriter, "Successfully deleted cluster %s from Cast AI API\n", clusterID)
-					} else {
-						_, _ = fmt.Fprintf(GinkgoWriter, "Failed to delete cluster from Cast AI API: HTTP %d\n", resp.StatusCode)
-					}
-				} else {
-					_, _ = fmt.Fprintf(GinkgoWriter, "Failed to send delete request to Cast AI API: %v\n", err)
-				}
+			err := fetchFromAPI(deleteURL, http.MethodDelete, nil)
+			if err != nil {
+				fmt.Printf("Failed delete cluster: %v\n", err)
 			}
 		}
 
@@ -215,36 +234,6 @@ var _ = Describe("Manager", Ordered, func() {
 
 	SetDefaultEventuallyTimeout(5 * time.Minute)
 	SetDefaultEventuallyPollingInterval(time.Second)
-
-	fetchFromAPI := func(apiURL string, responseBody interface{}) error {
-		req, err := http.NewRequest(http.MethodGet, apiURL, nil)
-		if err != nil {
-			return fmt.Errorf("failed to create HTTP request for URL %s: %w", apiURL, err)
-		}
-		req.Header.Set("X-API-Key", apiKey)
-
-		client := &http.Client{Timeout: 30 * time.Second}
-		resp, err := client.Do(req)
-		if err != nil {
-			return fmt.Errorf("failed to execute HTTP GET request to %s: %w", apiURL, err)
-		}
-		//nolint:errcheck
-		defer resp.Body.Close()
-
-		Expect(resp.StatusCode).To(Equal(http.StatusOK),
-			"expected HTTP 200 OK from Cast AI API at %s, got %d", apiURL, resp.StatusCode)
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("failed to read HTTP response body from %s: %w", apiURL, err)
-		}
-
-		if err = json.Unmarshal(body, responseBody); err != nil {
-			return fmt.Errorf("failed to unmarshal JSON response from %s: %w", apiURL, err)
-		}
-
-		return nil
-	}
 
 	Context("Manager", func() {
 		It("should run successfully", func() {
@@ -446,7 +435,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			getClusterURL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s", apiURL, clusterID)
 			clusterResp := map[string]interface{}{}
-			err = fetchFromAPI(getClusterURL, &clusterResp)
+			err = fetchFromAPI(getClusterURL, http.MethodGet, &clusterResp)
 			Expect(err).ToNot(HaveOccurred())
 			organizationID = clusterResp["organizationId"].(string)
 		})
@@ -514,7 +503,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			getClusterURL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s", apiURL, clusterID)
 			clusterResp := map[string]interface{}{}
-			err = fetchFromAPI(getClusterURL, &clusterResp)
+			err = fetchFromAPI(getClusterURL, http.MethodGet, &clusterResp)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(clusterResp["status"]).To(Equal("ready"))
 			Expect(clusterResp["castwareInstallMethod"]).To(Equal("OPERATOR"))
@@ -595,7 +584,7 @@ var _ = Describe("Manager", Ordered, func() {
 			componentsResp := struct {
 				Components []component `json:"components"`
 			}{}
-			err = fetchFromAPI(getClusterURL, &componentsResp)
+			err = fetchFromAPI(getClusterURL, http.MethodGet, &componentsResp)
 			Expect(err).ToNot(HaveOccurred())
 			agentComponent, ok := lo.Find(componentsResp.Components, func(item component) bool {
 				return item.Name == components.ComponentNameAgent
@@ -687,7 +676,7 @@ var _ = Describe("Manager", Ordered, func() {
 			componentsResp := struct {
 				Components []component `json:"components"`
 			}{}
-			err = fetchFromAPI(getClusterURL, &componentsResp)
+			err = fetchFromAPI(getClusterURL, http.MethodGet, &componentsResp)
 			Expect(err).ToNot(HaveOccurred())
 			agentComponent, ok := lo.Find(componentsResp.Components, func(item component) bool {
 				return item.Name == components.ComponentNameAgent
