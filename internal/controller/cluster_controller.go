@@ -120,29 +120,29 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return r.checkUpgradeJobStatus(ctx, cluster)
 	}
 
-	log.Info("getCastaiClient")
+	log.Debug("getCastaiClient")
 	castAiClient, err := r.getCastaiClient(ctx, cluster)
 	if err != nil {
 		log.WithError(err).Error("Failed to get castaiClient")
 		return ctrl.Result{}, err
 	}
 
-	log.Info("ensureClusterRegistration")
+	log.Debug("ensureClusterRegistration")
 	clusterID, err := r.ensureClusterRegistration(ctx, cluster, castAiClient)
 	if err != nil {
 		return ctrl.Result{RequeueAfter: time.Minute * 1}, err
 	}
 
-	log.Info("ensureClusterIDInSpec")
+	log.Debug("ensureClusterIDInSpec")
 	if result, err := r.ensureClusterIDInSpec(ctx, cluster, clusterID); err != nil || result.RequeueAfter > 0 {
 		return result, err
 	}
 
-	log.Info("Completing initial setup")
+	log.Debug("Completing initial setup")
 	if result, err := r.completeInitialSetup(ctx, cluster, castAiClient); err != nil || result.RequeueAfter > 0 {
 		return result, err
 	}
-	log.Info("Initial setup completed")
+	log.Debug("Initial setup completed")
 
 	reconcile, err := r.reconcileSecret(ctx, cluster)
 	if err != nil {
@@ -150,7 +150,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	} else if reconcile {
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
-	log.Info("Secret reconciled")
+	log.Debug("Secret reconciled")
 
 	reconcile, err = r.syncTerraformComponents(ctx, castAiClient, cluster)
 	if err != nil {
@@ -160,7 +160,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if reconcile {
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
-	log.Info("Terraform Components synced")
+	log.Debug("Terraform Components synced")
 
 	reconcile, err = r.scanExistingComponents(ctx, castAiClient, cluster)
 	// If an error occurred while scanning existing components, we just poll actions for a minute and then retry.
@@ -171,7 +171,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if reconcile {
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
-	log.Info("scan existing components done")
+	log.Debug("scan existing components done")
 
 	return r.pollActions(ctx, castAiClient, cluster)
 }
