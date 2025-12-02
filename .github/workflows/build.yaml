@@ -38,9 +38,20 @@ jobs:
           key: ${{ runner.os }}-build-${{ hashFiles('**/go.sum') }}
           restore-keys: ${{ runner.os }}-build-
 
-      - name: Get release tag
-        if: github.event_name == 'release'
-        run: echo "RELEASE_TAG=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
+      - name: Set version from git tag or Chart.yaml
+        run: |
+          # Try to get the git tag first
+          GIT_TAG=$(git describe --tags --exact-match 2>/dev/null || echo "")
+
+          if [ -n "$GIT_TAG" ]; then
+            echo "Using git tag: $GIT_TAG"
+            echo "RELEASE_TAG=$GIT_TAG" >> $GITHUB_ENV
+          else
+            # Fall back to Chart.yaml version
+            VERSION=$(grep '^version:' charts/castai-castware-operator/Chart.yaml | awk '{print $2}')
+            echo "Using Chart.yaml version: $VERSION"
+            echo "RELEASE_TAG=$VERSION" >> $GITHUB_ENV
+          fi
 
       - name: Generate Helm charts
         run: make helm
@@ -162,6 +173,8 @@ jobs:
           kubectl_version: v1.27.3
 
       - name: Run E2E tests
+        env:
+          API_KEY: ${{ secrets.API_KEY }}
         run: make test-e2e
 
   release_chart_operator:
