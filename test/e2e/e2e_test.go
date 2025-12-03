@@ -798,13 +798,14 @@ var _ = Describe("Manager", Ordered, func() {
 			verifyPodReady := func(g Gomega) {
 				// Get pods with label app.kubernetes.io/name=spot-handler
 				cmd := exec.Command("kubectl", "get", "daemonsets",
-					"-l", "app.kubernetes.io/instance=spot-handler",
+					"-l", "helm.sh/chart=castai-spot-handler-"+downgradeVersion,
 					"-n", namespace,
 					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get spot-handler daemonset")
 				g.Expect(output).NotTo(BeEmpty(), "No spot-handler daemonsets found")
 			}
+			// kubectl get daemonsets
 			Eventually(verifyPodReady, 5*time.Minute).Should(Succeed())
 
 			By("verifying component status is Available after downgrade")
