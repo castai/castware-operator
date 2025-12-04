@@ -70,6 +70,11 @@ var _ = Describe("Manager", Ordered, func() {
 	var agentInstalled bool
 	var spotHandlerInstalled bool
 	var versionBeforeDowngrade string
+	var operatorChartPath string
+
+	// Extract image repository and tag from projectImage (format: repository:tag)
+	imageParts := strings.Split(projectImage, ":")
+	Expect(imageParts).To(HaveLen(2), "invalid projectImage format")
 
 	fetchFromAPI := func(apiURL string, httpMethod string, responseBody interface{}) error {
 		req, err := http.NewRequest(httpMethod, apiURL, nil)
@@ -95,8 +100,13 @@ var _ = Describe("Manager", Ordered, func() {
 		}
 
 		if responseBody != nil {
-			if err = json.Unmarshal(body, responseBody); err != nil {
-				return fmt.Errorf("failed to unmarshal JSON response from %s: %w", apiURL, err)
+			switch t := responseBody.(type) {
+			case *string:
+				*t = string(body)
+			default:
+				if err = json.Unmarshal(body, responseBody); err != nil {
+					return fmt.Errorf("failed to unmarshal JSON response from %s: %w", apiURL, err)
+				}
 			}
 		}
 
@@ -109,7 +119,6 @@ var _ = Describe("Manager", Ordered, func() {
 	BeforeAll(func() {
 		wd, _ := os.Getwd()
 		fmt.Println("Running e2e tests...", wd)
-
 		apiKey = os.Getenv("API_KEY")
 		Expect(apiKey).NotTo(BeEmpty(), "API_KEY environment variable is not set")
 
@@ -124,14 +133,10 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
 
-		By("installing helm chart")
 		// Get project root directory (two levels up from test/e2e)
-		chartPath := filepath.Join(wd, "charts", "castai-castware-operator")
+		operatorChartPath = filepath.Join(wd, "charts", "castai-castware-operator")
 
-		// Extract image repository and tag from projectImage (format: repository:tag)
-		imageParts := strings.Split(projectImage, ":")
-		fmt.Println("IMAGE PARTS", imageParts[0], imageParts[1])
-
+		By("installing helm chart")
 		// Use helm upgrade --install command as defined in local/install-local.sh
 		cmd = exec.Command("helm", "upgrade", "--install", "castware-operator",
 			"--namespace", namespace,
@@ -149,9 +154,9 @@ var _ = Describe("Manager", Ordered, func() {
 			"--set", "webhook.env.GKE_REGION=e2e",
 			"--atomic",
 			"--timeout", "5m",
-			chartPath,
+			operatorChartPath,
 		)
-		// curl -sSL -X GET -H "X-API-Key: $API_KEY" https://api.dev-master.cast.ai/v1/me
+
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install helm chart")
 	})
@@ -949,6 +954,193 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(output).To(ContainSubstring("spot-handler ready with version "), "Phase2 spot handler install failed")
 			// err = fetchFromAPI(getClusterURL, http.MethodGet, &componentsResp)
 		})
+
+		It("should offboard the operator and all components", func() {
+			By("uninstalling the operator")
+			cmd := exec.Command("helm", "uninstall", "castware-operator", "-n", namespace)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to uninstall helm release")
+
+			By("verifying that CRDs don't exist anymore")
+			verifyCRDsGone := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "crds", "-o", "name")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get CRDs")
+				g.Expect(output).NotTo(ContainSubstring("castware.cast.ai"), "CRDs should be deleted")
+			}
+			Eventually(verifyCRDsGone).Should(Succeed())
+
+			By("verifying that castai-agent still exists")
+			cmd = exec.Command("kubectl", "get", "deployment", "-l", "app.kubernetes.io/name=castai-agent", "-n", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "castai-agent should still exist after operator uninstall")
+
+			By("verifying that spot-handler still exists")
+			cmd = exec.Command("kubectl", "get", "daemonset", "-l", "app.kubernetes.io/instance=spot-handler", "-n", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "spot-handler should still exist after operator uninstall")
+
+			By("verifying that cluster-controller still exists")
+			cmd = exec.Command("kubectl", "get", "deployment", "-l", "app.kubernetes.io/name=cluster-controller", "-n", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "cluster-controller should still exist after operator uninstall")
+
+			By("deleting the namespace")
+			cmd = exec.Command("kubectl", "delete", "ns", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete namespace")
+
+			By("verifying that namespace is deleted")
+			verifyNamespaceGone := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "ns", namespace)
+				_, err := utils.Run(cmd)
+				g.Expect(err).To(HaveOccurred(), "Namespace should be deleted")
+			}
+			Eventually(verifyNamespaceGone, 5*time.Minute).Should(Succeed())
+		})
+
+		It("should onboard agent and spot handler with legacy script", func() {
+			By("getting phase1 script")
+
+			var scriptResp string
+			// nolint: lll
+			getScriptURL := fmt.Sprintf("%s/v1/agent.sh?provider=gke", apiURL)
+			err := fetchFromAPI(getScriptURL, http.MethodGet, &scriptResp)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get phase1 script")
+
+			cmd := exec.Command("bash", "-c", scriptResp)
+			output, _ := utils.Run(cmd)
+			Expect(output).To(ContainSubstring("deployment.apps/castai-agent created"), "Agent not installed")
+			Expect(output).To(ContainSubstring("daemonset.apps/castai-spot-handler created"), "Spot handler not installed")
+
+			By("patching castai-agent deployment to add GKE environment variables")
+			patchJSON := `{
+				"spec": {
+					"template": {
+						"spec": {
+							"containers": [{
+								"name": "agent",
+								"env": [
+									{"name": "GKE_CLUSTER_NAME", "value": "castware-operator-e2e"},
+									{"name": "GKE_LOCATION", "value": "e2e"},
+									{"name": "GKE_PROJECT_ID", "value": "e2e"},
+									{"name": "GKE_REGION", "value": "e2e"}
+								]
+							}]
+						}
+					}
+				}
+			}`
+			cmd = exec.Command("kubectl", "patch", "deployment", "castai-agent",
+				"-n", namespace,
+				"--type=strategic",
+				"-p", patchJSON)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to patch castai-agent deployment")
+
+			By("waiting for deployment to be updated")
+			verifyDeploymentUpdated := func(g Gomega) {
+				cmd := exec.Command("kubectl", "rollout", "status", "deployment/castai-agent", "-n", namespace, "--timeout=60s")
+				_, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Deployment rollout failed")
+			}
+			Eventually(verifyDeploymentUpdated, 2*time.Minute).Should(Succeed())
+
+			By("verifying at least one castai-agent pod is in ready state")
+			verifyAgentPodReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", "app.kubernetes.io/name=castai-agent",
+					"-n", namespace,
+					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent pods")
+				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
+
+				lines := utils.GetNonEmptyLines(output)
+				g.Expect(lines).ToNot(BeEmpty(), "No castai-agent pods found")
+
+				foundReady := false
+				for _, line := range lines {
+					if podReady(line) {
+						foundReady = true
+						break
+					}
+				}
+				g.Expect(foundReady).To(BeTrue(), "No castai-agent pods are in Ready state")
+			}
+			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
+		})
+
+		It("should install the operator and take over agent and spot handler", func() {
+			By("installing the operator")
+			cmd := exec.Command("helm", "upgrade", "--install", "castware-operator",
+				"--namespace", namespace,
+				"--set", fmt.Sprintf("image.repository=%s", imageParts[0]),
+				"--set", fmt.Sprintf("image.tag=%s", imageParts[1]),
+				"--set", "image.pullPolicy=IfNotPresent",
+				"--set", fmt.Sprintf("apiKeySecret.apiKey=%s", apiKey),
+				"--set", fmt.Sprintf("defaultCluster.api.apiUrl=%s", apiURL),
+				"--set", "defaultCluster.provider=gke",
+				"--set", "defaultCluster.terraform=false",
+				"--set", "defaultCluster.migrationMode=autoUpgrade",
+				"--set", "defaultComponents.enabled=false",
+				"--set", "webhook.env.GKE_CLUSTER_NAME=castware-operator-e2e",
+				"--set", "webhook.env.GKE_LOCATION=e2e",
+				"--set", "webhook.env.GKE_PROJECT_ID=e2e",
+				"--set", "webhook.env.GKE_REGION=e2e",
+				"--atomic",
+				"--timeout", "5m",
+				operatorChartPath,
+			)
+
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to install helm release")
+
+			By("waiting for castai-agent component to be ready")
+			verifyAgentComponent := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "component", components.ComponentNameAgent,
+					"-n", namespace,
+					"-o", "jsonpath={.status.currentVersion}",
+				)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent component CR")
+				g.Expect(output).NotTo(BeEmpty(), "castai-agent version is not set")
+			}
+			Eventually(verifyAgentComponent, 5*time.Minute).Should(Succeed())
+
+			By("verifying castai-agent component status is Available")
+			cmd = exec.Command("kubectl", "get", "component", components.ComponentNameAgent,
+				"-n", namespace,
+				"-o", "jsonpath={.status.conditions}",
+			)
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent component status")
+			Expect(output).To(ContainSubstring(`"type":"Available"`), "castai-agent component should be Available")
+
+			By("waiting for spot-handler component to be ready")
+			verifySpotHandlerComponent := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "component", components.ComponentNameSpotHandler,
+					"-n", namespace,
+					"-o", "jsonpath={.status.currentVersion}",
+				)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get spot-handler component CR")
+				g.Expect(output).NotTo(BeEmpty(), "spot-handler version is not set")
+			}
+			Eventually(verifySpotHandlerComponent, 5*time.Minute).Should(Succeed())
+
+			By("verifying spot-handler component status is Available")
+			cmd = exec.Command("kubectl", "get", "component", components.ComponentNameSpotHandler,
+				"-n", namespace,
+				"-o", "jsonpath={.status.conditions}",
+			)
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get spot-handler component status")
+			Expect(output).To(ContainSubstring(`"type":"Available"`), "spot-handler component should be Available")
+		})
+
+		// TODO: onboard phase2 test
+
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 	})
 })
