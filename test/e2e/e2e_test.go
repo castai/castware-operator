@@ -589,12 +589,20 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
 
+			cmd = exec.Command("kubectl", "get", "deployments",
+				"-l", "helm.sh/chart=castai-agent-"+downgradeVersion,
+				"-n", namespace,
+				"-o", "jsonpath={range .items[*]}{.metadata.name}{end}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent deployment")
+			Expect(output).NotTo(BeEmpty(), "No castai-agent deployment found")
+
 			By("verifying component status is Available after downgrade")
 			cmd = exec.Command("kubectl", "get", "component", components.ComponentNameAgent,
 				"-n", namespace,
 				"-o", "jsonpath={.status.conditions}",
 			)
-			output, err := utils.Run(cmd)
+			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get component status")
 			Expect(output).To(ContainSubstring(`"type":"Available"`), "Component should be in Available status after downgrade")
 
@@ -681,12 +689,20 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
 
+			cmd = exec.Command("kubectl", "get", "deployments",
+				"-l", "helm.sh/chart=castai-agent-"+strings.TrimSpace(versionAfterUpgrade),
+				"-n", namespace,
+				"-o", "jsonpath={range .items[*]}{.metadata.name}{end}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent deployment")
+			Expect(output).NotTo(BeEmpty(), "No castai-agent deployment found")
+
 			By("verifying component status is Available after upgrade")
 			cmd = exec.Command("kubectl", "get", "component", componentName,
 				"-n", namespace,
 				"-o", "jsonpath={.status.conditions}",
 			)
-			output, err := utils.Run(cmd)
+			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get component status")
 			Expect(output).To(ContainSubstring(`"type":"Available"`), "Component should be in Available status after upgrade")
 
