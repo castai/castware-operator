@@ -981,7 +981,9 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "spot-handler should still exist after operator uninstall")
 
 			By("verifying that cluster-controller still exists")
-			cmd = exec.Command("kubectl", "get", "deployment", "-l", "app.kubernetes.io/name=cluster-controller", "-n", namespace)
+			cmd = exec.Command("kubectl", "get", "deployment",
+				"-l", "app.kubernetes.io/name=cluster-controller",
+				"-n", namespace)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "cluster-controller should still exist after operator uninstall")
 
@@ -1139,7 +1141,79 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(output).To(ContainSubstring(`"type":"Available"`), "spot-handler component should be Available")
 		})
 
-		// TODO: onboard phase2 test
+		It("should onboard phase2", func() {
+			By("getting phase2 script")
+
+			scriptResp := struct {
+				Script string `json:"script"`
+			}{}
+			// nolint: lll
+			getPhase2URL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s/credentials-script?crossRole=true&nvidiaDevicePlugin=false&installSecurityAgent=true&installAutoscalerAgent=true&installGpuMetricsExporter=false&installNetflowExporter=false&installWorkloadAutoscaler=true&installPodMutator=false&installOmni=false",
+				apiURL, clusterID)
+			err := fetchFromAPI(getPhase2URL, http.MethodGet, &scriptResp)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get phase2 script")
+
+			cmd := exec.Command("bash", "-c", scriptResp.Script)
+			output, _ := utils.Run(cmd)
+			// Phase2 script returns an error, but it's expected because it tries to
+			// run "gcloud container clusters describe", but the cluster is not running in GKE.
+			// Checking successful install of spot-handler and cluster-controller is enough for this test.
+			Expect(output).To(ContainSubstring("cluster-controller ready with version"), "Failed to install cluster-controller")
+			Expect(output).To(ContainSubstring("spot-handler ready with version "), "Phase2 spot handler install failed")
+
+			By("verifying spot-handler component CR exists and is ready")
+			verifySpotHandlerComponent := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "component", components.ComponentNameSpotHandler,
+					"-n", namespace,
+					"-o", "jsonpath={.status.currentVersion}",
+				)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get spot-handler component CR")
+				g.Expect(output).NotTo(BeEmpty(), "spot-handler component version is not set")
+			}
+			Eventually(verifySpotHandlerComponent, 5*time.Minute).Should(Succeed())
+
+			By("verifying spot-handler component status is Available")
+			cmd = exec.Command("kubectl", "get", "component", components.ComponentNameSpotHandler,
+				"-n", namespace,
+				"-o", "jsonpath={.status.conditions}",
+			)
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get spot-handler component status")
+			Expect(output).To(ContainSubstring(`"type":"Available"`), "spot-handler component should be Available")
+
+			By("verifying spot-handler has phase2Permissions=true from helm values")
+			cmd = exec.Command("helm", "get", "values", "spot-handler", // castai-spot-handler
+				"-n", namespace,
+				"-o", "json",
+			)
+			output, err = utils.Run(cmd)
+			fmt.Println("HELM VALUES: ", output)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get spot-handler helm values")
+			Expect(output).To(ContainSubstring(`"phase2Permissions":true`),
+				"spot-handler should have phase2Permissions enabled in helm values")
+
+			By("verifying cluster-controller component CR exists and is ready")
+			verifyClusterControllerComponent := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "component", components.ComponentNameClusterController,
+					"-n", namespace,
+					"-o", "jsonpath={.status.currentVersion}",
+				)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get cluster-controller component CR")
+				g.Expect(output).NotTo(BeEmpty(), "cluster-controller component version is not set")
+			}
+			Eventually(verifyClusterControllerComponent, 5*time.Minute).Should(Succeed())
+
+			By("verifying cluster-controller component status is Available")
+			cmd = exec.Command("kubectl", "get", "component", components.ComponentNameClusterController,
+				"-n", namespace,
+				"-o", "jsonpath={.status.conditions}",
+			)
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get cluster-controller component status")
+			Expect(output).To(ContainSubstring(`"type":"Available"`), "cluster-controller component should be Available")
+		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 	})
