@@ -90,16 +90,65 @@ kind delete cluster --name castware-operator
 
 ### How to use local helm registry
 
-#### Pushing the chart to the local registry
-1. cd to the chart directory
-2. Run `helm package ./castai-castware-operator`
-3. Run `helm repo add local http://localhost:5001/helm-charts`
-4. Run `curl --data-binary "@castware-operator-[myversion].tgz" http://localhost:5001/helm-charts/api/charts` replacing
-   `[myversion]` with the version of the chart (for example 0.0.7)
-5. Run `helm repo update`
+#### 1. Deploy ChartMuseum in the cluster
 
-#### Test self upgrade from helm registry
-1. Push at least two versions to the local registry (change `version` and `appVersion` in `Chart.yaml` before running `helm package`)
-2. Install the operator from the local registry
-3. Change `helmRepoURL` in cluster CR to `http://chartmuseum.registry.svc.cluster.local:8080/helm-charts`
-4. Run self upgrade from a job manifest or an action
+```bash
+kubectl apply -f local/registry.yaml
+kubectl wait --for=condition=ready pod -l app=chartmuseum -n registry --timeout=60s
+```
+
+#### 2. Port-forward to access ChartMuseum from your machine
+
+```bash
+kubectl port-forward -n registry svc/chartmuseum 5001:8080 &
+```
+
+#### 3. Add the local repo to Helm as castai-helm
+
+```bash
+helm repo add castai-helm http://localhost:5001/helm-charts
+helm repo update
+```
+
+#### 4. Package and push local charts
+
+```bash
+cd charts
+
+# Package the chart (update version in Chart.yaml first if needed)
+helm package ./castai-castware-operator
+
+# Push to ChartMuseum
+curl --data-binary "@castware-operator-<version_number>.tgz" http://localhost:5001/helm-charts/api/charts
+
+# Verify
+curl -s http://localhost:5001/helm-charts/api/charts | jq 'keys'
+```
+
+#### 5. Mirror charts from public CAST AI repo (optional)
+
+```bash
+# Add public repo
+helm repo add castai-public https://castai.github.io/helm-charts
+helm repo update
+
+# Pull and push to local registry
+helm pull castai-public/castai-agent --version 0.127.0
+helm pull castai/castai-spot-handler --version 0.29.0
+curl --data-binary "@castai-agent-0.127.0.tgz" http://localhost:5001/helm-charts/api/charts
+curl --data-binary "@castai-spot-handler-0.29.0.tgz" http://localhost:5001/helm-charts/api/charts		
+```
+
+#### 6. Test self-upgrade
+
+1. Push at least two versions of `castware-operator` to the local registry
+2. Install the operator with the older version:
+   ```bash
+   helm upgrade --install castware-operator castai-helm/castware-operator \
+       --namespace castai-agent --create-namespace \
+       --set defaultCluster.helmRepoURL="http://chartmuseum.registry.svc.cluster.local:8080/helm-charts" \
+       --version "0.1.0"
+       (...)
+   ```
+3. The operator will use the in-cluster URL (`chartmuseum.registry.svc.cluster.local:8080`) for self-upgrade
+4. Trigger upgrade via CAST AI action or manually update the Cluster CR
