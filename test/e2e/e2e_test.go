@@ -1188,7 +1188,6 @@ var _ = Describe("Manager", Ordered, func() {
 				"-o", "json",
 			)
 			output, err = utils.Run(cmd)
-			fmt.Println("HELM VALUES: ", output)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get spot-handler helm values")
 			Expect(output).To(ContainSubstring(`"phase2Permissions":true`),
 				"spot-handler should have phase2Permissions enabled in helm values")
