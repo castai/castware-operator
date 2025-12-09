@@ -1213,7 +1213,6 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "Failed to get cluster-controller component status")
 			Expect(output).To(ContainSubstring(`"type":"Available"`), "cluster-controller component should be Available")
 		})
-
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 	})
 })
