@@ -393,7 +393,7 @@ func (r *ClusterReconciler) handleComponentTerraformMigration(
 		default:
 			// Write mode (or empty/default) - must detect version from existing installation
 			log.Info("Write mode: detecting version from existing installation")
-			existingVersion, err := r.detectComponentVersion(ctx, log, castaiClient, cluster, component.Spec.Component)
+			existingVersion, err := r.detectComponentVersion(ctx, log, castaiClient, cluster, component.Labels[castwarev1alpha1.LabeReleaseName], component.Name)
 			if err != nil {
 				log.WithError(err).Warn("Failed to detect component version")
 			}
@@ -443,7 +443,11 @@ func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, castaiCl
 		if components.RequiresExtendedPermissions(component) {
 			continue
 		}
-		reconcileComponent, err := r.scanExistingComponent(ctx, castaiClient, cluster, component)
+		mothershipComponent, err := castaiClient.GetComponentByName(ctx, component)
+		if err != nil {
+			return false, err
+		}
+		reconcileComponent, err := r.scanExistingComponent(ctx, castaiClient, cluster, mothershipComponent.ReleaseName, component)
 		if err != nil {
 			return false, err
 		}
@@ -466,8 +470,13 @@ func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, castaiCl
 				continue
 			}
 
+			mothershipComponent, err := castaiClient.GetComponentByName(ctx, component)
+			if err != nil {
+				return false, err
+			}
+
 			// Scan for cluster controller
-			reconcileComponent, err := r.scanExistingComponent(ctx, castaiClient, cluster, component)
+			reconcileComponent, err := r.scanExistingComponent(ctx, castaiClient, cluster, mothershipComponent.ReleaseName, component)
 			if err != nil {
 				return false, err
 			}
@@ -482,7 +491,7 @@ func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, castaiCl
 
 // scanExistingComponent Checks if helm release or deployment exist for a given component, and if they do but
 // there is no corresponding component CR, it creates the component CR with migration parameter configured accordingly.
-func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, castaiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, componentName string) (reconcile bool, err error) {
+func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, castaiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, releaseName, componentName string) (reconcile bool, err error) {
 	log := r.Log
 
 	component := &castwarev1alpha1.Component{}
@@ -496,7 +505,7 @@ func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, castaiCli
 		return false, err
 	}
 
-	compVersion, err := r.detectComponentVersion(ctx, log, castaiClient, cluster, componentName)
+	compVersion, err := r.detectComponentVersion(ctx, log, castaiClient, cluster, releaseName, componentName)
 	if err != nil {
 		return false, err
 	}
@@ -521,10 +530,10 @@ func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, castaiCli
 	return true, nil
 }
 
-func (r *ClusterReconciler) detectComponentVersion(ctx context.Context, log logrus.FieldLogger, castaiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, componentName string) (*existingComponentVersion, error) {
-	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+func (r *ClusterReconciler) detectComponentVersion(ctx context.Context, log logrus.FieldLogger, castaiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, releaseName, componentName string) (*existingComponentVersion, error) {
+	agentRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   cluster.Namespace,
-		ReleaseName: componentName,
+		ReleaseName: releaseName,
 	})
 
 	if err == nil {
@@ -842,7 +851,7 @@ func (r *ClusterReconciler) handleRollback(ctx context.Context, cluster *castwar
 
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
-		ReleaseName: getReleaseName(component),
+		ReleaseName: component.Labels[castwarev1alpha1.LabeReleaseName],
 	})
 	if err != nil {
 		log.WithError(err).Error("Failed to get helm release")

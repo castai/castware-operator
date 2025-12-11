@@ -836,6 +836,7 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 		testComponent.Spec.Cluster = testCluster.Name
 		testComponent.Status.CurrentVersion = "v0.1.0"
 		testComponent.Spec.Version = "v0.1.0"
+		testComponent.Labels = map[string]string{castwarev1alpha1.LabeReleaseName: "castai-spot-handler"}
 		meta.SetStatusCondition(&testComponent.Status.Conditions, metav1.Condition{
 			Type:   typeAvailableComponent,
 			Status: metav1.ConditionTrue,
@@ -875,7 +876,7 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 			Namespace:   testComponent.Namespace,
-			ReleaseName: testComponent.Spec.Component,
+			ReleaseName: testComponent.Labels[castwarev1alpha1.LabeReleaseName],
 		}).Return(&release.Release{
 			Name: testComponent.Spec.Component,
 			Chart: &chart.Chart{

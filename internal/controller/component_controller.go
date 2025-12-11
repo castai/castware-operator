@@ -501,6 +501,7 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 		Namespace:   component.Namespace,
 		ReleaseName: getReleaseName(component),
 	})
+
 	// If release is not found we install it, otherwise we just set status as progressing and wait for completion.
 	// This could happen if we start to install but fail to set progressing
 	// status condition (for example because the operator is restarted).

@@ -839,7 +839,7 @@ func TestScanExistingComponent(t *testing.T) {
 		}
 		testOps := newClusterTestOps(t, cluster, component)
 
-		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "test-component")
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "release-name", "test-component")
 		r.NoError(err)
 		r.False(reconcile)
 	})
@@ -877,9 +877,9 @@ func TestScanExistingComponent(t *testing.T) {
 
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 			Namespace:   cluster.Namespace,
-			ReleaseName: "test-component",
+			ReleaseName: "release-name",
 		}).Return(&release.Release{
-			Name: "test-component",
+			Name: "release-name",
 			Chart: &chart.Chart{
 				Metadata: &chart.Metadata{
 					Version: "1.2.3",
@@ -888,7 +888,7 @@ func TestScanExistingComponent(t *testing.T) {
 			Config: helmValues,
 		}, nil)
 
-		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "test-component")
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "release-name", "test-component")
 		r.NoError(err)
 		r.True(reconcile)
 
@@ -1307,7 +1307,7 @@ func TestSyncTerraformComponents(t *testing.T) {
 			ReleaseName: "castai-agent",
 		}).Return(nil, driver.ErrReleaseNotFound)
 
-		mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameAgent).Return(&castai.Component{HelmChart: components.ComponentNameAgent}, nil)
+		mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameAgent).Return(&castai.Component{HelmChart: components.ComponentNameAgent, ReleaseName: "castai-agent"}, nil)
 
 		reconcile, err := testOps.sut.syncTerraformComponents(ctx, mockClient, cluster)
 		r.NoError(err)
@@ -1392,7 +1392,7 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 			Config: helmValues,
 		}, nil)
 
-		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "spot-handler")
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "castai-spot-handler", "spot-handler")
 		r.NoError(err)
 		r.True(reconcile)
 
@@ -1453,7 +1453,7 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 		mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
 			Return(&castai.Component{HelmChart: helmReleaseNameSpotHandler}, nil)
 
-		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "spot-handler")
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "castai-spot-handler", "spot-handler")
 		r.NoError(err)
 		r.True(reconcile)
 
@@ -1506,7 +1506,7 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 		mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
 			Return(&castai.Component{HelmChart: helmReleaseNameSpotHandler}, nil)
 
-		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "spot-handler")
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "castai-spot-handler", "spot-handler")
 		r.NoError(err)
 		r.True(reconcile)
 
@@ -1547,7 +1547,7 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 		mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
 			Return(&castai.Component{HelmChart: helmReleaseNameSpotHandler}, nil)
 
-		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "spot-handler")
+		reconcile, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "castai-spot-handler", "spot-handler")
 		r.NoError(err)
 		r.False(reconcile)
 
