@@ -1231,6 +1231,7 @@ func TestSyncTerraformComponents(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "castai-agent",
 				Namespace: cluster.Namespace,
+				Labels:    map[string]string{castwarev1alpha1.LabeReleaseName: "castai-agent"},
 			},
 			Spec: castwarev1alpha1.ComponentSpec{
 				Component: "castai-agent",
@@ -1291,6 +1292,7 @@ func TestSyncTerraformComponents(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "castai-agent",
 				Namespace: cluster.Namespace,
+				Labels:    map[string]string{castwarev1alpha1.LabeReleaseName: "castai-agent"},
 			},
 			Spec: castwarev1alpha1.ComponentSpec{
 				Component: "castai-agent",
@@ -1360,6 +1362,7 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-cluster",
 				Namespace: "test-namespace",
+				Labels:    map[string]string{castwarev1alpha1.LabeReleaseName: "castai-spot-handler"},
 			},
 			Spec: castwarev1alpha1.ClusterSpec{
 				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
@@ -1381,7 +1384,7 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 			Namespace:   cluster.Namespace,
-			ReleaseName: "spot-handler",
+			ReleaseName: "castai-spot-handler",
 		}).Return(&release.Release{
 			Name: "spot-handler",
 			Chart: &chart.Chart{
@@ -1437,8 +1440,9 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 				Name:      "castai-spot-handler",
 				Namespace: "test-namespace",
 				Labels: map[string]string{
-					"app.kubernetes.io/name": "castai-spot-handler",
-					"helm.sh/chart":          "castai-spot-handler-2.5.0",
+					"app.kubernetes.io/name":         "castai-spot-handler",
+					"helm.sh/chart":                  "castai-spot-handler-2.5.0",
+					castwarev1alpha1.LabeReleaseName: "castai-spot-handler",
 				},
 			},
 		}
@@ -1447,7 +1451,7 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 			Namespace:   cluster.Namespace,
-			ReleaseName: "spot-handler",
+			ReleaseName: "castai-spot-handler",
 		}).Return(nil, driver.ErrReleaseNotFound)
 
 		mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
@@ -1488,10 +1492,11 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 
 		daemonSet := &appsv1.DaemonSet{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "castai-spot-handler",
+				Name:      "spot-handler",
 				Namespace: "test-namespace",
 				Labels: map[string]string{
-					"app.kubernetes.io/name": "castai-spot-handler",
+					"app.kubernetes.io/name":         "castai-spot-handler",
+					castwarev1alpha1.LabeReleaseName: "castai-spot-handler",
 				},
 			},
 		}
@@ -1500,7 +1505,7 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 			Namespace:   cluster.Namespace,
-			ReleaseName: "spot-handler",
+			ReleaseName: "castai-spot-handler",
 		}).Return(nil, driver.ErrReleaseNotFound)
 
 		mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
@@ -1541,7 +1546,7 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 			Namespace:   cluster.Namespace,
-			ReleaseName: "spot-handler",
+			ReleaseName: "castai-spot-handler",
 		}).Return(nil, driver.ErrReleaseNotFound)
 
 		mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
@@ -1574,6 +1579,7 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "spot-handler",
 				Namespace: cluster.Namespace,
+				Labels:    map[string]string{castwarev1alpha1.LabeReleaseName: "castai-spot-handler"},
 			},
 			Spec: castwarev1alpha1.ComponentSpec{
 				Component: "spot-handler",
@@ -1593,7 +1599,7 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 			Namespace:   cluster.Namespace,
-			ReleaseName: "spot-handler",
+			ReleaseName: "castai-spot-handler",
 		}).Return(&release.Release{
 			Name: "spot-handler",
 			Chart: &chart.Chart{
@@ -1636,6 +1642,7 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "spot-handler",
 				Namespace: cluster.Namespace,
+				Labels:    map[string]string{castwarev1alpha1.LabeReleaseName: "castai-spot-handler"},
 			},
 			Spec: castwarev1alpha1.ComponentSpec{
 				Component: "spot-handler",
@@ -1650,8 +1657,9 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 				Name:      "castai-spot-handler",
 				Namespace: cluster.Namespace,
 				Labels: map[string]string{
-					"app.kubernetes.io/name": "castai-spot-handler",
-					"helm.sh/chart":          "castai-spot-handler-2.3.0",
+					"app.kubernetes.io/name":         "castai-spot-handler",
+					"helm.sh/chart":                  "castai-spot-handler-2.3.0",
+					castwarev1alpha1.LabeReleaseName: "castai-spot-handler",
 				},
 			},
 		}
@@ -1660,7 +1668,7 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 			Namespace:   cluster.Namespace,
-			ReleaseName: "spot-handler",
+			ReleaseName: "castai-spot-handler",
 		}).Return(nil, driver.ErrReleaseNotFound)
 
 		mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
@@ -1692,6 +1700,7 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "castai-agent",
 				Namespace: cluster.Namespace,
+				Labels:    map[string]string{castwarev1alpha1.LabeReleaseName: "castai-agent"},
 			},
 			Spec: castwarev1alpha1.ComponentSpec{
 				Component: "castai-agent",
@@ -1705,6 +1714,7 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "spot-handler",
 				Namespace: cluster.Namespace,
+				Labels:    map[string]string{castwarev1alpha1.LabeReleaseName: "castai-spot-handler"},
 			},
 			Spec: castwarev1alpha1.ComponentSpec{
 				Component: "spot-handler",
@@ -1731,7 +1741,7 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 			Namespace:   cluster.Namespace,
-			ReleaseName: "spot-handler",
+			ReleaseName: "castai-spot-handler",
 		}).Return(&release.Release{
 			Name: "spot-handler",
 			Chart: &chart.Chart{

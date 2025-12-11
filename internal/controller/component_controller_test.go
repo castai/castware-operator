@@ -74,6 +74,7 @@ func TestReconcile(t *testing.T) {
 			testCluster := newTestCluster(t, uuid.NewString(), true)
 			testComponent := newTestComponent(t, testCluster.Name, "test-component")
 			testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
+			testComponent.Labels = map[string]string{castwarev1alpha1.LabeReleaseName: "release-name"}
 
 			testOps := newComponentTestOps(t, testCluster, testComponent)
 
@@ -84,7 +85,7 @@ func TestReconcile(t *testing.T) {
 
 			testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 				Namespace:   testComponent.Namespace,
-				ReleaseName: testComponent.Spec.Component,
+				ReleaseName: testComponent.Labels[castwarev1alpha1.LabeReleaseName],
 			}).Return(&release.Release{
 				Name: testComponent.Spec.Component,
 				Info: &release.Info{Status: release.StatusDeployed},
@@ -437,6 +438,7 @@ func newTestComponent(t *testing.T, clusterName, name string) *castwarev1alpha1.
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "test-namespace",
+			Labels:    map[string]string{castwarev1alpha1.LabeReleaseName: name},
 		},
 		Spec: castwarev1alpha1.ComponentSpec{
 			Component: name,
