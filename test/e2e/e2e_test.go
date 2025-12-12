@@ -1221,7 +1221,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyPhase2Permissions, 2*time.Minute).Should(Succeed())
 		})
 
-		It("should install with legacy scripts, phase2 without operator, then operator takes over with extended permissions", func() {
+		It("install with legacy scripts without operator, then operator takes over with extended permissions", func() {
 			By("uninstalling the operator")
 			cmd := exec.Command("helm", "uninstall", "castware-operator", "-n", namespace)
 			_, err := utils.Run(cmd)
@@ -1334,8 +1334,10 @@ var _ = Describe("Manager", Ordered, func() {
 			By("running phase2 script")
 			cmd = exec.Command("bash", "-c", modifiedScript)
 			output, _ = utils.Run(cmd)
-			Expect(output).To(ContainSubstring("Finished installing castai-cluster-controller"), "Failed to install cluster-controller")
-			Expect(output).To(ContainSubstring("Finished installing castai-spot-handler"), "Phase2 spot handler install failed")
+			Expect(output).To(ContainSubstring("Finished installing castai-cluster-controller"),
+				"Failed to install cluster-controller")
+			Expect(output).To(ContainSubstring("Finished installing castai-spot-handler"),
+				"Phase2 spot handler install failed")
 
 			By("verifying castai-agent deployment is ready")
 			verifyAgentDeploymentReady := func(g Gomega) {
@@ -1363,7 +1365,9 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyPodReady, 5*time.Minute).Should(Succeed())
 
 			By("verifying operator is not installed yet")
-			cmd = exec.Command("kubectl", "get", "deployment", "-l", "app.kubernetes.io/instance=castware-operator", "-n", namespace, "-o", "name")
+			cmd = exec.Command("kubectl", "get", "deployment",
+				"-l", "app.kubernetes.io/instance=castware-operator",
+				"-n", namespace, "-o", "name")
 			out, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to check for operator deployment")
 			Expect(out).To(BeEmpty(), "operator deployment should not exist yet")
