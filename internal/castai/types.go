@@ -25,6 +25,7 @@ type Component struct {
 	HelmChart     string   `json:"helmChart"`
 	Dependencies  []string `json:"dependencies"`
 	LatestVersion string   `json:"latestVersion"`
+	ReleaseName   string   `json:"releaseName"`
 }
 
 type Cluster struct {

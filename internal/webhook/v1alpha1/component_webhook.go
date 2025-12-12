@@ -99,6 +99,10 @@ func (d *ComponentCustomDefaulter) Default(ctx context.Context, obj runtime.Obje
 		component.Labels[castwarev1alpha1.LabelHelmChart] = c.HelmChart
 	}
 
+	if component.Labels[castwarev1alpha1.LabeReleaseName] == "" {
+		component.Labels[castwarev1alpha1.LabeReleaseName] = c.ReleaseName
+	}
+
 	return nil
 }
 
@@ -339,7 +343,7 @@ func (v *ComponentCustomValidator) getComponentByName(ctx context.Context, clien
 func (v *ComponentCustomValidator) validateHelmRelease(component *castwarev1alpha1.Component) error {
 	helmRelease, err := v.helmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
-		ReleaseName: component.Spec.Component,
+		ReleaseName: component.Labels[castwarev1alpha1.LabeReleaseName],
 	})
 	if err != nil {
 		return err
