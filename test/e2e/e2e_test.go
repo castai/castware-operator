@@ -760,9 +760,9 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("verifying that spot-handler daemonset is in ready state")
 			verifyPodReady := func(g Gomega) {
-				// Get pods with label app.kubernetes.io/name=spot-handler
+				// Get pods with label app.kubernetes.io/name=castai-spot-handler
 				cmd := exec.Command("kubectl", "get", "daemonsets",
-					"-l", "app.kubernetes.io/instance=spot-handler",
+					"-l", "app.kubernetes.io/instance=castai-spot-handler",
 					"-n", namespace,
 					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
 				output, err := utils.Run(cmd)
@@ -1186,16 +1186,6 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "Failed to get spot-handler component status")
 			Expect(output).To(ContainSubstring(`"type":"Available"`), "spot-handler component should be Available")
 
-			By("verifying spot-handler has phase2Permissions=true from helm values")
-			cmd = exec.Command("helm", "get", "values", "spot-handler", // castai-spot-handler
-				"-n", namespace,
-				"-o", "json",
-			)
-			output, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to get spot-handler helm values")
-			Expect(output).To(ContainSubstring(`"phase2Permissions":true`),
-				"spot-handler should have phase2Permissions enabled in helm values")
-
 			By("verifying cluster-controller component CR exists and is ready")
 			verifyClusterControllerComponent := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "component", components.ComponentNameClusterController,
@@ -1216,6 +1206,16 @@ var _ = Describe("Manager", Ordered, func() {
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get cluster-controller component status")
 			Expect(output).To(ContainSubstring(`"type":"Available"`), "cluster-controller component should be Available")
+
+			By("verifying spot-handler has phase2Permissions=true from helm values")
+			cmd = exec.Command("helm", "get", "values", "castai-spot-handler", // castai-spot-handler
+				"-n", namespace,
+				"-o", "json",
+			)
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get spot-handler helm values")
+			Expect(output).To(ContainSubstring(`"phase2Permissions":true`),
+				"spot-handler should have phase2Permissions enabled in helm values")
 		})
 
 		It("should offboard the operator and all phase2 components", func() {
