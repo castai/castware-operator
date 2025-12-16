@@ -135,7 +135,9 @@ jobs:
   e2e:
     name: E2E test
     runs-on: ubuntu-24.04
-    if: ${{ github.event_name == 'push' || github.event_name == 'release' }}
+    if: |
+      (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'HOTFIX')) ||
+      (github.event_name == 'release' && !startsWith(github.event.release.name, 'HOTFIX'))
     needs: build
     steps:
       - name: Checkout
