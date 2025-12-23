@@ -720,7 +720,7 @@ func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castware
 		return r.handleOperatorUpgrade(ctx, cluster, action)
 	}
 
-	if action.ReleaseName == ""{
+	if action.ReleaseName == "" {
 		return errors.New("release name is required for component upgrade")
 	}
 

@@ -69,8 +69,8 @@ spec:
                 description: Readonly tells the operator if the component can be modified.
                 type: boolean
               releaseName:
-                description: ReleaseName is the name used by helm during component
-                  installation.
+                description: ReleaseName is the helm release name. If empty, defaults
+                  to Component name.
                 type: string
               values:
                 description: |-
