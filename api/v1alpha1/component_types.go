@@ -55,6 +55,10 @@ type ComponentSpec struct {
 	// Readonly tells the operator if the component can be modified.
 	//+kubebuilder:default:=false
 	Readonly bool `json:"readonly,omitempty"`
+
+  // ReleaseName is the helm release name. If empty, defaults to Component name.
+  // TODO: should this value be always required?
+	ReleaseName string `json:"releaseName,omitempty"`
 }
 
 // ComponentStatus defines the observed state of Component

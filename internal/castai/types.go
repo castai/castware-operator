@@ -149,6 +149,9 @@ type ActionInstall struct {
 	// If true the component and upsert is true will be upgraded with
 	// helm flag reset-than-reuse-values instead of reuse-values.
 	ResetThenReuseValues bool `json:"resetThenReuseValues"`
+	// TODO: what about installing with a specific release name?
+	// Name used by helm during component installation.
+	// ReleaseName string `json:"releaseName"`
 }
 
 // ActionUpgrade upgrades an existing component on a cluster.
@@ -161,6 +164,8 @@ type ActionUpgrade struct {
 	ValuesOverrides map[string]string `json:"valuesOverrides"`
 	// If true the component will be upgraded with helm flag reset-than-reuse-values instead of reuse-values.
 	ResetThenReuseValues bool `json:"resetThenReuseValues"`
+	// Name used by helm during component installation.
+	ReleaseName string `json:"releaseName"`
 }
 
 // ActionRollback rolls back a component to the previously installed version.

@@ -716,7 +716,12 @@ func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castware
 
 	if action.Component == components.ComponentNameOperator {
 		log.Infof("operator upgrade action: version %s", action.Version)
+		// TODO: should we pass custom release-name on operator upgrade?
 		return r.handleOperatorUpgrade(ctx, cluster, action)
+	}
+
+	if action.ReleaseName == ""{
+		return errors.New("release name is required for component upgrade")
 	}
 
 	namespacedName := types.NamespacedName{Namespace: cluster.Namespace, Name: action.Component}
@@ -746,6 +751,7 @@ func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castware
 
 		updatedComponent := component.DeepCopy()
 		updatedComponent.Spec.Version = action.Version
+		updatedComponent.Spec.ReleaseName = action.ReleaseName
 
 		if action.ValuesOverrides != nil {
 			values, err := utils.UnflattenMap(action.ValuesOverrides)
@@ -793,7 +799,7 @@ func (r *ClusterReconciler) handleRollback(ctx context.Context, cluster *castwar
 
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
-		ReleaseName: component.Spec.Component,
+		ReleaseName: getReleaseName(component),
 	})
 	if err != nil {
 		log.WithError(err).Error("Failed to get helm release")
