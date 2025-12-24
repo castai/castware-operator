@@ -673,6 +673,7 @@ func (r *ClusterReconciler) handleInstall(ctx context.Context, cluster *castware
 				Component:            action.Component,
 				ValuesOverrides:      action.ValuesOverrides,
 				ResetThenReuseValues: action.ResetThenReuseValues,
+				ReleaseName:          getReleaseName(component),
 			}
 			return r.handleUpgrade(ctx, cluster, upgradeAction)
 		}

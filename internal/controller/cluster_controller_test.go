@@ -1,10 +1,12 @@
 package controller
 
 import (
+	"castai-agent/pkg/services/providers/gke"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -33,8 +35,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"castai-agent/pkg/services/providers/gke"
-
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 	"github.com/castai/castware-operator/internal/castai"
 	mock_castai "github.com/castai/castware-operator/internal/castai/mock"
@@ -47,9 +47,7 @@ import (
 
 var _ = Describe("Cluster Controller", func() {
 	Context("When reconciling a resource", func() {
-
 		It("should successfully reconcile the resource", func() {
-
 			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
 		})
@@ -59,7 +57,6 @@ var _ = Describe("Cluster Controller", func() {
 const helmReleaseNameSpotHandler = "castai-spot-handler"
 
 func TestPollActions(t *testing.T) {
-
 	t.Run("should poll and ack a valid action with no error", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
@@ -80,8 +77,9 @@ func TestPollActions(t *testing.T) {
 			Id:         uuid.NewString(),
 			CreateTime: &now,
 			ActionUpgrade: &castai.ActionUpgrade{
-				Component: "test-component",
-				Version:   "0.2",
+				Component:   "test-component",
+				Version:     "0.2",
+				ReleaseName: "test-release",
 			},
 		}
 
@@ -240,8 +238,9 @@ func TestPollActions(t *testing.T) {
 			Id:         uuid.NewString(),
 			CreateTime: &now,
 			ActionUpgrade: &castai.ActionUpgrade{
-				Component: "test-component",
-				Version:   "0.2",
+				Component:   "test-component",
+				Version:     "0.2",
+				ReleaseName: "test-release",
 			},
 		}
 		cluster := newTestCluster(t, clusterID, false)
@@ -279,9 +278,13 @@ func TestPollActions(t *testing.T) {
 		clusterID := uuid.NewString()
 		now := time.Now()
 		action1 := &castai.Action{
-			Id:            uuid.NewString(),
-			CreateTime:    &now,
-			ActionUpgrade: &castai.ActionUpgrade{Component: "test-component-1", Version: "0.2"},
+			Id:         uuid.NewString(),
+			CreateTime: &now,
+			ActionUpgrade: &castai.ActionUpgrade{
+				Component:   "test-component-1",
+				Version:     "0.2",
+				ReleaseName: "test-release-1",
+			},
 		}
 		action2 := &castai.Action{
 			Id:         uuid.NewString(),
@@ -290,6 +293,7 @@ func TestPollActions(t *testing.T) {
 				Component:       "test-component-2",
 				Version:         "0.2",
 				ValuesOverrides: map[string]string{"value2.test": "value2-value", "value3": "value3-value", "value1": "value1-changed"},
+				ReleaseName:     "test-release-2",
 			},
 		}
 		action3 := &castai.Action{
@@ -299,6 +303,7 @@ func TestPollActions(t *testing.T) {
 				Component:       "test-component-3",
 				Version:         "0.2",
 				ValuesOverrides: map[string]string{"value2.test": "value2-value", "value3": "value3-value"},
+				ReleaseName:     "test-release-3",
 			},
 		}
 		cluster := newTestCluster(t, clusterID, false)
@@ -474,8 +479,9 @@ func TestPollActions(t *testing.T) {
 			Id:         uuid.NewString(),
 			CreateTime: &now,
 			ActionUpgrade: &castai.ActionUpgrade{
-				Component: "test-component",
-				Version:   "0.1",
+				Component:   "test-component",
+				Version:     "0.1",
+				ReleaseName: "test-release",
 			},
 		}
 		cluster := newTestCluster(t, clusterID, false)
@@ -531,8 +537,9 @@ func TestPollActions(t *testing.T) {
 			Id:         uuid.NewString(),
 			CreateTime: &now,
 			ActionUpgrade: &castai.ActionUpgrade{
-				Component: "test-component",
-				Version:   "0.1",
+				Component:   "test-component",
+				Version:     "0.1",
+				ReleaseName: "test-release",
 			},
 		}
 		cluster := newTestCluster(t, clusterID, false)
@@ -550,6 +557,36 @@ func TestPollActions(t *testing.T) {
 			Actions: []*castai.Action{action},
 		}, nil)
 		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, errors.New("component already up to date")).Return(nil)
+
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
+		r.NoError(err)
+	})
+
+	t.Run("should ack with error when action is upgrade and missing release name", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		now := time.Now()
+		action := &castai.Action{
+			Id:         uuid.NewString(),
+			CreateTime: &now,
+			ActionUpgrade: &castai.ActionUpgrade{
+				Component:   "test-component",
+				Version:     "0.2",
+				ReleaseName: "", // Missing release name
+			},
+		}
+		cluster := newTestCluster(t, clusterID, false)
+
+		testOps := newClusterTestOps(t, cluster)
+
+		mockClient.EXPECT().PollActions(gomock.Any(), clusterID).Return(&castai.PollActionsResponse{
+			Actions: []*castai.Action{action},
+		}, nil)
+		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, errors.New("release name is required for component upgrade")).Return(nil)
 
 		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
 		r.NoError(err)
@@ -625,7 +662,10 @@ func TestPollActions(t *testing.T) {
 				Name:      "test-component",
 				Namespace: "test-namespace",
 			},
-			Spec: castwarev1alpha1.ComponentSpec{Cluster: cluster.Name},
+			Spec: castwarev1alpha1.ComponentSpec{
+				Cluster:   cluster.Name,
+				Component: "test-component",
+			},
 		}
 
 		testOps := newClusterTestOps(t, cluster, component)
@@ -1610,7 +1650,7 @@ func newClusterTestOps(t *testing.T, objs ...client.Object) *clusterTestOps {
 		sut: &ClusterReconciler{
 			Client: c,
 			Scheme: c.Scheme(),
-			Log:    logrus.New(),
+			Log:    &logrus.Logger{Out: io.Discard},
 			Config: &config.Config{
 				RequestTimeout:  time.Second,
 				HelmReleaseName: "castware-operator",
