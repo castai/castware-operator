@@ -68,6 +68,10 @@ spec:
                 default: false
                 description: Readonly tells the operator if the component can be modified.
                 type: boolean
+              releaseName:
+                description: ReleaseName is the helm release name. If empty, defaults
+                  to Component name.
+                type: string
               values:
                 description: |-
                   Values is a free-form map of Helm values (exactly like a values.yaml block).
