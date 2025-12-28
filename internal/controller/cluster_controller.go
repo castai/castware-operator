@@ -1,6 +1,9 @@
 package controller
 
 import (
+	"castai-agent/pkg/services/providers/aks"
+	"castai-agent/pkg/services/providers/eks"
+	"castai-agent/pkg/services/providers/gke"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,9 +15,7 @@ import (
 	"time"
 
 	agentcastai "castai-agent/pkg/castai"
-	"castai-agent/pkg/services/providers/aks"
-	"castai-agent/pkg/services/providers/eks"
-	"castai-agent/pkg/services/providers/gke"
+
 	providers "castai-agent/pkg/services/providers/types"
 
 	"github.com/samber/lo"
@@ -361,7 +362,12 @@ func (r *ClusterReconciler) syncTerraformComponents(ctx context.Context, castaiC
 }
 
 // handleComponentTerraformMigration processes a Component CR with terraform migration mode
-func (r *ClusterReconciler) handleComponentTerraformMigration(ctx context.Context, castaiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, component *castwarev1alpha1.Component) (bool, error) {
+func (r *ClusterReconciler) handleComponentTerraformMigration(
+	ctx context.Context,
+	castaiClient castai.CastAIClient,
+	cluster *castwarev1alpha1.Cluster,
+	component *castwarev1alpha1.Component,
+) (bool, error) {
 	log := r.Log.WithFields(logrus.Fields{
 		"component": component.Name,
 		"migration": component.Spec.Migration,
@@ -483,7 +489,13 @@ func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, castaiCli
 	return true, nil
 }
 
-func (r *ClusterReconciler) detectComponentVersion(ctx context.Context, log logrus.FieldLogger, castaiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, componentName string) (*existingComponentVersion, error) {
+func (r *ClusterReconciler) detectComponentVersion(
+	ctx context.Context,
+	log logrus.FieldLogger,
+	castaiClient castai.CastAIClient,
+	cluster *castwarev1alpha1.Cluster,
+	componentName string,
+) (*existingComponentVersion, error) {
 	agentRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   cluster.Namespace,
 		ReleaseName: componentName,
@@ -693,6 +705,7 @@ func (r *ClusterReconciler) handleInstall(ctx context.Context, cluster *castware
 			Cluster:   cluster.Name,
 			Enabled:   true,
 			Version:   action.Version,
+			// TODO: should we pass release-name on install?
 		},
 	}
 
@@ -868,7 +881,6 @@ func (r *ClusterReconciler) getCastaiClient(ctx context.Context, cluster *castwa
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
-
 	updatePredicate := predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			log := mgr.GetLogger()
