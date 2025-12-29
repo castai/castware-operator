@@ -226,6 +226,129 @@ func TestPollActions(t *testing.T) {
 		r.NoError(err)
 	})
 
+	t.Run("should set ReleaseName from action when installing component", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		now := time.Now()
+		action := &castai.Action{
+			Id:         uuid.NewString(),
+			CreateTime: &now,
+			ActionInstall: &castai.ActionInstall{
+				Component:   "test-component",
+				Version:     "1.0.0",
+				ReleaseName: "custom-release-name",
+			},
+		}
+		cluster := newTestCluster(t, clusterID, false)
+
+		testOps := newClusterTestOps(t, cluster)
+
+		mockClient.EXPECT().PollActions(gomock.Any(), clusterID).Return(&castai.PollActionsResponse{
+			Actions: []*castai.Action{action},
+		}, nil)
+		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, nil).Return(nil)
+
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
+		r.NoError(err)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
+		r.NoError(err)
+		r.Equal("custom-release-name", actualComponent.Spec.ReleaseName, "ReleaseName should be set from action")
+		r.Equal("1.0.0", actualComponent.Spec.Version)
+	})
+
+	t.Run("should default ReleaseName to component name when not provided in install action", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		now := time.Now()
+		action := &castai.Action{
+			Id:         uuid.NewString(),
+			CreateTime: &now,
+			ActionInstall: &castai.ActionInstall{
+				Component: "test-component",
+				Version:   "1.0.0",
+				// ReleaseName not specified
+			},
+		}
+		cluster := newTestCluster(t, clusterID, false)
+
+		testOps := newClusterTestOps(t, cluster)
+
+		mockClient.EXPECT().PollActions(gomock.Any(), clusterID).Return(&castai.PollActionsResponse{
+			Actions: []*castai.Action{action},
+		}, nil)
+		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, nil).Return(nil)
+
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
+		r.NoError(err)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
+		r.NoError(err)
+		r.Equal("test-component", actualComponent.Spec.ReleaseName, "ReleaseName should default to component name")
+		r.Equal("1.0.0", actualComponent.Spec.Version)
+	})
+
+	t.Run("should set ReleaseName when installing with upsert", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		now := time.Now()
+		action := &castai.Action{
+			Id:         uuid.NewString(),
+			CreateTime: &now,
+			ActionInstall: &castai.ActionInstall{
+				Component:   "test-component",
+				Upsert:      true,
+				Version:     "0.2",
+				ReleaseName: "upsert-release-name",
+			},
+		}
+		cluster := newTestCluster(t, clusterID, false)
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-component",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ComponentSpec{
+				Cluster:     cluster.Name,
+				Component:   "test-component",
+				Version:     "0.1",
+				ReleaseName: "old-release-name",
+			},
+		}
+
+		testOps := newClusterTestOps(t, cluster, component)
+
+		mockClient.EXPECT().PollActions(gomock.Any(), clusterID).Return(&castai.PollActionsResponse{
+			Actions: []*castai.Action{action},
+		}, nil)
+		mockClient.EXPECT().AckAction(gomock.Any(), clusterID, action.Id, nil).Return(nil)
+
+		_, err := testOps.sut.pollActions(ctx, mockClient, cluster)
+		r.NoError(err)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent)
+		r.NoError(err)
+
+		// Upsert triggers upgrade path, which should update the ReleaseName
+		r.Equal("old-release-name", actualComponent.Spec.ReleaseName, "ReleaseName should be preserved from existing component during upsert upgrade")
+		r.Equal("0.2", actualComponent.Spec.Version)
+	})
+
 	t.Run("should change component CR version action is upgrade", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)

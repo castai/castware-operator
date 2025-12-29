@@ -695,17 +695,22 @@ func (r *ClusterReconciler) handleInstall(ctx context.Context, cluster *castware
 		return err
 	}
 
+	releaseName := action.ReleaseName
+	if releaseName == "" {
+		releaseName = action.Component
+	}
+
 	component = &castwarev1alpha1.Component{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: cluster.Namespace,
 			Name:      action.Component,
 		},
 		Spec: castwarev1alpha1.ComponentSpec{
-			Component: action.Component,
-			Cluster:   cluster.Name,
-			Enabled:   true,
-			Version:   action.Version,
-			// TODO: should we pass release-name on install?
+			Component:   action.Component,
+			Cluster:     cluster.Name,
+			Enabled:     true,
+			Version:     action.Version,
+			ReleaseName: releaseName,
 		},
 	}
 
