@@ -3,11 +3,13 @@ package selfupgrade
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -1343,6 +1345,130 @@ func TestRecordActionResultVersions(t *testing.T) {
 		r.Equal(castai.Action_UPGRADE, actionResult.Action, "action should be UPGRADE")
 		r.Equal("castware-operator", actionResult.ReleaseName, "release name should match")
 		r.Contains(actionResult.Message, "helm is in failed status", "error message should be populated")
+	})
+
+	t.Run("should populate desiredVersion to targetVersion correctly on failed upgrade if helm release returns error", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+
+		var actionResult, actionResultRollback castai.ComponentActionResult
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			if request.URL.Path == getByNamePath {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{
+					"id": "test-id",
+					"name": "castware-operator",
+					"helmChart": "castware-operator",
+					"dependencies": [],
+					"latestVersion": "v0.2.0"
+				}`))
+				return
+			} else if actionResultUrlRegex.MatchString(request.URL.Path) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				body, err := io.ReadAll(request.Body)
+				r.NoError(err)
+				if strings.Contains(string(body), `"ROLLBACK"`) {
+					r.NoError(json.Unmarshal(body, &actionResultRollback))
+				} else {
+					r.NoError(json.Unmarshal(body, &actionResult))
+				}
+
+				_, _ = w.Write([]byte(`{}`))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		t.Cleanup(server.Close)
+
+		testCluster := newTestCluster(t, server)
+		testOps := newTestOps(t, testCluster)
+
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-api-secret",
+				Namespace: "test-namespace",
+			},
+			Data: map[string][]byte{
+				"API_KEY": []byte("test-api-key"),
+			},
+		}
+		r.NoError(testOps.sut.Create(ctx, secret))
+
+		// initial GetRelease - version 0.1.0
+		initialRelease := createMockRelease("castware-operator", "0.1.0", "test-namespace")
+		testOps.mockHelm.EXPECT().
+			GetRelease(gomock.Any()).
+			Return(initialRelease, nil).
+			Times(1)
+
+		testOps.mockHelm.EXPECT().
+			Upgrade(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(ctx context.Context, opts helm.UpgradeOptions) (*release.Release, error) {
+				r.True(opts.DryRun)
+				return createMockRelease("castware-operator", "0.1.5", "test-namespace"), nil
+			}).
+			Times(1)
+
+		// actual upgrade - v0.1.5
+		upgradedRelease := createMockRelease("castware-operator", "0.1.5", "test-namespace")
+		upgradedRelease.Info.Status = release.StatusPendingUpgrade
+		testOps.mockHelm.EXPECT().
+			Upgrade(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(ctx context.Context, opts helm.UpgradeOptions) (*release.Release, error) {
+				r.False(opts.DryRun)
+				return nil, errors.New("failed to upgrade")
+			}).
+			Times(1)
+
+		failedRelease := createMockRelease("castware-operator", "v0.1.5", "test-namespace")
+		failedRelease.Info.Status = release.StatusFailed
+		failedRelease.Info.Description = "failed release"
+		testOps.mockHelm.EXPECT().
+			GetRelease(gomock.Any()).
+			Return(failedRelease, nil).
+			Times(1)
+
+		// rollback - should rollback to 0.1.0
+		testOps.mockHelm.EXPECT().
+			Rollback(gomock.Any()).
+			DoAndReturn(func(opts helm.RollbackOptions) error {
+				r.Equal("test-namespace", opts.Namespace)
+				r.Equal("castware-operator", opts.ReleaseName)
+				return nil
+			}).
+			Times(1)
+
+		// GetRelease after rollback - back to version 0.1.0
+		rolledBackRelease := createMockRelease("castware-operator", "0.1.0", "test-namespace")
+		rolledBackRelease.Info.Status = release.StatusDeployed
+		testOps.mockHelm.EXPECT().
+			GetRelease(gomock.Any()).
+			Return(rolledBackRelease, nil).
+			Times(1)
+
+		ctxWithTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+
+		err := testOps.sut.Run(ctxWithTimeout, "0.1.5")
+		r.Error(err)
+		r.Contains(err.Error(), "helm is in failed status")
+
+		r.Equal("0.1.0", actionResult.Version, "desiredVersion should be set to the rolled back version")
+		r.Equal("0.1.0", actionResult.CurrentVersion, "currentVersion should be the original version")
+		r.Equal(castai.Status_ERROR, actionResult.Status, "status should be ERROR")
+		r.Equal(castai.Action_UPGRADE, actionResult.Action, "action should be UPGRADE")
+		r.Equal("castware-operator", actionResult.ReleaseName, "release name should match")
+		r.Contains(actionResult.Message, "helm is in failed status", "error message should be populated")
+
+		r.Equal("0.1.0", actionResultRollback.Version, "desiredVersion should be set to the rolled back version")
+		r.Equal("0.1.5", actionResultRollback.CurrentVersion, "currentVersion should be the original version")
+		r.Equal(castai.Status_OK, actionResultRollback.Status, "status should be ERROR")
+		r.Equal(castai.Action_ROLLBACK, actionResultRollback.Action, "action should be UPGRADE")
+		r.Equal("castware-operator", actionResultRollback.ReleaseName, "release name should match")
+		r.Empty(actionResultRollback.Message)
 	})
 }
 
