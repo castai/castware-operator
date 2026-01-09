@@ -40,15 +40,40 @@ kubectl get mutatingwebhookconfigurations -o yaml | grep -A 50 "castware" > "$OU
 kubectl get clusterrole castware-operator-crd-upgrade -o yaml > "$OUTPUT_DIR/operator-crd-upgrade-role.yaml" 2>&1 || echo "CRD upgrade role not found"
 
 echo "=== Collecting RBAC Information ==="
+# Operator ServiceAccounts
 kubectl get serviceaccount -n castai-agent castware-operator-controller-manager -o yaml > "$OUTPUT_DIR/operator-serviceaccount-controller.yaml" 2>&1
 kubectl get serviceaccount -n castai-agent castware-operator-crd-upgrade -o yaml > "$OUTPUT_DIR/operator-serviceaccount-crd-upgrade.yaml" 2>&1
+
+# All Roles and RoleBindings in castai-agent namespace (includes all components)
 kubectl get role,rolebinding -n castai-agent -o yaml > "$OUTPUT_DIR/operator-rbac-namespace.yaml" 2>&1
-kubectl get clusterrole -o name | grep castware-operator | xargs -I {} kubectl get {} -o yaml > "$OUTPUT_DIR/operator-clusterroles.yaml" 2>&1
-kubectl get clusterrolebinding -o name | grep castware-operator | xargs -I {} kubectl get {} -o yaml > "$OUTPUT_DIR/operator-clusterrolebindings.yaml" 2>&1
+
+# Collect ALL CAST AI ClusterRoles (operator + all managed components)
+kubectl get clusterrole -o name | grep -E "castware-operator|castai-" | xargs -I {} kubectl get {} -o yaml > "$OUTPUT_DIR/operator-clusterroles.yaml" 2>&1
+kubectl get clusterrolebinding -o name | grep -E "castware-operator|castai-" | xargs -I {} kubectl get {} -o yaml > "$OUTPUT_DIR/operator-clusterrolebindings.yaml" 2>&1
+
+# Operator-specific ClusterRoles (backward compatibility with existing names)
 kubectl get clusterrole castware-operator-crd-upgrade -o yaml > "$OUTPUT_DIR/operator-crd-upgrade-role.yaml" 2>&1 || echo "CRD upgrade role not found" > "$OUTPUT_DIR/operator-crd-upgrade-role.yaml"
 kubectl get clusterrolebinding castware-operator-crd-upgrade -o yaml > "$OUTPUT_DIR/operator-crd-upgrade-rolebinding.yaml" 2>&1 || echo "CRD upgrade rolebinding not found" > "$OUTPUT_DIR/operator-crd-upgrade-rolebinding.yaml"
 kubectl get clusterrole castware-operator-manager-role -o yaml > "$OUTPUT_DIR/operator-manager-role.yaml" 2>&1 || echo "Manager role not found" > "$OUTPUT_DIR/operator-manager-role.yaml"
 kubectl get clusterrolebinding castware-operator-manager-rolebinding -o yaml > "$OUTPUT_DIR/operator-manager-rolebinding.yaml" 2>&1 || echo "Manager rolebinding not found" > "$OUTPUT_DIR/operator-manager-rolebinding.yaml"
+
+# Component-specific RBAC (critical for debugging permission issues like CSU-4409)
+echo "=== Collecting Component-Specific RBAC ==="
+# cluster-controller
+kubectl get serviceaccount -n castai-agent castai-cluster-controller -o yaml > "$OUTPUT_DIR/cluster-controller-serviceaccount.yaml" 2>&1 || echo "ServiceAccount not found" > "$OUTPUT_DIR/cluster-controller-serviceaccount.yaml"
+kubectl get clusterrole castai-cluster-controller -o yaml > "$OUTPUT_DIR/cluster-controller-clusterrole.yaml" 2>&1 || echo "ClusterRole not found" > "$OUTPUT_DIR/cluster-controller-clusterrole.yaml"
+kubectl get clusterrole castai-cluster-controller-ext -o yaml > "$OUTPUT_DIR/cluster-controller-clusterrole-ext.yaml" 2>&1 || echo "Extended ClusterRole not found" > "$OUTPUT_DIR/cluster-controller-clusterrole-ext.yaml"
+kubectl get clusterrolebinding castai-cluster-controller -o yaml > "$OUTPUT_DIR/cluster-controller-clusterrolebinding.yaml" 2>&1 || echo "ClusterRoleBinding not found" > "$OUTPUT_DIR/cluster-controller-clusterrolebinding.yaml"
+
+# castai-agent
+kubectl get serviceaccount -n castai-agent castai-agent -o yaml > "$OUTPUT_DIR/agent-serviceaccount.yaml" 2>&1 || echo "ServiceAccount not found" > "$OUTPUT_DIR/agent-serviceaccount.yaml"
+kubectl get clusterrole castai-agent -o yaml > "$OUTPUT_DIR/agent-clusterrole.yaml" 2>&1 || echo "ClusterRole not found" > "$OUTPUT_DIR/agent-clusterrole.yaml"
+kubectl get clusterrolebinding castai-agent -o yaml > "$OUTPUT_DIR/agent-clusterrolebinding.yaml" 2>&1 || echo "ClusterRoleBinding not found" > "$OUTPUT_DIR/agent-clusterrolebinding.yaml"
+
+# spot-handler
+kubectl get serviceaccount -n castai-agent castai-spot-handler -o yaml > "$OUTPUT_DIR/spot-handler-serviceaccount.yaml" 2>&1 || echo "ServiceAccount not found" > "$OUTPUT_DIR/spot-handler-serviceaccount.yaml"
+kubectl get clusterrole castai-spot-handler -o yaml > "$OUTPUT_DIR/spot-handler-clusterrole.yaml" 2>&1 || echo "ClusterRole not found" > "$OUTPUT_DIR/spot-handler-clusterrole.yaml"
+kubectl get clusterrolebinding castai-spot-handler -o yaml > "$OUTPUT_DIR/spot-handler-clusterrolebinding.yaml" 2>&1 || echo "ClusterRoleBinding not found" > "$OUTPUT_DIR/spot-handler-clusterrolebinding.yaml"
 
 # Helm Release Information
 echo "=== Collecting Helm Release Information ==="
