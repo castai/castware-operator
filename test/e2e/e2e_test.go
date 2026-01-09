@@ -1360,7 +1360,8 @@ var _ = Describe("Manager", Ordered, func() {
 			// Phase2 script returns an error, but it's expected because it tries to
 			// run "gcloud container clusters describe", but the cluster is not running in GKE.
 			// Checking successful install of spot-handler and cluster-controller is enough for this test.
-			Expect(output).To(ContainSubstring("Finished installing castai-cluster-controller"), "Failed to install cluster-controller")
+			Expect(output).To(ContainSubstring("Finished installing castai-cluster-controller"),
+				"Failed to install cluster-controller")
 		})
 
 		It("should install the operator with extended permissions and take over cluster controller", func() {
@@ -1531,6 +1532,7 @@ func deleteClusterRoleResourcesWithAnnotation() error {
 	annotation := "meta.helm.sh/release-namespace=castai-agent"
 
 	// Delete ClusterRoles with the annotation
+	// nolint: lll
 	cmd := exec.Command("kubectl", "get", "clusterroles",
 		"-o", "jsonpath={range .items[?(@.metadata.annotations.meta\\.helm\\.sh/release-namespace=='castai-agent')]}{.metadata.name}{'\\n'}{end}")
 	output, err := utils.Run(cmd)
@@ -1549,6 +1551,7 @@ func deleteClusterRoleResourcesWithAnnotation() error {
 	}
 
 	// Delete ClusterRoleBindings with the annotation
+	// nolint: lll
 	cmd = exec.Command("kubectl", "get", "clusterrolebindings",
 		"-o", "jsonpath={range .items[?(@.metadata.annotations.meta\\.helm\\.sh/release-namespace=='castai-agent')]}{.metadata.name}{'\\n'}{end}")
 	output, err = utils.Run(cmd)
