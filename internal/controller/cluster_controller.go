@@ -440,13 +440,13 @@ func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, castaiCl
 		return false, err
 	}
 
+	if reconcileAgent || reconcileSpotHandler {
+		return true, nil
+	}
+
 	extendedPermsExist, err := rolebindings.CheckExtendedPermissionsExist(ctx, r.Client, cluster.Namespace)
 	if err != nil {
 		return false, fmt.Errorf("failed to check extended permissions: %w", err)
-	}
-
-	if reconcileAgent || reconcileSpotHandler {
-		return true, nil
 	}
 
 	if extendedPermsExist {
