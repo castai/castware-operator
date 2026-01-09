@@ -47,7 +47,7 @@ kubectl get serviceaccount -n castai-agent castware-operator-crd-upgrade -o yaml
 # All Roles and RoleBindings in castai-agent namespace (includes all components)
 kubectl get role,rolebinding -n castai-agent -o yaml > "$OUTPUT_DIR/operator-rbac-namespace.yaml" 2>&1
 
-# Collect ALL CAST AI ClusterRoles (operator + all managed components)
+# Collect ALL CAST AI ClusterRoles (operator + all managed components, including phase2 variants)
 kubectl get clusterrole -o name | grep -E "castware-operator|castai-" | xargs -I {} kubectl get {} -o yaml > "$OUTPUT_DIR/operator-clusterroles.yaml" 2>&1
 kubectl get clusterrolebinding -o name | grep -E "castware-operator|castai-" | xargs -I {} kubectl get {} -o yaml > "$OUTPUT_DIR/operator-clusterrolebindings.yaml" 2>&1
 
@@ -70,10 +70,13 @@ kubectl get serviceaccount -n castai-agent castai-agent -o yaml > "$OUTPUT_DIR/a
 kubectl get clusterrole castai-agent -o yaml > "$OUTPUT_DIR/agent-clusterrole.yaml" 2>&1 || echo "ClusterRole not found" > "$OUTPUT_DIR/agent-clusterrole.yaml"
 kubectl get clusterrolebinding castai-agent -o yaml > "$OUTPUT_DIR/agent-clusterrolebinding.yaml" 2>&1 || echo "ClusterRoleBinding not found" > "$OUTPUT_DIR/agent-clusterrolebinding.yaml"
 
-# spot-handler
+# spot-handler (including phase2 RBAC if extended permissions enabled)
 kubectl get serviceaccount -n castai-agent castai-spot-handler -o yaml > "$OUTPUT_DIR/spot-handler-serviceaccount.yaml" 2>&1 || echo "ServiceAccount not found" > "$OUTPUT_DIR/spot-handler-serviceaccount.yaml"
 kubectl get clusterrole castai-spot-handler -o yaml > "$OUTPUT_DIR/spot-handler-clusterrole.yaml" 2>&1 || echo "ClusterRole not found" > "$OUTPUT_DIR/spot-handler-clusterrole.yaml"
 kubectl get clusterrolebinding castai-spot-handler -o yaml > "$OUTPUT_DIR/spot-handler-clusterrolebinding.yaml" 2>&1 || echo "ClusterRoleBinding not found" > "$OUTPUT_DIR/spot-handler-clusterrolebinding.yaml"
+# spot-handler phase2 RBAC (created when extendedPermissions=true)
+kubectl get clusterrole castai-spot-handler-phase2 -o yaml > "$OUTPUT_DIR/spot-handler-clusterrole-phase2.yaml" 2>&1 || echo "Phase2 ClusterRole not found (expected if extendedPermissions=false)" > "$OUTPUT_DIR/spot-handler-clusterrole-phase2.yaml"
+kubectl get clusterrolebinding castai-spot-handler-phase2 -o yaml > "$OUTPUT_DIR/spot-handler-clusterrolebinding-phase2.yaml" 2>&1 || echo "Phase2 ClusterRoleBinding not found (expected if extendedPermissions=false)" > "$OUTPUT_DIR/spot-handler-clusterrolebinding-phase2.yaml"
 
 # Helm Release Information
 echo "=== Collecting Helm Release Information ==="
