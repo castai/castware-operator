@@ -748,7 +748,6 @@ func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castware
 
 	if action.Component == components.ComponentNameOperator {
 		log.Infof("operator upgrade action: version %s", action.Version)
-		// TODO: should we pass custom release-name on operator upgrade?
 		return r.handleOperatorUpgrade(ctx, cluster, action)
 	}
 

@@ -57,7 +57,6 @@ type ComponentSpec struct {
 	Readonly bool `json:"readonly,omitempty"`
 
 	// ReleaseName is the helm release name. If empty, defaults to Component name.
-	// TODO: should this value be always required?
 	ReleaseName string `json:"releaseName,omitempty"`
 }
 
