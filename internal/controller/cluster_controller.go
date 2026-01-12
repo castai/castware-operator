@@ -1,6 +1,9 @@
 package controller
 
 import (
+	"castai-agent/pkg/services/providers/aks"
+	"castai-agent/pkg/services/providers/eks"
+	"castai-agent/pkg/services/providers/gke"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,9 +15,7 @@ import (
 	"time"
 
 	agentcastai "castai-agent/pkg/castai"
-	"castai-agent/pkg/services/providers/aks"
-	"castai-agent/pkg/services/providers/eks"
-	"castai-agent/pkg/services/providers/gke"
+
 	providers "castai-agent/pkg/services/providers/types"
 
 	"github.com/castai/castware-operator/internal/rolebindings"
@@ -362,7 +363,12 @@ func (r *ClusterReconciler) syncTerraformComponents(ctx context.Context, castaiC
 }
 
 // handleComponentTerraformMigration processes a Component CR with terraform migration mode
-func (r *ClusterReconciler) handleComponentTerraformMigration(ctx context.Context, castaiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, component *castwarev1alpha1.Component) (bool, error) {
+func (r *ClusterReconciler) handleComponentTerraformMigration(
+	ctx context.Context,
+	castaiClient castai.CastAIClient,
+	cluster *castwarev1alpha1.Cluster,
+	component *castwarev1alpha1.Component,
+) (bool, error) {
 	log := r.Log.WithFields(logrus.Fields{
 		"component": component.Name,
 		"migration": component.Spec.Migration,
@@ -692,6 +698,7 @@ func (r *ClusterReconciler) handleInstall(ctx context.Context, cluster *castware
 				Component:            action.Component,
 				ValuesOverrides:      action.ValuesOverrides,
 				ResetThenReuseValues: action.ResetThenReuseValues,
+				ReleaseName:          getReleaseName(component),
 			}
 			return r.handleUpgrade(ctx, cluster, upgradeAction)
 		}
@@ -701,16 +708,22 @@ func (r *ClusterReconciler) handleInstall(ctx context.Context, cluster *castware
 		return err
 	}
 
+	releaseName := action.ReleaseName
+	if releaseName == "" {
+		releaseName = action.Component
+	}
+
 	component = &castwarev1alpha1.Component{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: cluster.Namespace,
 			Name:      action.Component,
 		},
 		Spec: castwarev1alpha1.ComponentSpec{
-			Component: action.Component,
-			Cluster:   cluster.Name,
-			Enabled:   true,
-			Version:   action.Version,
+			Component:   action.Component,
+			Cluster:     cluster.Name,
+			Enabled:     true,
+			Version:     action.Version,
+			ReleaseName: releaseName,
 		},
 	}
 
@@ -736,6 +749,10 @@ func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castware
 	if action.Component == components.ComponentNameOperator {
 		log.Infof("operator upgrade action: version %s", action.Version)
 		return r.handleOperatorUpgrade(ctx, cluster, action)
+	}
+
+	if action.ReleaseName == "" {
+		return errors.New("release name is required for component upgrade")
 	}
 
 	namespacedName := types.NamespacedName{Namespace: cluster.Namespace, Name: action.Component}
@@ -765,6 +782,7 @@ func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castware
 
 		updatedComponent := component.DeepCopy()
 		updatedComponent.Spec.Version = action.Version
+		updatedComponent.Spec.ReleaseName = action.ReleaseName
 
 		if action.ValuesOverrides != nil {
 			values, err := utils.UnflattenMap(action.ValuesOverrides)
@@ -812,7 +830,7 @@ func (r *ClusterReconciler) handleRollback(ctx context.Context, cluster *castwar
 
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
-		ReleaseName: component.Spec.Component,
+		ReleaseName: getReleaseName(component),
 	})
 	if err != nil {
 		log.WithError(err).Error("Failed to get helm release")
@@ -880,7 +898,6 @@ func (r *ClusterReconciler) getCastaiClient(ctx context.Context, cluster *castwa
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
-
 	updatePredicate := predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			log := mgr.GetLogger()

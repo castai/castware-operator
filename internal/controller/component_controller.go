@@ -139,7 +139,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if component.Spec.Readonly {
 		helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 			Namespace:   component.Namespace,
-			ReleaseName: component.Spec.Component,
+			ReleaseName: getReleaseName(component),
 		})
 		if err != nil {
 			log.WithError(err).Error("Failed to get helm release")
@@ -429,7 +429,7 @@ func (r *ComponentReconciler) deleteComponent(ctx context.Context, log logrus.Fi
 		log.Info("Uninstalling Helm release")
 		_, err := r.HelmClient.Uninstall(helm.UninstallOptions{
 			Namespace:   component.Namespace,
-			ReleaseName: component.Spec.Component,
+			ReleaseName: getReleaseName(component),
 			Wait:        true,
 			// If the helm release is not found there is nothing to uninstall,
 			// hence we can safely remove the finalizer.
@@ -499,7 +499,7 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 
 	_, err = r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
-		ReleaseName: component.Spec.Component,
+		ReleaseName: getReleaseName(component),
 	})
 	// If release is not found we install it, otherwise we just set status as progressing and wait for completion.
 	// This could happen if we start to install but fail to set progressing
@@ -518,7 +518,7 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 			},
 			Namespace:       component.Namespace,
 			CreateNamespace: false,
-			ReleaseName:     component.Spec.Component,
+			ReleaseName:     getReleaseName(component),
 			ValuesOverrides: overrides,
 			DryRun:          dryRun,
 		})
@@ -563,7 +563,7 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
-		ReleaseName: component.Spec.Component,
+		ReleaseName: getReleaseName(component),
 	})
 	if err != nil {
 		log.WithError(err).Error("Failed to get helm release")
@@ -648,7 +648,7 @@ func (r *ComponentReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
-		ReleaseName: component.Spec.Component,
+		ReleaseName: getReleaseName(component),
 	})
 	if err != nil {
 		log.WithError(err).Error("Failed to get helm release")
@@ -661,7 +661,7 @@ func (r *ComponentReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 	}
 	previousRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
-		ReleaseName: component.Spec.Component,
+		ReleaseName: getReleaseName(component),
 		Version:     helmRelease.Version - 1,
 	})
 	if err != nil {
@@ -680,7 +680,7 @@ func (r *ComponentReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 
 	err = r.HelmClient.Rollback(helm.RollbackOptions{
 		Namespace:   component.Namespace,
-		ReleaseName: component.Spec.Component,
+		ReleaseName: getReleaseName(component),
 	})
 	if err != nil {
 		log.WithError(err).Error("Failed to rollback component")
@@ -705,7 +705,7 @@ func (r *ComponentReconciler) checkHelmProgress(ctx context.Context, log logrus.
 
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
-		ReleaseName: component.Spec.Component,
+		ReleaseName: getReleaseName(component),
 	})
 	if err != nil {
 		r.recordActionResult(ctx, log, component, actionFromProgressingReason(progressingCondition.Reason), fmt.Errorf("failed to get helm release: %v", err))
@@ -825,7 +825,14 @@ func withDefaultMessage(message string) componentActionResultOption {
 	}
 }
 
-func (r *ComponentReconciler) recordActionResult(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, action castai.ActionType, actionErr error, opts ...componentActionResultOption) {
+func (r *ComponentReconciler) recordActionResult(
+	ctx context.Context,
+	log logrus.FieldLogger,
+	component *castwarev1alpha1.Component,
+	action castai.ActionType,
+	actionErr error,
+	opts ...componentActionResultOption,
+) {
 	cluster := &castwarev1alpha1.Cluster{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster)
 	if err != nil {
@@ -845,7 +852,7 @@ func (r *ComponentReconciler) recordActionResult(ctx context.Context, log logrus
 		CurrentVersion: component.Status.CurrentVersion,
 		Version:        component.Spec.Version,
 		Status:         castai.Status_OK,
-		ReleaseName:    component.Spec.Component,
+		ReleaseName:    getReleaseName(component),
 		Message:        "",
 	}
 
@@ -894,7 +901,7 @@ func (r *ComponentReconciler) checkAndUpdatePhase2Permissions(ctx context.Contex
 
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
-		ReleaseName: component.Spec.Component,
+		ReleaseName: getReleaseName(component),
 	})
 	if err != nil {
 		return false, fmt.Errorf("failed to get helm release: %w", err)
@@ -923,4 +930,11 @@ func actionFromProgressingReason(reason string) castai.ActionType {
 	default:
 		return ""
 	}
+}
+
+func getReleaseName(component *castwarev1alpha1.Component) string {
+	if component.Spec.ReleaseName != "" {
+		return component.Spec.ReleaseName
+	}
+	return component.Spec.Component // fallback to default
 }

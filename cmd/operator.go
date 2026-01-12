@@ -90,11 +90,12 @@ func runOperator(args operatorArgs) error {
 	}
 
 	logrus.StandardLogger().SetLevel(cfg.LogLevel.Level())
+	logrus.StandardLogger().SetReportCaller(true)
 	log := logrus.StandardLogger().WithField("gitCommit", version.GitCommit).WithField("version", version.Version)
 
 	castai.SetVersion(version)
 
-	controllerruntime.SetLogger(logrusr.New(log))
+	controllerruntime.SetLogger(logrusr.New(log, logrusr.WithReportCaller()))
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
