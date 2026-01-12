@@ -17,6 +17,7 @@ import (
 	"castai-agent/pkg/services/providers/gke"
 	providers "castai-agent/pkg/services/providers/types"
 
+	"github.com/castai/castware-operator/internal/rolebindings"
 	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/storage/driver"
@@ -439,7 +440,26 @@ func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, castaiCl
 		return false, err
 	}
 
-	return reconcileAgent || reconcileSpotHandler, nil
+	if reconcileAgent || reconcileSpotHandler {
+		return true, nil
+	}
+
+	extendedPermsExist, err := rolebindings.CheckExtendedPermissionsExist(ctx, r.Client, cluster.Namespace)
+	if err != nil {
+		return false, fmt.Errorf("failed to check extended permissions: %w", err)
+	}
+
+	if extendedPermsExist {
+		// Scan for cluster controller
+		reconcileClusterController, err := r.scanExistingComponent(ctx, castaiClient, cluster, components.ComponentNameClusterController)
+		if err != nil {
+			return false, err
+		}
+
+		return reconcileClusterController, nil
+	}
+
+	return false, nil
 }
 
 // scanExistingComponent Checks if helm release or deployment exist for a given component, and if they do but
