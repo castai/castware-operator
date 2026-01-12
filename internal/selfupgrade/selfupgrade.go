@@ -158,7 +158,12 @@ func (s *Service) Run(ctx context.Context, targetVersion string) error {
 			ReleaseName: getReleaseOptions.ReleaseName,
 		})
 
-		recordAction(castai.Action_ROLLBACK, desiredVersion, beforeUpdateVersion, rollbackErr)
+		if desiredVersion == "" {
+			recordAction(castai.Action_ROLLBACK, targetVersion, beforeUpdateVersion, rollbackErr)
+		} else {
+			recordAction(castai.Action_ROLLBACK, desiredVersion, beforeUpdateVersion, rollbackErr)
+		}
+
 		if rollbackErr != nil {
 			err = errors.Join(err, rollbackErr)
 			log.WithError(rollbackErr).Error("Rollback failed")
