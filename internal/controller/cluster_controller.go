@@ -504,15 +504,15 @@ func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, castaiCli
 }
 
 func (r *ClusterReconciler) detectComponentVersion(ctx context.Context, log logrus.FieldLogger, castaiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, componentName string) (*existingComponentVersion, error) {
-	agentRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   cluster.Namespace,
 		ReleaseName: componentName,
 	})
 
 	if err == nil {
 		return &existingComponentVersion{
-			Version:         agentRelease.Chart.Metadata.Version,
-			ComponentConfig: agentRelease.Config,
+			Version:         helmRelease.Chart.Metadata.Version,
+			ComponentConfig: helmRelease.Config,
 			MigrationMode:   castwarev1alpha1.ComponentMigrationHelm,
 		}, nil
 	}
@@ -523,8 +523,7 @@ func (r *ClusterReconciler) detectComponentVersion(ctx context.Context, log logr
 		return nil, err
 	}
 
-	// TODO: here use components.IsSupported once we test for cluster-controller as well https://castai.atlassian.net/browse/WIRE-1905
-	if componentName != components.ComponentNameAgent && componentName != components.ComponentNameSpotHandler {
+	if !components.IsSupported(componentName) {
 		log.Debugf("Component %s not found, and YAML migration is not supported for this component", componentName)
 		return nil, nil
 	}
@@ -535,7 +534,7 @@ func (r *ClusterReconciler) detectComponentVersion(ctx context.Context, log logr
 	}
 
 	switch componentName {
-	case components.ComponentNameAgent:
+	case components.ComponentNameAgent, components.ComponentNameClusterController:
 		var deploymentList appsv1.DeploymentList
 		err = r.List(ctx, &deploymentList, &client.ListOptions{
 			Namespace:     cluster.Namespace,
