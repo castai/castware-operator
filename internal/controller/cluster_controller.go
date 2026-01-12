@@ -325,21 +325,13 @@ func (r *ClusterReconciler) syncTerraformComponents(ctx context.Context, castaiC
 
 	log := r.Log.WithField("action", "sync-terraform-components")
 
-	// TODO: in components package create this var and use it from there after cluster-controller is checked and it also works
-	// https://castai.atlassian.net/browse/WIRE-1904
-	supportedComponents := []string{
-		components.ComponentNameAgent,
-		components.ComponentNameSpotHandler,
-		components.ComponentNameClusterController,
-	}
-
 	extendedPermsExist, err := rolebindings.CheckExtendedPermissionsExist(ctx, r.Client, cluster.Namespace)
 	if err != nil {
 		return false, fmt.Errorf("failed to check extended permissions: %w", err)
 	}
 
 	reconcileNeeded := false
-	for _, componentName := range supportedComponents {
+	for _, componentName := range components.SupportedComponents {
 		component := &castwarev1alpha1.Component{}
 		err := r.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: componentName}, component)
 		if err != nil {

@@ -9,6 +9,12 @@ const (
 	ComponentNameSpotHandler       = "spot-handler"
 )
 
+var SupportedComponents = []string{
+	ComponentNameAgent,
+	ComponentNameClusterController,
+	ComponentNameSpotHandler,
+}
+
 func IsSupported(name string) bool {
 	// List of supported components
 	supportedComponents := []string{
