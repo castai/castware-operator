@@ -330,7 +330,14 @@ func (r *ClusterReconciler) syncTerraformComponents(ctx context.Context, castaiC
 	supportedComponents := []string{
 		components.ComponentNameAgent,
 		components.ComponentNameSpotHandler,
+		components.ComponentNameClusterController,
 	}
+
+	extendedPermsExist, err := rolebindings.CheckExtendedPermissionsExist(ctx, r.Client, cluster.Namespace)
+	if err != nil {
+		return false, fmt.Errorf("failed to check extended permissions: %w", err)
+	}
+
 	reconcileNeeded := false
 	for _, componentName := range supportedComponents {
 		component := &castwarev1alpha1.Component{}
@@ -348,6 +355,10 @@ func (r *ClusterReconciler) syncTerraformComponents(ctx context.Context, castaiC
 		// Component CR exists, check if it needs terraform migration handling
 		if component.IsInitiliazedByTerraform() {
 			log.Infof("Processing terraform migration for component %s", componentName)
+			if components.RequiresExtendedPermissions(componentName) && !extendedPermsExist {
+				log.Warnf("Component %s requires extended permissions, but extendedPermissions flag is not enabled, skipping", componentName)
+				continue
+			}
 			needsReconcile, err := r.handleComponentTerraformMigration(ctx, castaiClient, cluster, component)
 			if err != nil {
 				return reconcileNeeded, err
