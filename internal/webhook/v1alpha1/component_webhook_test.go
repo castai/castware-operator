@@ -25,7 +25,10 @@ import (
 	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
 )
 
-const componentVersion = "1.5.0"
+const (
+	componentVersion = "1.5.0"
+	releaseName      = "release-name"
+)
 
 var _ = Describe("Component Webhook", func() {
 	const (
@@ -269,6 +272,7 @@ var _ = Describe("Component Webhook", func() {
 			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
 			obj.Spec.Component = componentName
 			obj.Spec.Cluster = clusterName
+			obj.Spec.ReleaseName = releaseName
 			obj.SetNamespace("default")
 			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
 				RepoURL: "",
@@ -277,7 +281,7 @@ var _ = Describe("Component Webhook", func() {
 			})
 			helmClient.EXPECT().GetRelease(helm.GetReleaseOptions{
 				Namespace:   obj.Namespace,
-				ReleaseName: obj.Spec.Component,
+				ReleaseName: obj.Spec.ReleaseName,
 			}).Return(nil, fmt.Errorf("helm release not found"))
 
 			_, err := validator.ValidateCreate(ctx, obj)
@@ -289,6 +293,7 @@ var _ = Describe("Component Webhook", func() {
 			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
 			obj.Spec.Component = componentName
 			obj.Spec.Cluster = clusterName
+			obj.Spec.ReleaseName = releaseName
 			obj.SetNamespace("default")
 			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
 				RepoURL: "",
@@ -297,7 +302,7 @@ var _ = Describe("Component Webhook", func() {
 			})
 			helmClient.EXPECT().GetRelease(helm.GetReleaseOptions{
 				Namespace:   obj.Namespace,
-				ReleaseName: obj.Spec.Component,
+				ReleaseName: obj.Spec.ReleaseName,
 			}).Return(&release.Release{Info: &release.Info{Status: release.StatusFailed}}, nil)
 
 			_, err := validator.ValidateCreate(ctx, obj)
@@ -329,6 +334,7 @@ var _ = Describe("Component Webhook", func() {
 			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
 			obj.Spec.Component = componentName
 			obj.Spec.Cluster = clusterName
+			obj.Spec.ReleaseName = releaseName
 			obj.SetNamespace("default")
 			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
 				RepoURL: "",
@@ -337,7 +343,7 @@ var _ = Describe("Component Webhook", func() {
 			})
 			helmClient.EXPECT().GetRelease(helm.GetReleaseOptions{
 				Namespace:   obj.Namespace,
-				ReleaseName: obj.Spec.Component,
+				ReleaseName: obj.Spec.ReleaseName,
 			}).Return(&release.Release{Info: &release.Info{Status: release.StatusDeployed}}, nil)
 
 			Expect(validator.ValidateCreate(ctx, obj)).To(BeNil())
@@ -742,6 +748,7 @@ var _ = Describe("Component Webhook", func() {
 			obj.Spec.Cluster = terraformClusterAutoupgrade
 			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
 			obj.Spec.Version = componentVersion
+			obj.Spec.ReleaseName = releaseName
 			obj.SetNamespace("default")
 
 			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
@@ -751,7 +758,7 @@ var _ = Describe("Component Webhook", func() {
 			})
 			helmClient.EXPECT().GetRelease(helm.GetReleaseOptions{
 				Namespace:   obj.Namespace,
-				ReleaseName: obj.Spec.Component,
+				ReleaseName: obj.Spec.ReleaseName,
 			}).Return(&release.Release{Info: &release.Info{Status: release.StatusDeployed}}, nil)
 
 			_, err := validator.ValidateCreate(ctx, obj)

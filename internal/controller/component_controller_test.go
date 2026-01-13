@@ -74,6 +74,7 @@ func TestReconcile(t *testing.T) {
 			testCluster := newTestCluster(t, uuid.NewString(), true)
 			testComponent := newTestComponent(t, testCluster.Name, "test-component")
 			testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
+			testComponent.Spec.ReleaseName = "release-name"
 
 			testOps := newComponentTestOps(t, testCluster, testComponent)
 
@@ -84,7 +85,7 @@ func TestReconcile(t *testing.T) {
 
 			testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 				Namespace:   testComponent.Namespace,
-				ReleaseName: testComponent.Spec.Component,
+				ReleaseName: testComponent.Spec.ReleaseName,
 			}).Return(&release.Release{
 				Name: testComponent.Spec.Component,
 				Info: &release.Info{Status: release.StatusDeployed},
@@ -439,13 +440,14 @@ func newTestComponent(t *testing.T, clusterName, name string) *castwarev1alpha1.
 			Namespace: "test-namespace",
 		},
 		Spec: castwarev1alpha1.ComponentSpec{
-			Component: name,
-			Cluster:   clusterName,
-			Enabled:   true,
-			Version:   "v0.1.1",
-			Values:    &v1.JSON{Raw: []byte(`{"value1": "value1-value", "value2": true}`)},
-			Migration: "",
-			Readonly:  false,
+			Component:   name,
+			Cluster:     clusterName,
+			Enabled:     true,
+			Version:     "v0.1.1",
+			Values:      &v1.JSON{Raw: []byte(`{"value1": "value1-value", "value2": true}`)},
+			Migration:   "",
+			Readonly:    false,
+			ReleaseName: name,
 		},
 		Status: castwarev1alpha1.ComponentStatus{},
 	}
@@ -836,6 +838,7 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 		testComponent.Spec.Cluster = testCluster.Name
 		testComponent.Status.CurrentVersion = "v0.1.0"
 		testComponent.Spec.Version = "v0.1.0"
+		testComponent.Spec.ReleaseName = "castai-spot-handler"
 		meta.SetStatusCondition(&testComponent.Status.Conditions, metav1.Condition{
 			Type:   typeAvailableComponent,
 			Status: metav1.ConditionTrue,
@@ -875,7 +878,7 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 			Namespace:   testComponent.Namespace,
-			ReleaseName: testComponent.Spec.Component,
+			ReleaseName: testComponent.Spec.ReleaseName,
 		}).Return(&release.Release{
 			Name: testComponent.Spec.Component,
 			Chart: &chart.Chart{
