@@ -430,20 +430,21 @@ func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, castaiCl
 		return false, nil
 	}
 
-	// TODO: in components package create an array and iterate it here after we test with cluster-controller as well https://castai.atlassian.net/browse/WIRE-1905
-	// Scan for agent
-	reconcileAgent, err := r.scanExistingComponent(ctx, castaiClient, cluster, components.ComponentNameAgent)
-	if err != nil {
-		return false, err
+	var reconcileNeeded bool
+
+	for _, component := range components.SupportedComponents {
+		// Migrate phase1 components first
+		if components.RequiresExtendedPermissions(component) {
+			continue
+		}
+		reconcileComponent, err := r.scanExistingComponent(ctx, castaiClient, cluster, component)
+		if err != nil {
+			return false, err
+		}
+		reconcileNeeded = reconcileNeeded || reconcileComponent
 	}
 
-	// Scan for spot-handler
-	reconcileSpotHandler, err := r.scanExistingComponent(ctx, castaiClient, cluster, components.ComponentNameSpotHandler)
-	if err != nil {
-		return false, err
-	}
-
-	if reconcileAgent || reconcileSpotHandler {
+	if reconcileNeeded {
 		return true, nil
 	}
 
@@ -453,13 +454,21 @@ func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, castaiCl
 	}
 
 	if extendedPermsExist {
-		// Scan for cluster controller
-		reconcileClusterController, err := r.scanExistingComponent(ctx, castaiClient, cluster, components.ComponentNameClusterController)
-		if err != nil {
-			return false, err
+		for _, component := range components.SupportedComponents {
+			// Migrate phase2 components
+			if !components.RequiresExtendedPermissions(component) {
+				continue
+			}
+
+			// Scan for cluster controller
+			reconcileComponent, err := r.scanExistingComponent(ctx, castaiClient, cluster, component)
+			if err != nil {
+				return false, err
+			}
+			reconcileNeeded = reconcileNeeded || reconcileComponent
 		}
 
-		return reconcileClusterController, nil
+		return reconcileNeeded, nil
 	}
 
 	return false, nil

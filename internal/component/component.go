@@ -12,8 +12,9 @@ const (
 // SupportedComponents List of supported components
 var SupportedComponents = []string{
 	ComponentNameAgent,
-	ComponentNameClusterController,
 	ComponentNameSpotHandler,
+	ComponentNameClusterController,
+	// Add new components here, phase2 components must be added after cluster controller
 }
 
 func IsSupported(name string) bool {
