@@ -393,7 +393,7 @@ func (r *ClusterReconciler) handleComponentTerraformMigration(
 		default:
 			// Write mode (or empty/default) - must detect version from existing installation
 			log.Info("Write mode: detecting version from existing installation")
-			existingVersion, err := r.detectComponentVersion(ctx, log, castaiClient, cluster, component.Labels[castwarev1alpha1.LabeReleaseName], component.Name)
+			existingVersion, err := r.detectComponentVersion(ctx, log, castaiClient, cluster, getReleaseName(component), component.Name)
 			if err != nil {
 				log.WithError(err).Warn("Failed to detect component version")
 			}
@@ -531,7 +531,7 @@ func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, castaiCli
 }
 
 func (r *ClusterReconciler) detectComponentVersion(ctx context.Context, log logrus.FieldLogger, castaiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, releaseName, componentName string) (*existingComponentVersion, error) {
-	agentRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   cluster.Namespace,
 		ReleaseName: releaseName,
 	})
@@ -851,7 +851,7 @@ func (r *ClusterReconciler) handleRollback(ctx context.Context, cluster *castwar
 
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
-		ReleaseName: component.Labels[castwarev1alpha1.LabeReleaseName],
+		ReleaseName: getReleaseName(component),
 	})
 	if err != nil {
 		log.WithError(err).Error("Failed to get helm release")

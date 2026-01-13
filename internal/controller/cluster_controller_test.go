@@ -1231,13 +1231,13 @@ func TestSyncTerraformComponents(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "castai-agent",
 				Namespace: cluster.Namespace,
-				Labels:    map[string]string{castwarev1alpha1.LabeReleaseName: "castai-agent"},
 			},
 			Spec: castwarev1alpha1.ComponentSpec{
-				Component: "castai-agent",
-				Cluster:   cluster.Name,
-				Migration: castwarev1alpha1.ComponentMigrationTerraform,
-				Version:   "",
+				Component:   "castai-agent",
+				Cluster:     cluster.Name,
+				Migration:   castwarev1alpha1.ComponentMigrationTerraform,
+				Version:     "",
+				ReleaseName: "castai-agent",
 			},
 		}
 
@@ -1292,13 +1292,13 @@ func TestSyncTerraformComponents(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "castai-agent",
 				Namespace: cluster.Namespace,
-				Labels:    map[string]string{castwarev1alpha1.LabeReleaseName: "castai-agent"},
 			},
 			Spec: castwarev1alpha1.ComponentSpec{
-				Component: "castai-agent",
-				Cluster:   cluster.Name,
-				Migration: castwarev1alpha1.ComponentMigrationTerraform,
-				Version:   "",
+				Component:   "castai-agent",
+				Cluster:     cluster.Name,
+				Migration:   castwarev1alpha1.ComponentMigrationTerraform,
+				Version:     "",
+				ReleaseName: "castai-agent",
 			},
 		}
 
@@ -1362,7 +1362,6 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-cluster",
 				Namespace: "test-namespace",
-				Labels:    map[string]string{castwarev1alpha1.LabeReleaseName: "castai-spot-handler"},
 			},
 			Spec: castwarev1alpha1.ClusterSpec{
 				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
@@ -1440,9 +1439,8 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 				Name:      "castai-spot-handler",
 				Namespace: "test-namespace",
 				Labels: map[string]string{
-					"app.kubernetes.io/name":         "castai-spot-handler",
-					"helm.sh/chart":                  "castai-spot-handler-2.5.0",
-					castwarev1alpha1.LabeReleaseName: "castai-spot-handler",
+					"app.kubernetes.io/name": "castai-spot-handler",
+					"helm.sh/chart":          "castai-spot-handler-2.5.0",
 				},
 			},
 		}
@@ -1495,8 +1493,7 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 				Name:      "spot-handler",
 				Namespace: "test-namespace",
 				Labels: map[string]string{
-					"app.kubernetes.io/name":         "castai-spot-handler",
-					castwarev1alpha1.LabeReleaseName: "castai-spot-handler",
+					"app.kubernetes.io/name": "castai-spot-handler",
 				},
 			},
 		}
@@ -1579,13 +1576,13 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "spot-handler",
 				Namespace: cluster.Namespace,
-				Labels:    map[string]string{castwarev1alpha1.LabeReleaseName: "castai-spot-handler"},
 			},
 			Spec: castwarev1alpha1.ComponentSpec{
-				Component: "spot-handler",
-				Cluster:   cluster.Name,
-				Migration: castwarev1alpha1.ComponentMigrationTerraform,
-				Version:   "",
+				Component:   "spot-handler",
+				Cluster:     cluster.Name,
+				Migration:   castwarev1alpha1.ComponentMigrationTerraform,
+				Version:     "",
+				ReleaseName: "castai-spot-handler",
 			},
 		}
 
@@ -1642,13 +1639,13 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "spot-handler",
 				Namespace: cluster.Namespace,
-				Labels:    map[string]string{castwarev1alpha1.LabeReleaseName: "castai-spot-handler"},
 			},
 			Spec: castwarev1alpha1.ComponentSpec{
-				Component: "spot-handler",
-				Cluster:   cluster.Name,
-				Migration: castwarev1alpha1.ComponentMigrationTerraform,
-				Version:   "",
+				Component:   "spot-handler",
+				Cluster:     cluster.Name,
+				Migration:   castwarev1alpha1.ComponentMigrationTerraform,
+				Version:     "",
+				ReleaseName: "castai-spot-handler",
 			},
 		}
 
@@ -1657,9 +1654,8 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 				Name:      "castai-spot-handler",
 				Namespace: cluster.Namespace,
 				Labels: map[string]string{
-					"app.kubernetes.io/name":         "castai-spot-handler",
-					"helm.sh/chart":                  "castai-spot-handler-2.3.0",
-					castwarev1alpha1.LabeReleaseName: "castai-spot-handler",
+					"app.kubernetes.io/name": "castai-spot-handler",
+					"helm.sh/chart":          "castai-spot-handler-2.3.0",
 				},
 			},
 		}
@@ -1700,13 +1696,13 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "castai-agent",
 				Namespace: cluster.Namespace,
-				Labels:    map[string]string{castwarev1alpha1.LabeReleaseName: "castai-agent"},
 			},
 			Spec: castwarev1alpha1.ComponentSpec{
-				Component: "castai-agent",
-				Cluster:   cluster.Name,
-				Migration: castwarev1alpha1.ComponentMigrationTerraform,
-				Version:   "",
+				Component:   "castai-agent",
+				Cluster:     cluster.Name,
+				Migration:   castwarev1alpha1.ComponentMigrationTerraform,
+				Version:     "",
+				ReleaseName: "castai-spot-handler",
 			},
 		}
 
@@ -1714,13 +1710,13 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "spot-handler",
 				Namespace: cluster.Namespace,
-				Labels:    map[string]string{castwarev1alpha1.LabeReleaseName: "castai-spot-handler"},
 			},
 			Spec: castwarev1alpha1.ComponentSpec{
-				Component: "spot-handler",
-				Cluster:   cluster.Name,
-				Migration: castwarev1alpha1.ComponentMigrationTerraform,
-				Version:   "",
+				Component:   "spot-handler",
+				Cluster:     cluster.Name,
+				Migration:   castwarev1alpha1.ComponentMigrationTerraform,
+				Version:     "",
+				ReleaseName: "castai-spot-handler",
 			},
 		}
 

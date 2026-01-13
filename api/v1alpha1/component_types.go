@@ -13,8 +13,7 @@ const (
 	ComponentMigrationYaml      = "yaml"
 	ComponentMigrationTerraform = "terraform"
 
-	LabelHelmChart  = "castware.cast.ai/helm-chart"
-	LabeReleaseName = "castware.cast.ai/release-name"
+	LabelHelmChart = "castware.cast.ai/helm-chart"
 )
 
 // ComponentSpec defines the desired state of Component
