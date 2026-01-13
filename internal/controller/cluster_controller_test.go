@@ -25,6 +25,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -1110,6 +1111,37 @@ func TestSyncTerraformComponents(t *testing.T) {
 		r.False(reconcile)
 	})
 
+	t.Run("should return false when component requires extended permissions that are not enabled", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+
+		cluster := newTestCluster(t, uuid.NewString(), true)
+		cluster.Spec.Terraform = true
+		cluster.Spec.MigrationMode = castwarev1alpha1.ClusterMigrationModeWrite
+
+		component := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "cluster-controller",
+				Namespace: cluster.Namespace,
+			},
+			Spec: castwarev1alpha1.ComponentSpec{
+				Component: "cluster-controller",
+				Cluster:   cluster.Name,
+				Migration: castwarev1alpha1.ComponentMigrationTerraform,
+				Version:   "",
+			},
+		}
+
+		testOps := newClusterTestOps(t, cluster, component)
+
+		reconcile, err := testOps.sut.syncTerraformComponents(ctx, mockClient, cluster)
+		r.NoError(err)
+		r.False(reconcile)
+	})
+
 	t.Run("should clear migration flag when component has version set in write mode", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
@@ -1756,6 +1788,9 @@ func newClusterTestOps(t *testing.T, objs ...client.Object) *clusterTestOps {
 	r.NoError(err)
 
 	err = appsv1.AddToScheme(scheme)
+	r.NoError(err)
+
+	err = rbacv1.AddToScheme(scheme)
 	r.NoError(err)
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).WithStatusSubresource(objs...).Build()

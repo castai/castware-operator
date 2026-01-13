@@ -9,14 +9,16 @@ const (
 	ComponentNameSpotHandler       = "spot-handler"
 )
 
+// SupportedComponents List of supported components
+var SupportedComponents = []string{
+	ComponentNameAgent,
+	ComponentNameSpotHandler,
+	ComponentNameClusterController,
+	// Add new components here, phase2 components must be added after cluster controller
+}
+
 func IsSupported(name string) bool {
-	// List of supported components
-	supportedComponents := []string{
-		ComponentNameAgent,
-		ComponentNameClusterController,
-		ComponentNameSpotHandler,
-	}
-	return lo.Contains(supportedComponents, name)
+	return lo.Contains(SupportedComponents, name)
 }
 
 func RequiresExtendedPermissions(name string) bool {
