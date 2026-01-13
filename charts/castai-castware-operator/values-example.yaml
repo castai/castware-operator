@@ -67,3 +67,8 @@ defaultComponents:
         additionalEnv:
           PPROF_PORT: "6060"
 
+# -- Used to set additional volumes.
+extraVolumes: []
+
+# -- Used to set additional volume mounts.
+extraVolumeMounts: []

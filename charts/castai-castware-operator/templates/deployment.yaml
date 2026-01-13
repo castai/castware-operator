@@ -105,6 +105,9 @@ spec:
               readOnly: true
             - mountPath: /.cache/helm
               name: helm-cache
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -124,3 +127,6 @@ spec:
         - name: helm-cache
           emptyDir:
             sizeLimit: 500Mi
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
