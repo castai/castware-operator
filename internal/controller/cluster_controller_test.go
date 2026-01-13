@@ -1702,7 +1702,7 @@ func TestSyncTerraformComponentsSpotHandler(t *testing.T) {
 				Cluster:     cluster.Name,
 				Migration:   castwarev1alpha1.ComponentMigrationTerraform,
 				Version:     "",
-				ReleaseName: "castai-spot-handler",
+				ReleaseName: "castai-agent",
 			},
 		}
 
