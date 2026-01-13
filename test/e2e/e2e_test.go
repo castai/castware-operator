@@ -30,6 +30,25 @@ const metricsServiceName = "castware-operator"
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "castware-operator-metrics-binding"
 
+// patch for castai-agent deployment to add GKE environment variables
+const patchAgentDeploymentJSON = `{
+	"spec": {
+		"template": {
+			"spec": {
+				"containers": [{
+					"name": "agent",
+					"env": [
+						{"name": "GKE_CLUSTER_NAME", "value": "castware-operator-e2e"},
+						{"name": "GKE_LOCATION", "value": "e2e"},
+						{"name": "GKE_PROJECT_ID", "value": "e2e"},
+						{"name": "GKE_REGION", "value": "e2e"}
+					]
+				}]
+			}
+		}
+	}
+}`
+
 const clusterYaml = `apiVersion: castware.cast.ai/v1alpha1
 kind: Cluster
 metadata:
@@ -1020,27 +1039,10 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(output).To(ContainSubstring("daemonset.apps/castai-spot-handler created"), "Spot handler not installed")
 
 			By("patching castai-agent deployment to add GKE environment variables")
-			patchJSON := `{
-				"spec": {
-					"template": {
-						"spec": {
-							"containers": [{
-								"name": "agent",
-								"env": [
-									{"name": "GKE_CLUSTER_NAME", "value": "castware-operator-e2e"},
-									{"name": "GKE_LOCATION", "value": "e2e"},
-									{"name": "GKE_PROJECT_ID", "value": "e2e"},
-									{"name": "GKE_REGION", "value": "e2e"}
-								]
-							}]
-						}
-					}
-				}
-			}`
 			cmd = exec.Command("kubectl", "patch", "deployment", "castai-agent",
 				"-n", namespace,
 				"--type=strategic",
-				"-p", patchJSON)
+				"-p", patchAgentDeploymentJSON)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to patch castai-agent deployment")
 
@@ -1261,27 +1263,10 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(output).To(ContainSubstring("daemonset.apps/castai-spot-handler created"), "Spot handler not installed")
 
 			By("patching castai-agent deployment to add GKE environment variables")
-			patchJSON := `{
-				"spec": {
-					"template": {
-						"spec": {
-							"containers": [{
-								"name": "agent",
-								"env": [
-									{"name": "GKE_CLUSTER_NAME", "value": "castware-operator-e2e"},
-									{"name": "GKE_LOCATION", "value": "e2e"},
-									{"name": "GKE_PROJECT_ID", "value": "e2e"},
-									{"name": "GKE_REGION", "value": "e2e"}
-								]
-							}]
-						}
-					}
-				}
-			}`
 			cmd = exec.Command("kubectl", "patch", "deployment", "castai-agent",
 				"-n", namespace,
 				"--type=strategic",
-				"-p", patchJSON)
+				"-p", patchAgentDeploymentJSON)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to patch castai-agent deployment")
 
@@ -1510,27 +1495,10 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(output).To(ContainSubstring("daemonset.apps/castai-spot-handler created"), "Spot handler not installed")
 
 			By("patching castai-agent deployment to add GKE environment variables")
-			patchJSON := `{
-				"spec": {
-					"template": {
-						"spec": {
-							"containers": [{
-								"name": "agent",
-								"env": [
-									{"name": "GKE_CLUSTER_NAME", "value": "castware-operator-e2e"},
-									{"name": "GKE_LOCATION", "value": "e2e"},
-									{"name": "GKE_PROJECT_ID", "value": "e2e"},
-									{"name": "GKE_REGION", "value": "e2e"}
-								]
-							}]
-						}
-					}
-				}
-			}`
 			cmd = exec.Command("kubectl", "patch", "deployment", "castai-agent",
 				"-n", namespace,
 				"--type=strategic",
-				"-p", patchJSON)
+				"-p", patchAgentDeploymentJSON)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to patch castai-agent deployment")
 
