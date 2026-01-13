@@ -25,7 +25,10 @@ import (
 	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
 )
 
-const componentVersion = "1.5.0"
+const (
+	componentVersion = "1.5.0"
+	releaseName      = "release-name"
+)
 
 var _ = Describe("Component Webhook", func() {
 	const (
@@ -269,7 +272,7 @@ var _ = Describe("Component Webhook", func() {
 			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
 			obj.Spec.Component = componentName
 			obj.Spec.Cluster = clusterName
-			obj.Spec.ReleaseName = "release-name"
+			obj.Spec.ReleaseName = releaseName
 			obj.SetNamespace("default")
 			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
 				RepoURL: "",
@@ -290,7 +293,7 @@ var _ = Describe("Component Webhook", func() {
 			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
 			obj.Spec.Component = componentName
 			obj.Spec.Cluster = clusterName
-			obj.Spec.ReleaseName = "release-name"
+			obj.Spec.ReleaseName = releaseName
 			obj.SetNamespace("default")
 			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
 				RepoURL: "",
@@ -331,7 +334,7 @@ var _ = Describe("Component Webhook", func() {
 			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
 			obj.Spec.Component = componentName
 			obj.Spec.Cluster = clusterName
-			obj.Spec.ReleaseName = "release-name"
+			obj.Spec.ReleaseName = releaseName
 			obj.SetNamespace("default")
 			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
 				RepoURL: "",
@@ -745,7 +748,7 @@ var _ = Describe("Component Webhook", func() {
 			obj.Spec.Cluster = terraformClusterAutoupgrade
 			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
 			obj.Spec.Version = componentVersion
-			obj.Spec.ReleaseName = "release-name"
+			obj.Spec.ReleaseName = releaseName
 			obj.SetNamespace("default")
 
 			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
