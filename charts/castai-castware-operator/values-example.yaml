@@ -51,12 +51,11 @@ defaultCluster:
 defaultComponents:
   enabled: true
   components:
-    - name: "castai-agent"
+    castai-agent:
       component: "castai-agent"
       cluster: "castai"
       enabled: true
-      version: "latest"
-      values:
+      overrides:
         replicaCount: 2
         image:
           tag: "v1.3.0"
@@ -67,3 +66,8 @@ defaultComponents:
         additionalEnv:
           PPROF_PORT: "6060"
 
+# -- Used to set additional volumes.
+extraVolumes: []
+
+# -- Used to set additional volume mounts.
+extraVolumeMounts: []

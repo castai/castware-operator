@@ -136,3 +136,8 @@ defaultComponents:
       component: "spot-handler"
       cluster: "castai"
       enabled: true
+# -- Used to set additional volumes.
+extraVolumes: []
+
+# -- Used to set additional volume mounts.
+extraVolumeMounts: []
