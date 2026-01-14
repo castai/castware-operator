@@ -56,7 +56,7 @@ defaultComponents:
       cluster: "castai"
       enabled: true
       version: "latest"
-      values:
+      overrides:
         replicaCount: 2
         image:
           tag: "v1.3.0"

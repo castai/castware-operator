@@ -19,9 +19,9 @@ spec:
   {{- if $comp.version }}
   version: {{ $comp.version | quote }}
   {{- end }}
-  {{- if $comp.values }}
+  {{- if $comp.overrides }}
   values:
-    {{- toYaml $comp.values | nindent 4 }}
+    {{- toYaml $comp.overrides | nindent 4 }}
   {{- end }}
 {{- end }}
 {{- end }}
