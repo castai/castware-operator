@@ -51,11 +51,10 @@ defaultCluster:
 defaultComponents:
   enabled: true
   components:
-    - name: "castai-agent"
+    castai-agent:
       component: "castai-agent"
       cluster: "castai"
       enabled: true
-      version: "latest"
       overrides:
         replicaCount: 2
         image:
