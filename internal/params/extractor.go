@@ -26,9 +26,9 @@ func ExtractComponentParams(
 	case components.ComponentNameOperator:
 		return extractOperatorParams(ctx, log, k8sClient, namespace)
 	case components.ComponentNameSpotHandler:
-		return extractSpotHandlerParams(log, helmRelease)
+		return extractSpotHandlerParams(helmRelease)
 	case components.ComponentNameClusterController:
-		return extractClusterControllerParams(log, helmRelease)
+		return extractClusterControllerParams(helmRelease)
 	default:
 		return make(map[string]interface{})
 	}
@@ -47,50 +47,73 @@ func extractOperatorParams(ctx context.Context, log logrus.FieldLogger, k8sClien
 	return params
 }
 
-func extractSpotHandlerParams(log logrus.FieldLogger, helmRelease *release.Release) map[string]interface{} {
+func extractSpotHandlerParams(helmRelease *release.Release) map[string]interface{} {
 	params := make(map[string]interface{})
 
-	if helmRelease == nil || helmRelease.Config == nil {
+	if helmRelease == nil {
 		return params
 	}
 
-	if phase2, ok := helmRelease.Config["phase2Permissions"].(bool); ok {
-		params["phase2Permissions"] = phase2
-	} else {
-		log.Debug("phase2Permissions not found in Helm values")
+	var paramsLookup []map[string]any
+
+	// first check for defaults then overrides
+	if helmRelease.Chart != nil && helmRelease.Chart.Values != nil {
+		paramsLookup = append(paramsLookup, helmRelease.Chart.Values)
+	}
+
+	if helmRelease.Config != nil {
+		paramsLookup = append(paramsLookup, helmRelease.Config)
+	}
+
+	for _, helmParams := range paramsLookup {
+		if phase2, ok := helmParams["phase2Permissions"].(bool); ok {
+			params["phase2Permissions"] = phase2
+		}
 	}
 
 	return params
 }
 
-func extractClusterControllerParams(_ logrus.FieldLogger, helmRelease *release.Release) map[string]interface{} {
+func extractClusterControllerParams(helmRelease *release.Release) map[string]interface{} {
 	params := make(map[string]interface{})
-
-	if helmRelease == nil || helmRelease.Config == nil {
+	if helmRelease == nil {
 		return params
 	}
 
-	if autoscaling, ok := helmRelease.Config["autoscaling"].(map[string]interface{}); ok {
-		autoscalingParams := make(map[string]interface{})
+	var paramsLookup []map[string]any
 
-		if enabled, ok := autoscaling["enabled"].(bool); ok {
-			autoscalingParams["enabled"] = enabled
-		}
-
-		if len(autoscalingParams) > 0 {
-			params["autoscaling"] = autoscalingParams
-		}
+	// first check for defaults then overrides
+	if helmRelease.Chart != nil && helmRelease.Chart.Values != nil {
+		paramsLookup = append(paramsLookup, helmRelease.Chart.Values)
 	}
 
-	if workloadAutoscaling, ok := helmRelease.Config["workloadAutoscaling"].(map[string]interface{}); ok {
-		workloadAutoscalingParams := make(map[string]interface{})
+	if helmRelease.Config != nil {
+		paramsLookup = append(paramsLookup, helmRelease.Config)
+	}
 
-		if enabled, ok := workloadAutoscaling["enabled"].(bool); ok {
-			workloadAutoscalingParams["enabled"] = enabled
+	for _, helmParams := range paramsLookup {
+		if autoscaling, ok := helmParams["autoscaling"].(map[string]interface{}); ok {
+			autoscalingParams := make(map[string]interface{})
+
+			if enabled, ok := autoscaling["enabled"].(bool); ok {
+				autoscalingParams["enabled"] = enabled
+			}
+
+			if len(autoscalingParams) > 0 {
+				params["autoscaling"] = autoscalingParams
+			}
 		}
 
-		if len(workloadAutoscalingParams) > 0 {
-			params["workloadAutoscaling"] = workloadAutoscalingParams
+		if workloadAutoscaling, ok := helmParams["workloadAutoscaling"].(map[string]interface{}); ok {
+			workloadAutoscalingParams := make(map[string]interface{})
+
+			if enabled, ok := workloadAutoscaling["enabled"].(bool); ok {
+				workloadAutoscalingParams["enabled"] = enabled
+			}
+
+			if len(workloadAutoscalingParams) > 0 {
+				params["workloadAutoscaling"] = workloadAutoscalingParams
+			}
 		}
 	}
 

@@ -376,14 +376,6 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.Fie
 			"apiURL":    cluster.Spec.API.APIURL,
 		}
 
-		// those are default values, but we set them to send with `component_parameters` during RecordActionResults
-		overrides["autoscaling"] = map[string]any{
-			"enabled": true,
-		}
-
-		overrides["workloadAutoscaling"] = map[string]any{
-			"enabled": true,
-		}
 	case components.ComponentNameSpotHandler:
 		auth := auth.NewAuth(cluster.Namespace, cluster.Name)
 		apiKey, err := auth.GetApiKey(ctx, r.Client)

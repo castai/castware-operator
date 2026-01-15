@@ -4,14 +4,16 @@ import (
 	"context"
 	"testing"
 
-	components "github.com/castai/castware-operator/internal/component"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
+	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/release"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	components "github.com/castai/castware-operator/internal/component"
 )
 
 func TestExtractOperatorParams_WithExtendedPermissions(t *testing.T) {
@@ -82,8 +84,7 @@ func TestExtractSpotHandlerParams_Phase2Enabled(t *testing.T) {
 		},
 	}
 
-	log := logrus.New()
-	params := extractSpotHandlerParams(log, helmRelease)
+	params := extractSpotHandlerParams(helmRelease)
 
 	assert.NotNil(t, params)
 	assert.Equal(t, true, params["phase2Permissions"])
@@ -96,16 +97,14 @@ func TestExtractSpotHandlerParams_Phase2Disabled(t *testing.T) {
 		},
 	}
 
-	log := logrus.New()
-	params := extractSpotHandlerParams(log, helmRelease)
+	params := extractSpotHandlerParams(helmRelease)
 
 	assert.NotNil(t, params)
 	assert.Equal(t, false, params["phase2Permissions"])
 }
 
 func TestExtractSpotHandlerParams_NilHelmRelease(t *testing.T) {
-	log := logrus.New()
-	params := extractSpotHandlerParams(log, nil)
+	params := extractSpotHandlerParams(nil)
 
 	assert.NotNil(t, params)
 	assert.Empty(t, params)
@@ -118,14 +117,33 @@ func TestExtractSpotHandlerParams_MissingPhase2(t *testing.T) {
 		},
 	}
 
-	log := logrus.New()
-	params := extractSpotHandlerParams(log, helmRelease)
+	params := extractSpotHandlerParams(helmRelease)
 
 	assert.NotNil(t, params)
 	assert.Empty(t, params)
 }
 
-func TestExtractClusterControllerParams_WithAutoscaling(t *testing.T) {
+func TestExtractClusterControllerParams_WithAutoscalingFromChart(t *testing.T) {
+	helmRelease := &release.Release{
+		Chart: &chart.Chart{
+			Values: map[string]interface{}{
+				"autoscaling": map[string]interface{}{
+					"enabled": true,
+				},
+			},
+		},
+	}
+
+	params := extractClusterControllerParams(helmRelease)
+
+	assert.NotNil(t, params)
+	assert.Contains(t, params, "autoscaling")
+
+	autoscaling := params["autoscaling"].(map[string]interface{})
+	assert.Equal(t, true, autoscaling["enabled"])
+}
+
+func TestExtractClusterControllerParams_WithAutoscalingFromConfig(t *testing.T) {
 	helmRelease := &release.Release{
 		Config: map[string]interface{}{
 			"autoscaling": map[string]interface{}{
@@ -134,8 +152,32 @@ func TestExtractClusterControllerParams_WithAutoscaling(t *testing.T) {
 		},
 	}
 
-	log := logrus.New()
-	params := extractClusterControllerParams(log, helmRelease)
+	params := extractClusterControllerParams(helmRelease)
+
+	assert.NotNil(t, params)
+	assert.Contains(t, params, "autoscaling")
+
+	autoscaling := params["autoscaling"].(map[string]interface{})
+	assert.Equal(t, true, autoscaling["enabled"])
+}
+
+func TestExtractClusterControllerParams_WithAutoscalingOverrides(t *testing.T) {
+	helmRelease := &release.Release{
+		Chart: &chart.Chart{
+			Values: map[string]interface{}{
+				"autoscaling": map[string]interface{}{
+					"enabled": false,
+				},
+			},
+		},
+		Config: map[string]interface{}{
+			"autoscaling": map[string]interface{}{
+				"enabled": true,
+			},
+		},
+	}
+
+	params := extractClusterControllerParams(helmRelease)
 
 	assert.NotNil(t, params)
 	assert.Contains(t, params, "autoscaling")
@@ -153,8 +195,7 @@ func TestExtractClusterControllerParams_WithWorkloadAutoscaling(t *testing.T) {
 		},
 	}
 
-	log := logrus.New()
-	params := extractClusterControllerParams(log, helmRelease)
+	params := extractClusterControllerParams(helmRelease)
 
 	assert.NotNil(t, params)
 	assert.Contains(t, params, "workloadAutoscaling")
@@ -164,8 +205,7 @@ func TestExtractClusterControllerParams_WithWorkloadAutoscaling(t *testing.T) {
 }
 
 func TestExtractClusterControllerParams_NilHelmRelease(t *testing.T) {
-	log := logrus.New()
-	params := extractClusterControllerParams(log, nil)
+	params := extractClusterControllerParams(nil)
 
 	assert.NotNil(t, params)
 	assert.Empty(t, params)
