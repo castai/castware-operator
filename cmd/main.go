@@ -90,6 +90,7 @@ func main() {
 	rootCmd := newRootCmd()
 	rootCmd.AddCommand(newUpgradeCmd())
 	rootCmd.AddCommand(newCleanupCmd())
+	rootCmd.AddCommand(newPreflightCheckCmd())
 
 	version = config.CastwareOperatorVersion{
 		GitCommit: GitCommit,
