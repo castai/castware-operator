@@ -78,6 +78,9 @@ crdUpgrade:
     tag: "v1.25.4"
     pullPolicy: IfNotPresent
 
+preflightCheck:
+  enabled: true
+
 # Webhook configuration
 webhook:
   enabled: true

@@ -1,3 +1,4 @@
+{{- if .Values.preflightCheck.enabled }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -89,3 +90,4 @@ spec:
         - name: helm-cache
           emptyDir:
             sizeLimit: 500Mi
+{{- end }}
