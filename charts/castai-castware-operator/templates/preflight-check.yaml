@@ -1,0 +1,93 @@
+{{- if .Values.preflightCheck.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-preflight-check
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "castware-operator.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      name: {{ include "castware-operator.fullname" . }}-preflight-check
+      labels:
+        {{- include "castware-operator.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "castware-operator.fullname" . }}-controller-manager
+      restartPolicy: Never
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - preflight-check
+          command:
+            - /manager
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: OPERATOR_NAME
+              value: {{ include "castware-operator.fullname" . }}
+            - name: HELM_RELEASE_NAME
+              value: {{ quote .Release.Name }}
+            - name: EXTENDED_PERMISSIONS
+              value: {{ quote .Values.extendedPermissions }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: health-probe
+              containerPort: 8081
+              protocol: TCP
+            - name: webhooks
+              containerPort: {{ .Values.webhook.port }}
+              protocol: TCP
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - mountPath: /.cache/helm
+              name: helm-cache
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: helm-cache
+          emptyDir:
+            sizeLimit: 500Mi
+{{- end }}

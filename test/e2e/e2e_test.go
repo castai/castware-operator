@@ -1648,6 +1648,24 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "Failed to get cluster-controller component status")
 			Expect(output).To(ContainSubstring(`"type":"Available"`), "cluster-controller component should be Available")
 		})
+
+		It("should not allow to disable extended permissions once they are enabled", func() {
+			cmd := exec.Command("helm", "upgrade", "--install", "castware-operator",
+				"--namespace", namespace,
+				"--set", fmt.Sprintf("image.repository=%s", imageParts[0]),
+				"--set", fmt.Sprintf("image.tag=%s", imageParts[1]),
+				"--set", "image.pullPolicy=IfNotPresent",
+				"--set", "extendedPermissions=false",
+				"--reuse-values",
+				"--atomic",
+				"--timeout", "5m",
+				operatorChartPath,
+			)
+
+			_, err := utils.Run(cmd)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("job castware-operator-preflight-check failed"))
+		})
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 	})
 })
