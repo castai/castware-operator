@@ -3,20 +3,21 @@ package main
 import (
 	"os"
 
-	"github.com/castai/castware-operator/internal/castai"
-	"github.com/castai/castware-operator/internal/config"
 	"github.com/spf13/cobra"
 
-	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
-	// to ensure that exec-entrypoint and run can make use of them.
-	_ "k8s.io/client-go/plugin/pkg/client/auth"
-
-	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+
+	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
+	// to ensure that exec-entrypoint and run can make use of them.
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
+
+	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
+	"github.com/castai/castware-operator/internal/castai"
+	"github.com/castai/castware-operator/internal/config"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -69,7 +70,8 @@ func newRootCmd() *cobra.Command {
 
 	rootCmd.Flags().StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
-	rootCmd.Flags().StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	rootCmd.Flags().StringVar(&probeAddr, "health-probe-bind-address", ":8081",
+		"The address the probe endpoint binds to.")
 	rootCmd.Flags().BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -79,7 +81,8 @@ func newRootCmd() *cobra.Command {
 		"The directory that contains the metrics server certificate.")
 	rootCmd.Flags().StringVar(&metricsCertName, "metrics-cert-name", "tls.crt",
 		"The name of the metrics server certificate file.")
-	rootCmd.Flags().StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
+	rootCmd.Flags().StringVar(&metricsCertKey, "metrics-cert-key", "tls.key",
+		"The name of the metrics server key file.")
 	rootCmd.Flags().BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 
@@ -91,6 +94,7 @@ func main() {
 	rootCmd.AddCommand(newUpgradeCmd())
 	rootCmd.AddCommand(newCleanupCmd())
 	rootCmd.AddCommand(newPreflightCheckCmd())
+	rootCmd.AddCommand(newPreflightInstallCheckCmd())
 
 	version = config.CastwareOperatorVersion{
 		GitCommit: GitCommit,

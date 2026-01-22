@@ -118,7 +118,7 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # - CERT_MANAGER_INSTALL_SKIP=true
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	go test ./test/e2e/ -v -ginkgo.v
+	go test ./test/e2e/ -v -timeout 30m -ginkgo.v -ginkgo.flake-attempts=1
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

@@ -11,11 +11,12 @@ import (
 	"strings"
 	"time"
 
-	components "github.com/castai/castware-operator/internal/component"
-	"github.com/castai/castware-operator/test/utils"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/samber/lo"
+
+	components "github.com/castai/castware-operator/internal/component"
+	"github.com/castai/castware-operator/test/utils"
 )
 
 // namespace where the project is deployed in
@@ -80,12 +81,279 @@ spec:
       GKE_REGION: e2e
 `
 
-var _ = Describe("Manager", Ordered, func() {
+// Preflight Install Check tests - run BEFORE operator installation
+var _ = Describe("Preflight Install Check", Ordered, Serial, func() {
+	var apiKey string
+	var apiURL = os.Getenv("API_URL")
+	if apiURL == "" {
+		apiURL = "https://api.dev-master.cast.ai"
+	}
+	var operatorChartPath string
+
+	// Extract image repository and tag from projectImage (format: repository:tag)
+	imageParts := strings.Split(projectImage, ":")
+	Expect(imageParts).To(HaveLen(2), "invalid projectImage format")
+
+	BeforeAll(func() {
+		apiKey = os.Getenv("API_KEY")
+		Expect(apiKey).NotTo(BeEmpty(), "API_KEY environment variable is not set")
+
+		wd, _ := os.Getwd()
+		operatorChartPath = filepath.Join(wd, "charts", "castai-castware-operator")
+	})
+
+	AfterEach(func() {
+		By("cleaning up any helm releases in test namespace")
+		cmd := exec.Command("helm", "list", "-n", namespace, "--short")
+		output, _ := utils.Run(cmd)
+		releases := utils.GetNonEmptyLines(output)
+		for _, release := range releases {
+			cmd = exec.Command("helm", "uninstall", release, "-n", namespace)
+			_, _ = utils.Run(cmd)
+		}
+		// Wait for cleanup
+		time.Sleep(3 * time.Second)
+
+		By("removing namespace if exists")
+		cmd = exec.Command("kubectl", "delete", "ns", namespace)
+		_, _ = utils.Run(cmd)
+	})
+
+	// Helper function to install operator with preflight check
+	installOperatorWithPreflight := func(releaseName, namespace, apiKeyValue, apiURLValue, helmRepoURL string) *exec.Cmd {
+		args := []string{
+			"upgrade", "--install", releaseName,
+			"--namespace", namespace,
+			"--create-namespace",
+			"--set", fmt.Sprintf("image.repository=%s", imageParts[0]),
+			"--set", fmt.Sprintf("image.tag=%s", imageParts[1]),
+			"--set", "image.pullPolicy=IfNotPresent",
+			"--set", fmt.Sprintf("apiKeySecret.apiKey=%s", apiKeyValue),
+			"--set", fmt.Sprintf("defaultCluster.api.apiUrl=%s", apiURLValue),
+			"--set", "defaultCluster.provider=gke",
+			"--set", "defaultCluster.terraform=false",
+			"--set", "defaultComponents.enabled=false",
+			"--set", "preflightInstallCheck.enabled=true",
+			"--set", "webhook.env.GKE_CLUSTER_NAME=castware-operator-e2e",
+			"--set", "webhook.env.GKE_LOCATION=e2e",
+			"--set", "webhook.env.GKE_PROJECT_ID=e2e",
+			"--set", "webhook.env.GKE_REGION=e2e",
+		}
+
+		if helmRepoURL != "" {
+			args = append(args, "--set", fmt.Sprintf("defaultCluster.helmRepoURL=%s", helmRepoURL))
+		}
+
+		args = append(args, "--atomic", "--timeout", "5m", operatorChartPath)
+
+		fmt.Println("Running helm command: ", strings.Join(args, ""))
+
+		return exec.Command("helm", args...)
+	}
+
+	It("should fail preflight-install-check when namespace is different than castai-agent", func() {
+		By("attempting to install operator with invalid namespace")
+		invalidNamespace := "invalid-namespace"
+		cmd := installOperatorWithPreflight(
+			"castware-operator",
+			invalidNamespace,
+			apiKey,
+			apiURL,
+			"",
+		)
+
+		defer func() {
+			By("cleaning up test namespace")
+			cmd = exec.Command("kubectl", "delete", "ns", invalidNamespace)
+			_, _ = utils.Run(cmd)
+		}()
+
+		_, err := utils.Run(cmd)
+		Expect(err).To(HaveOccurred(), "Installation should fail with invalid namespace")
+		Expect(err.Error()).To(
+			ContainSubstring("preflight-install-check"),
+			"Error should mention preflight-install-check",
+		)
+
+		By("verifying preflight-install-check job failed")
+		cmd = exec.Command(
+			"kubectl", "get", "job",
+			"-l", "app.kubernetes.io/name=castware-operator",
+			"-n", invalidNamespace,
+			"-o", "jsonpath={.items[*].status.conditions[?(@.type=='Failed')].status}",
+		)
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(output).To(ContainSubstring("True"), "Preflight job should have failed")
+
+		By("cleanup invalid namespace")
+		cmd = exec.Command("kubectl", "delete", "ns", invalidNamespace)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should fail preflight-install-check when API key is invalid", func() {
+		By("attempting to install operator with invalid API key")
+		cmd := installOperatorWithPreflight(
+			"castware-operator",
+			namespace,
+			"invalid-api-key-12345",
+			apiURL,
+			"",
+		)
+
+		_, err := utils.Run(cmd)
+		Expect(err).To(HaveOccurred(), "Installation should fail with invalid API key")
+		Expect(err.Error()).To(
+			ContainSubstring("preflight-install-check"),
+			"Error should mention preflight-install-check",
+		)
+
+		By("verifying preflight-install-check job failed")
+		cmd = exec.Command(
+			"kubectl", "get", "job",
+			"-l", "app.kubernetes.io/name=castware-operator",
+			"-n", namespace,
+			"-o", "jsonpath={.items[*].status.conditions[?(@.type=='Failed')].status}",
+		)
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(output).To(ContainSubstring("True"), "Preflight job should have failed")
+	})
+
+	It("should fail preflight-install-check when API URL is unreachable", func() {
+		By("creating test namespace")
+		cmd := exec.Command("kubectl", "create", "ns", namespace)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to create test namespace")
+
+		By("attempting to install operator with unreachable API URL")
+		cmd = installOperatorWithPreflight(
+			"castware-operator",
+			namespace,
+			apiKey,
+			"http://localhost:1",
+			"",
+		)
+
+		_, err = utils.Run(cmd)
+		Expect(err).To(HaveOccurred(), "Installation should fail with unreachable API URL")
+		Expect(err.Error()).To(
+			ContainSubstring("preflight-install-check"),
+			"Error should mention preflight-install-check",
+		)
+
+		By("verifying preflight-install-check job failed")
+		cmd = exec.Command(
+			"kubectl", "get", "job",
+			"-l", "app.kubernetes.io/name=castware-operator",
+			"-n", namespace,
+			"-o", "jsonpath={.items[*].status.conditions[?(@.type=='Failed')].status}",
+		)
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(output).To(ContainSubstring("True"), "Preflight job should have failed")
+	})
+
+	It("should fail preflight-install-check when helm repo URL is invalid", func() {
+		By("creating test namespace")
+		cmd := exec.Command("kubectl", "create", "ns", namespace)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to create test namespace")
+
+		By("attempting to install operator with invalid helm repo URL")
+		cmd = installOperatorWithPreflight(
+			"castware-operator",
+			namespace,
+			apiKey,
+			apiURL,
+			"http://localhost:1/invalid-helm-repo",
+		)
+
+		_, err = utils.Run(cmd)
+		Expect(err).To(HaveOccurred(), "Installation should fail with invalid helm repo URL")
+		Expect(err.Error()).To(
+			ContainSubstring("preflight-install-check"),
+			"Error should mention preflight-install-check",
+		)
+
+		By("verifying preflight-install-check job failed")
+		cmd = exec.Command(
+			"kubectl", "get", "job",
+			"-l", "app.kubernetes.io/name=castware-operator",
+			"-n", namespace,
+			"-o", "jsonpath={.items[*].status.conditions[?(@.type=='Failed')].status}",
+		)
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(output).To(ContainSubstring("True"), "Preflight job should have failed")
+	})
+
+	It("should pass preflight-install-check with valid configuration", func() {
+		//testReleaseName := "castware-operator-valid"
+		testReleaseName := "castware-operator"
+		By("creating test namespace")
+		cmd := exec.Command("kubectl", "create", "ns", namespace)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to create test namespace")
+
+		By("labeling the namespace to enforce the restricted security policy")
+		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+			"pod-security.kubernetes.io/enforce=restricted")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
+
+		By("installing operator with valid configuration")
+		cmd = installOperatorWithPreflight(
+			testReleaseName,
+			namespace,
+			apiKey,
+			apiURL,
+			"",
+		)
+
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Installation should succeed with valid configuration")
+
+		By("verifying preflight-install-check job succeeded")
+		verifyPreflightSuccess := func(g Gomega) {
+			cmd := exec.Command(
+				"kubectl", "get", "job", testReleaseName+"-preflight-install-check",
+				"-n", namespace,
+				"-o", "jsonpath={.status.conditions[?(@.type=='Complete')].status}",
+			)
+
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(ContainSubstring("True"), "Preflight job should have succeeded")
+		}
+		Eventually(verifyPreflightSuccess).Should(Succeed())
+
+		By("verifying operator pod is running")
+		verifyOperatorRunning := func(g Gomega) {
+			cmd := exec.Command(
+				"kubectl", "get", "pods",
+				"-l", "app.kubernetes.io/instance="+testReleaseName,
+				"-n", namespace,
+				"-o", "jsonpath={.items[*].status.phase}",
+			)
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(ContainSubstring("Running"), "Operator pod should be running")
+		}
+		Eventually(verifyOperatorRunning, 2*time.Minute).Should(Succeed())
+	})
+})
+
+var _ = Describe("Manager", Ordered, Serial, func() {
 	var controllerPodName string
 	var clusterID string
 	var organizationID string
 	var apiKey string
-	var apiURL = "https://api.dev-master.cast.ai"
+	var apiURL = os.Getenv("API_URL")
+	if apiURL == "" {
+		apiURL = "https://api.dev-master.cast.ai"
+	}
 	var agentInstalled bool
 	var spotHandlerInstalled bool
 	var versionBeforeDowngrade string
@@ -167,6 +435,7 @@ var _ = Describe("Manager", Ordered, func() {
 			"--set", "defaultCluster.provider=gke",
 			"--set", "defaultCluster.terraform=false",
 			"--set", "defaultComponents.enabled=false",
+			"--set", "preflightInstallCheck.enabled=false", // disabled - there are separate tests for it
 			"--set", "webhook.env.GKE_CLUSTER_NAME=castware-operator-e2e",
 			"--set", "webhook.env.GKE_LOCATION=e2e",
 			"--set", "webhook.env.GKE_PROJECT_ID=e2e",
@@ -362,27 +631,27 @@ var _ = Describe("Manager", Ordered, func() {
 				"--image=curlimages/curl:latest",
 				"--overrides",
 				fmt.Sprintf(`{
-					"spec": {
-						"containers": [{
-							"name": "curl",
-							"image": "curlimages/curl:latest",
-							"command": ["/bin/sh", "-c"],
-							"args": ["curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8080/metrics"],
-							"securityContext": {
-								"allowPrivilegeEscalation": false,
-								"capabilities": {
-									"drop": ["ALL"]
-								},
-								"runAsNonRoot": true,
-								"runAsUser": 1000,
-								"seccompProfile": {
-									"type": "RuntimeDefault"
-								}
+				"spec": {
+					"containers": [{
+						"name": "curl",
+						"image": "curlimages/curl:latest",
+						"command": ["/bin/sh", "-c"],
+						"args": ["curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8080/metrics"],
+						"securityContext": {
+							"allowPrivilegeEscalation": false,
+							"capabilities": {
+								"drop": ["ALL"]
+							},
+							"runAsNonRoot": true,
+							"runAsUser": 1000,
+							"seccompProfile": {
+								"type": "RuntimeDefault"
 							}
-						}],
-						"serviceAccount": "%s"
-					}
-				}`, token, metricsServiceName, namespace, serviceAccountName))
+						}
+					}],
+					"serviceAccount": "%s"
+				}
+			}`, token, metricsServiceName, namespace, serviceAccountName))
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
 
@@ -475,7 +744,8 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyClusterID, 5*time.Minute).Should(Succeed())
 
 			By("verifying cluster name and location are also populated")
-			cmd = exec.Command("kubectl", "get", "cluster", clusterName, "-n", namespace, "-o", "jsonpath={.spec.cluster}")
+			cmd = exec.Command("kubectl", "get", "cluster", clusterName, "-n", namespace, "-o",
+				"jsonpath={.spec.cluster}")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get cluster metadata")
 			Expect(output).To(ContainSubstring("clusterID"), "Cluster metadata should contain clusterID")
@@ -489,7 +759,8 @@ var _ = Describe("Manager", Ordered, func() {
 
 		It("should install castai-agent", func() {
 			By("creating a component custom resource")
-			componentYAML := fmt.Sprintf(componentYaml, components.ComponentNameAgent, namespace, components.ComponentNameAgent)
+			componentYAML := fmt.Sprintf(componentYaml, components.ComponentNameAgent, namespace,
+				components.ComponentNameAgent)
 
 			componentFile := filepath.Join("/tmp", fmt.Sprintf("%s-component.yaml", components.ComponentNameAgent))
 			err := os.WriteFile(componentFile, []byte(componentYAML), os.FileMode(0o644))
@@ -519,7 +790,8 @@ var _ = Describe("Manager", Ordered, func() {
 				cmd := exec.Command("kubectl", "get", "pods",
 					"-l", "app.kubernetes.io/name=castai-agent",
 					"-n", namespace,
-					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+					"-o",
+					"jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent pods")
 				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
@@ -598,7 +870,8 @@ var _ = Describe("Manager", Ordered, func() {
 				cmd := exec.Command("kubectl", "get", "pods",
 					"-l", "app.kubernetes.io/name=castai-agent",
 					"-n", namespace,
-					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+					"-o",
+					"jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent pods")
 				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
@@ -632,7 +905,8 @@ var _ = Describe("Manager", Ordered, func() {
 			)
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get component status")
-			Expect(output).To(ContainSubstring(`"type":"Available"`), "Component should be in Available status after downgrade")
+			Expect(output).To(ContainSubstring(`"type":"Available"`),
+				"Component should be in Available status after downgrade")
 
 			getClusterURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components:view",
 				apiURL, organizationID, clusterID)
@@ -680,7 +954,8 @@ var _ = Describe("Manager", Ordered, func() {
 				currentVersion, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get component version")
 				g.Expect(currentVersion).NotTo(BeEmpty(), "Version should be set")
-				g.Expect(currentVersion).NotTo(Equal(versionBeforeUpgrade), "Version should have changed from previous version")
+				g.Expect(currentVersion).NotTo(Equal(versionBeforeUpgrade),
+					"Version should have changed from previous version")
 			}
 			Eventually(verifyUpgrade, 5*time.Minute).Should(Succeed())
 
@@ -698,7 +973,8 @@ var _ = Describe("Manager", Ordered, func() {
 				cmd := exec.Command("kubectl", "get", "pods",
 					"-l", "app.kubernetes.io/name=castai-agent",
 					"-n", namespace,
-					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+					"-o",
+					"jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent pods")
 				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
@@ -732,7 +1008,8 @@ var _ = Describe("Manager", Ordered, func() {
 			)
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get component status")
-			Expect(output).To(ContainSubstring(`"type":"Available"`), "Component should be in Available status after upgrade")
+			Expect(output).To(ContainSubstring(`"type":"Available"`),
+				"Component should be in Available status after upgrade")
 
 			getClusterURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components:view",
 				apiURL, organizationID, clusterID)
@@ -755,7 +1032,8 @@ var _ = Describe("Manager", Ordered, func() {
 				namespace, components.ComponentNameSpotHandler)
 			componentYAML += "    phase2Permissions: false"
 
-			componentFile := filepath.Join("/tmp", fmt.Sprintf("%s-component.yaml", components.ComponentNameSpotHandler))
+			componentFile := filepath.Join("/tmp",
+				fmt.Sprintf("%s-component.yaml", components.ComponentNameSpotHandler))
 			err := os.WriteFile(componentFile, []byte(componentYAML), os.FileMode(0o644))
 			Expect(err).NotTo(HaveOccurred(), "Failed to write component manifest")
 
@@ -783,7 +1061,8 @@ var _ = Describe("Manager", Ordered, func() {
 				cmd := exec.Command("kubectl", "get", "daemonsets",
 					"-l", "app.kubernetes.io/instance=castai-spot-handler",
 					"-n", namespace,
-					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+					"-o",
+					"jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get spot-handler daemonset")
 				g.Expect(output).NotTo(BeEmpty(), "No spot-handler daemonsets found")
@@ -844,7 +1123,8 @@ var _ = Describe("Manager", Ordered, func() {
 				cmd := exec.Command("kubectl", "get", "daemonsets",
 					"-l", "helm.sh/chart=castai-spot-handler-"+downgradeVersion,
 					"-n", namespace,
-					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+					"-o",
+					"jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get spot-handler daemonset")
 				g.Expect(output).NotTo(BeEmpty(), "No spot-handler daemonsets found")
@@ -859,7 +1139,8 @@ var _ = Describe("Manager", Ordered, func() {
 			)
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get component status")
-			Expect(output).To(ContainSubstring(`"type":"Available"`), "Component should be in Available status after downgrade")
+			Expect(output).To(ContainSubstring(`"type":"Available"`),
+				"Component should be in Available status after downgrade")
 
 			getClusterURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components:view",
 				apiURL, organizationID, clusterID)
@@ -906,7 +1187,8 @@ var _ = Describe("Manager", Ordered, func() {
 				currentVersion, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get component version")
 				g.Expect(currentVersion).NotTo(BeEmpty(), "Version should be set")
-				g.Expect(currentVersion).NotTo(Equal(versionBeforeUpgrade), "Version should have changed from previous version")
+				g.Expect(currentVersion).NotTo(Equal(versionBeforeUpgrade),
+					"Version should have changed from previous version")
 			}
 			Eventually(verifyUpgrade, 5*time.Minute).Should(Succeed())
 
@@ -925,7 +1207,8 @@ var _ = Describe("Manager", Ordered, func() {
 				cmd := exec.Command("kubectl", "get", "daemonsets",
 					"-l", "app.kubernetes.io/instance=spot-handler",
 					"-n", namespace,
-					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+					"-o",
+					"jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get spot-handler daemonset")
 				g.Expect(output).NotTo(BeEmpty(), "No spot-handler daemonsets found")
@@ -939,7 +1222,8 @@ var _ = Describe("Manager", Ordered, func() {
 			)
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get component status")
-			Expect(output).To(ContainSubstring(`"type":"Available"`), "Component should be in Available status after upgrade")
+			Expect(output).To(ContainSubstring(`"type":"Available"`),
+				"Component should be in Available status after upgrade")
 
 			getClusterURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components:view",
 				apiURL, organizationID, clusterID)
@@ -970,11 +1254,21 @@ var _ = Describe("Manager", Ordered, func() {
 
 			cmd := exec.Command("bash", "-c", scriptResp.Script)
 			output, _ := utils.Run(cmd)
+			By("waiting for operator deployment to be ready")
+			waitForOperatorReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "rollout", "status", "deployment/castware-operator",
+					"-n", namespace, "--timeout=2m")
+				_, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Operator deployment should be ready")
+			}
+			Eventually(waitForOperatorReady, 3*time.Minute).Should(Succeed())
 			// Phase2 script returns an error, but it's expected because it tries to
 			// run "gcloud container clusters describe", but the cluster is not running in GKE.
 			// Checking successful install of spot-handler and cluster-controller is enough for this test.
-			Expect(output).To(ContainSubstring("cluster-controller ready with version"), "Failed to install cluster-controller")
-			Expect(output).To(ContainSubstring("spot-handler ready with version "), "Phase2 spot handler install failed")
+			Expect(output).To(ContainSubstring("cluster-controller ready with version"),
+				"Failed to install cluster-controller")
+			Expect(output).To(ContainSubstring("spot-handler ready with version "),
+				"Phase2 spot handler install failed")
 			// err = fetchFromAPI(getClusterURL, http.MethodGet, &componentsResp)
 		})
 
@@ -994,12 +1288,14 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyCRDsGone).Should(Succeed())
 
 			By("verifying that castai-agent still exists")
-			cmd = exec.Command("kubectl", "get", "deployment", "-l", "app.kubernetes.io/name=castai-agent", "-n", namespace)
+			cmd = exec.Command("kubectl", "get", "deployment", "-l", "app.kubernetes.io/name=castai-agent", "-n",
+				namespace)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "castai-agent should still exist after operator uninstall")
 
 			By("verifying that spot-handler still exists")
-			cmd = exec.Command("kubectl", "get", "daemonset", "-l", "app.kubernetes.io/instance=spot-handler", "-n", namespace)
+			cmd = exec.Command("kubectl", "get", "daemonset", "-l", "app.kubernetes.io/instance=spot-handler", "-n",
+				namespace)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "spot-handler should still exist after operator uninstall")
 
@@ -1036,7 +1332,8 @@ var _ = Describe("Manager", Ordered, func() {
 			cmd := exec.Command("bash", "-c", scriptResp)
 			output, _ := utils.Run(cmd)
 			Expect(output).To(ContainSubstring("deployment.apps/castai-agent created"), "Agent not installed")
-			Expect(output).To(ContainSubstring("daemonset.apps/castai-spot-handler created"), "Spot handler not installed")
+			Expect(output).To(ContainSubstring("daemonset.apps/castai-spot-handler created"),
+				"Spot handler not installed")
 
 			By("patching castai-agent deployment to add GKE environment variables")
 			cmd = exec.Command("kubectl", "patch", "deployment", "castai-agent",
@@ -1048,7 +1345,8 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("waiting for deployment to be updated")
 			verifyDeploymentUpdated := func(g Gomega) {
-				cmd := exec.Command("kubectl", "rollout", "status", "deployment/castai-agent", "-n", namespace, "--timeout=60s")
+				cmd := exec.Command("kubectl", "rollout", "status", "deployment/castai-agent", "-n", namespace,
+					"--timeout=60s")
 				_, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Deployment rollout failed")
 			}
@@ -1059,7 +1357,8 @@ var _ = Describe("Manager", Ordered, func() {
 				cmd := exec.Command("kubectl", "get", "pods",
 					"-l", "app.kubernetes.io/name=castai-agent",
 					"-n", namespace,
-					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+					"-o",
+					"jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent pods")
 				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
@@ -1092,6 +1391,7 @@ var _ = Describe("Manager", Ordered, func() {
 				"--set", "defaultCluster.terraform=false",
 				"--set", "defaultCluster.migrationMode=autoUpgrade",
 				"--set", "defaultComponents.enabled=false",
+				"--set", "preflightInstallCheck.enabled=false", // disabled - there are separate tests for it
 				"--set", "webhook.env.GKE_CLUSTER_NAME=castware-operator-e2e",
 				"--set", "webhook.env.GKE_LOCATION=e2e",
 				"--set", "webhook.env.GKE_PROJECT_ID=e2e",
@@ -1164,8 +1464,10 @@ var _ = Describe("Manager", Ordered, func() {
 			// Phase2 script returns an error, but it's expected because it tries to
 			// run "gcloud container clusters describe", but the cluster is not running in GKE.
 			// Checking successful install of spot-handler and cluster-controller is enough for this test.
-			Expect(output).To(ContainSubstring("cluster-controller ready with version"), "Failed to install cluster-controller")
-			Expect(output).To(ContainSubstring("spot-handler ready with version "), "Phase2 spot handler install failed")
+			Expect(output).To(ContainSubstring("cluster-controller ready with version"),
+				"Failed to install cluster-controller")
+			Expect(output).To(ContainSubstring("spot-handler ready with version "),
+				"Phase2 spot handler install failed")
 
 			By("verifying spot-handler component CR exists and is ready")
 			verifySpotHandlerComponent := func(g Gomega) {
@@ -1207,7 +1509,8 @@ var _ = Describe("Manager", Ordered, func() {
 			)
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get cluster-controller component status")
-			Expect(output).To(ContainSubstring(`"type":"Available"`), "cluster-controller component should be Available")
+			Expect(output).To(ContainSubstring(`"type":"Available"`),
+				"cluster-controller component should be Available")
 
 			By("verifying spot-handler has phase2Permissions=true from helm values")
 			verifyPhase2Permissions := func(g Gomega) {
@@ -1243,7 +1546,8 @@ var _ = Describe("Manager", Ordered, func() {
 			_, _ = utils.Run(cmd)
 
 			By("deleting any existing spot-handler components")
-			cmd = exec.Command("kubectl", "delete", "daemonset", "castai-spot-handler", "-n", namespace, "--ignore-not-found")
+			cmd = exec.Command("kubectl", "delete", "daemonset", "castai-spot-handler", "-n", namespace,
+				"--ignore-not-found")
 			_, _ = utils.Run(cmd)
 
 			By("deleting the namespace")
@@ -1260,7 +1564,8 @@ var _ = Describe("Manager", Ordered, func() {
 			cmd = exec.Command("bash", "-c", scriptResp)
 			output, _ := utils.Run(cmd)
 			Expect(output).To(ContainSubstring("deployment.apps/castai-agent created"), "Agent not installed")
-			Expect(output).To(ContainSubstring("daemonset.apps/castai-spot-handler created"), "Spot handler not installed")
+			Expect(output).To(ContainSubstring("daemonset.apps/castai-spot-handler created"),
+				"Spot handler not installed")
 
 			By("patching castai-agent deployment to add GKE environment variables")
 			cmd = exec.Command("kubectl", "patch", "deployment", "castai-agent",
@@ -1272,7 +1577,8 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("waiting for castai-agent deployment to be updated")
 			verifyDeploymentUpdated := func(g Gomega) {
-				cmd := exec.Command("kubectl", "rollout", "status", "deployment/castai-agent", "-n", namespace, "--timeout=60s")
+				cmd := exec.Command("kubectl", "rollout", "status", "deployment/castai-agent", "-n", namespace,
+					"--timeout=60s")
 				_, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Deployment rollout failed")
 			}
@@ -1283,7 +1589,8 @@ var _ = Describe("Manager", Ordered, func() {
 				cmd := exec.Command("kubectl", "get", "pods",
 					"-l", "app.kubernetes.io/name=castai-agent",
 					"-n", namespace,
-					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+					"-o",
+					"jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent pods")
 				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
@@ -1342,7 +1649,8 @@ var _ = Describe("Manager", Ordered, func() {
 				cmd := exec.Command("kubectl", "get", "daemonsets",
 					"-l", "app.kubernetes.io/instance=castai-spot-handler",
 					"-n", namespace,
-					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+					"-o",
+					"jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get spot-handler daemonset")
 				g.Expect(output).NotTo(BeEmpty(), "No spot-handler daemonsets found")
@@ -1375,6 +1683,7 @@ var _ = Describe("Manager", Ordered, func() {
 				"--set", "defaultCluster.terraform=false",
 				"--set", "defaultCluster.extendedPermissions=true",
 				"--set", "defaultComponents.enabled=false",
+				"--set", "preflightInstallCheck.enabled=false", // disabled - there are separate tests for it
 				"--set", "webhook.env.GKE_CLUSTER_NAME=castware-operator-e2e",
 				"--set", "webhook.env.GKE_LOCATION=e2e",
 				"--set", "webhook.env.GKE_PROJECT_ID=e2e",
@@ -1446,12 +1755,14 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyCRDsGone).Should(Succeed())
 
 			By("verifying that castai-agent still exists")
-			cmd = exec.Command("kubectl", "get", "deployment", "-l", "app.kubernetes.io/name=castai-agent", "-n", namespace)
+			cmd = exec.Command("kubectl", "get", "deployment", "-l", "app.kubernetes.io/name=castai-agent", "-n",
+				namespace)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "castai-agent should still exist after operator uninstall")
 
 			By("verifying that spot-handler still exists")
-			cmd = exec.Command("kubectl", "get", "daemonset", "-l", "app.kubernetes.io/instance=spot-handler", "-n", namespace)
+			cmd = exec.Command("kubectl", "get", "daemonset", "-l", "app.kubernetes.io/instance=spot-handler", "-n",
+				namespace)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "spot-handler should still exist after operator uninstall")
 
@@ -1492,7 +1803,8 @@ var _ = Describe("Manager", Ordered, func() {
 			cmd := exec.Command("bash", "-c", scriptResp)
 			output, _ := utils.Run(cmd)
 			Expect(output).To(ContainSubstring("deployment.apps/castai-agent created"), "Agent not installed")
-			Expect(output).To(ContainSubstring("daemonset.apps/castai-spot-handler created"), "Spot handler not installed")
+			Expect(output).To(ContainSubstring("daemonset.apps/castai-spot-handler created"),
+				"Spot handler not installed")
 
 			By("patching castai-agent deployment to add GKE environment variables")
 			cmd = exec.Command("kubectl", "patch", "deployment", "castai-agent",
@@ -1504,7 +1816,8 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("waiting for deployment to be updated")
 			verifyDeploymentUpdated := func(g Gomega) {
-				cmd := exec.Command("kubectl", "rollout", "status", "deployment/castai-agent", "-n", namespace, "--timeout=60s")
+				cmd := exec.Command("kubectl", "rollout", "status", "deployment/castai-agent", "-n", namespace,
+					"--timeout=60s")
 				_, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Deployment rollout failed")
 			}
@@ -1515,7 +1828,8 @@ var _ = Describe("Manager", Ordered, func() {
 				cmd := exec.Command("kubectl", "get", "pods",
 					"-l", "app.kubernetes.io/name=castai-agent",
 					"-n", namespace,
-					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+					"-o",
+					"jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent pods")
 				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
@@ -1573,6 +1887,7 @@ var _ = Describe("Manager", Ordered, func() {
 				"--set", "defaultCluster.terraform=false",
 				"--set", "defaultCluster.migrationMode=autoUpgrade",
 				"--set", "defaultComponents.enabled=false",
+				"--set", "preflightInstallCheck.enabled=false", // disabled - there are separate tests for it
 				"--set", "webhook.env.GKE_CLUSTER_NAME=castware-operator-e2e",
 				"--set", "webhook.env.GKE_LOCATION=e2e",
 				"--set", "webhook.env.GKE_PROJECT_ID=e2e",
@@ -1646,7 +1961,8 @@ var _ = Describe("Manager", Ordered, func() {
 			)
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get cluster-controller component status")
-			Expect(output).To(ContainSubstring(`"type":"Available"`), "cluster-controller component should be Available")
+			Expect(output).To(ContainSubstring(`"type":"Available"`),
+				"cluster-controller component should be Available")
 		})
 
 		It("should not allow to disable extended permissions once they are enabled", func() {
@@ -1675,8 +1991,8 @@ var _ = Describe("Manager", Ordered, func() {
 // and parsing the resulting token from the API response.
 func serviceAccountToken() (string, error) {
 	const tokenRequestRawString = `{
-		"apiVersion": "authentication.k8s.io/v1",
-		"kind": "TokenRequest"
+	"apiVersion": "authentication.k8s.io/v1",
+	"kind": "TokenRequest"
 	}`
 
 	// Temporary file to store the token request
@@ -1747,7 +2063,8 @@ func deleteClusterRoleResourcesWithAnnotation() error {
 	// Delete ClusterRoles with the annotation
 	// nolint: lll
 	cmd := exec.Command("kubectl", "get", "clusterroles",
-		"-o", "jsonpath={range .items[?(@.metadata.annotations.meta\\.helm\\.sh/release-namespace=='castai-agent')]}{.metadata.name}{'\\n'}{end}")
+		"-o",
+		"jsonpath={range .items[?(@.metadata.annotations.meta\\.helm\\.sh/release-namespace=='castai-agent')]}{.metadata.name}{'\\n'}{end}")
 	output, err := utils.Run(cmd)
 	if err != nil {
 		return fmt.Errorf("failed to list ClusterRoles with annotation %s: %w", annotation, err)
@@ -1766,7 +2083,8 @@ func deleteClusterRoleResourcesWithAnnotation() error {
 	// Delete ClusterRoleBindings with the annotation
 	// nolint: lll
 	cmd = exec.Command("kubectl", "get", "clusterrolebindings",
-		"-o", "jsonpath={range .items[?(@.metadata.annotations.meta\\.helm\\.sh/release-namespace=='castai-agent')]}{.metadata.name}{'\\n'}{end}")
+		"-o",
+		"jsonpath={range .items[?(@.metadata.annotations.meta\\.helm\\.sh/release-namespace=='castai-agent')]}{.metadata.name}{'\\n'}{end}")
 	output, err = utils.Run(cmd)
 	if err != nil {
 		return fmt.Errorf("failed to list ClusterRoleBindings with annotation %s: %w", annotation, err)
