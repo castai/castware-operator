@@ -150,7 +150,7 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 				Config: map[string]interface{}{},
-			}, nil).AnyTimes()
+			}, nil).Times(3)
 
 			testOps.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), testCluster.Spec.Cluster.ClusterID, gomock.Any()).Return(nil).AnyTimes()
 
@@ -224,7 +224,7 @@ func TestReconcile(t *testing.T) {
 			testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 				Namespace:   testComponent.Namespace,
 				ReleaseName: testComponent.Spec.Component,
-			}).Return(nil, driver.ErrReleaseNotFound).AnyTimes()
+			}).Return(nil, driver.ErrReleaseNotFound).Times(2)
 
 			testOps.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, options helm.InstallOptions) (*release.Release, error) {
 				r.True(options.DryRun)
@@ -346,7 +346,7 @@ func TestReconcile(t *testing.T) {
 			testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 				Namespace:   testComponent.Namespace,
 				ReleaseName: testComponent.Spec.Component,
-			}).Return(helmRelease, nil).AnyTimes()
+			}).Return(helmRelease, nil)
 
 			_, err = testOps.sut.Reconcile(ctx, req)
 			r.NoError(err)
@@ -889,7 +889,7 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 			Config: map[string]interface{}{
 				"phase2Permissions": false,
 			},
-		}, nil).AnyTimes()
+		}, nil).Times(2)
 
 		testOps.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), testCluster.Spec.Cluster.ClusterID, gomock.Any()).Return(nil).AnyTimes()
 
