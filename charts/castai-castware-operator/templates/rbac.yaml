@@ -492,11 +492,11 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: castware-operator-kube-system-access
+  name: {{ include "castware-operator.fullname" . }}-kube-system-access
 subjects:
 - kind: ServiceAccount
   name: {{ include "castware-operator.fullname" . }}-controller-manager
-  namespace: castai-agent
+  namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -508,11 +508,11 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: castware-operator-leader-election-role
+  name: {{ include "castware-operator.fullname" . }}-leader-election-role
 subjects:
 - kind: ServiceAccount
   name: {{ include "castware-operator.fullname" . }}-controller-manager
-  namespace: castai-agent
+  namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -524,11 +524,11 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: castware-operator-namespace-role
+  name: {{ include "castware-operator.fullname" . }}-namespace-role
 subjects:
 - kind: ServiceAccount
   name: {{ include "castware-operator.fullname" . }}-controller-manager
-  namespace: castai-agent
+  namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -539,11 +539,11 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: castware-operator-manager-role
+  name: {{ include "castware-operator.fullname" . }}-manager-role
 subjects:
 - kind: ServiceAccount
   name: {{ include "castware-operator.fullname" . }}-controller-manager
-  namespace: castai-agent
+  namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -554,11 +554,11 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: castware-operator-metrics-auth-role
+  name: {{ include "castware-operator.fullname" . }}-metrics-auth-role
 subjects:
 - kind: ServiceAccount
   name: {{ include "castware-operator.fullname" . }}-controller-manager
-  namespace: castai-agent
+  namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -569,8 +569,8 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: castware-operator-metrics-reader
+  name: {{ include "castware-operator.fullname" . }}-metrics-reader
 subjects:
 - kind: ServiceAccount
   name: {{ include "castware-operator.fullname" . }}-controller-manager
-  namespace: castai-agent
+  namespace: {{ .Release.Namespace }}

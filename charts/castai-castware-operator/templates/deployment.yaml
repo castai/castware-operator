@@ -51,6 +51,10 @@ spec:
                   fieldPath: metadata.namespace
             - name: OPERATOR_NAME
               value: {{ include "castware-operator.fullname" . }}
+            - name: SERVICE_NAME
+              value: {{ include "castware-operator.fullname" . }}
+            - name: CERTS_SECRET
+              value: {{ include "castware-operator.fullname" . }}-certs
             {{- if .Values.metrics.enabled }}
             - name: METRICS_PORT
               value: "8080"
