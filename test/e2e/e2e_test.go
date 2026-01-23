@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/samber/lo"
+	batchv1 "k8s.io/api/batch/v1"
 )
 
 // namespace where the project is deployed in
@@ -49,6 +51,21 @@ const patchAgentDeploymentJSON = `{
 	}
 }`
 
+const patchChartMuseumDeploymentJSON = `{
+	"spec": {
+		"template": {
+			"spec": {
+				"containers": [{
+					"name": "chartmuseum",
+					"env": [
+						{"name": "CHART_URL", "value": "http://chartmuseum.registry.svc.cluster.local:8080"}
+					]
+				}]
+			}
+		}
+	}
+}`
+
 const clusterYaml = `apiVersion: castware.cast.ai/v1alpha1
 kind: Cluster
 metadata:
@@ -59,7 +76,6 @@ spec:
   apiKeySecret: %s
   api:
     apiUrl: "%s"
-  helmRepoURL: "https://castai.github.io/helm-charts"
   terraform: false
 `
 
@@ -90,17 +106,28 @@ var _ = Describe("Manager", Ordered, func() {
 	var spotHandlerInstalled bool
 	var versionBeforeDowngrade string
 	var operatorChartPath string
+	var helmRegistryManifestPath string
 
 	// Extract image repository and tag from projectImage (format: repository:tag)
 	imageParts := strings.Split(projectImage, ":")
 	Expect(imageParts).To(HaveLen(2), "invalid projectImage format")
 
-	fetchFromAPI := func(apiURL string, httpMethod string, responseBody interface{}) error {
+	fetchFromAPI := func(apiURL string, httpMethod string, requestBody interface{}, responseBody interface{}) error {
 		req, err := http.NewRequest(httpMethod, apiURL, nil)
 		if err != nil {
 			return fmt.Errorf("failed to create HTTP request for URL %s: %w", apiURL, err)
 		}
 		req.Header.Set("X-API-Key", apiKey)
+
+		if requestBody != nil {
+			b, err := json.Marshal(requestBody)
+			if err != nil {
+				return fmt.Errorf("failed to marshal JSON request body: %w", err)
+			}
+
+			req.Body = io.NopCloser(bytes.NewReader(b))
+			req.Header.Set("Content-Type", "application/json")
+		}
 
 		client := &http.Client{Timeout: 30 * time.Second}
 		resp, err := client.Do(req)
@@ -119,6 +146,7 @@ var _ = Describe("Manager", Ordered, func() {
 		}
 
 		if responseBody != nil {
+			fmt.Println("RESPONSE BODY", string(body))
 			switch t := responseBody.(type) {
 			case *string:
 				*t = string(body)
@@ -154,6 +182,51 @@ var _ = Describe("Manager", Ordered, func() {
 
 		// Get project root directory (two levels up from test/e2e)
 		operatorChartPath = filepath.Join(wd, "charts", "castai-castware-operator")
+		helmRegistryManifestPath = filepath.Join(wd, "local", "registry.yaml")
+
+		By("installing helm registry")
+		cmd = exec.Command("kubectl", "apply", "-f", helmRegistryManifestPath)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to install helm registry")
+
+		// TODO: wait for registry pod ready
+		Eventually(verifyPodReady, 5*time.Minute).WithArguments("app", "chartmuseum", "registry").Should(Succeed())
+		// time.Sleep(time.Minute)
+
+		cmd = exec.Command("helm", "repo", "add", "local", "http://localhost:5001/helm-charts")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed add helm registry")
+
+		By("adding helm chart to local registry")
+		cmd = exec.Command("helm", "package", "./charts/castai-castware-operator")
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to package helm chart")
+		chartPath := strings.Split(output, "/")
+		chartPackage := strings.TrimSuffix(chartPath[len(chartPath)-1], "\n")
+
+		// Upload helm chart to ChartMuseum using native Go HTTP client
+		chartFile, err := os.Open(chartPackage)
+		Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to open chart package: %s", chartPackage))
+		// nolint: errcheck
+		defer chartFile.Close()
+
+		resp, err := http.Post("http://localhost:5001/helm-charts/api/charts", "application/gzip", chartFile)
+		Expect(err).NotTo(HaveOccurred(), "Failed to upload helm chart")
+		// nolint: errcheck
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred(), "Failed to read response body")
+		output = string(body)
+
+		Expect(resp.StatusCode).To(Equal(http.StatusCreated),
+			fmt.Sprintf("Failed to upload helm chart: %s - Status: %d, Response: %s", chartPackage, resp.StatusCode, output))
+		Expect(output).To(ContainSubstring("{\"saved\":true}"),
+			fmt.Sprintf("Failed to upload helm chart: %s - %s", chartPackage, output))
+
+		cmd = exec.Command("helm", "repo", "update", "local")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to update helm repo")
 
 		By("installing helm chart")
 		// Use helm upgrade --install command as defined in local/install-local.sh
@@ -173,11 +246,23 @@ var _ = Describe("Manager", Ordered, func() {
 			"--set", "webhook.env.GKE_REGION=e2e",
 			"--atomic",
 			"--timeout", "5m",
-			operatorChartPath,
+			"local/castware-operator",
 		)
-
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install helm chart")
+
+		By("patching chartmuseum deployment to use internal registry url")
+		cmd = exec.Command("kubectl", "patch", "deployment", "chartmuseum",
+			"-n", "registry",
+			"--type=strategic",
+			"-p", patchChartMuseumDeploymentJSON)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to patch chartmuseum deployment")
+
+		cmd = exec.Command("kubectl", "rollout", "restart", "deployment", "chartmuseum", "-n", "registry")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to restart chartmuseum deployment")
+
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
@@ -192,7 +277,7 @@ var _ = Describe("Manager", Ordered, func() {
 		if clusterID != "" && apiKey != "" && apiURL != "" {
 			By(fmt.Sprintf("deleting cluster from Cast AI API: %s", clusterID))
 			deleteURL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s", apiURL, clusterID)
-			err := fetchFromAPI(deleteURL, http.MethodDelete, nil)
+			err := fetchFromAPI(deleteURL, http.MethodDelete, nil, nil)
 			if err != nil {
 				fmt.Printf("Failed delete cluster: %v\n", err)
 			}
@@ -229,6 +314,10 @@ var _ = Describe("Manager", Ordered, func() {
 
 		By("removing metrics cluster role binding")
 		cmd = exec.Command("kubectl", "delete", "clusterrolebinding", metricsRoleBindingName)
+		_, _ = utils.Run(cmd)
+
+		By("deleting helm registry")
+		cmd = exec.Command("kubectl", "delete", "namespace", "registry")
 		_, _ = utils.Run(cmd)
 
 		By("deleting cluster roles and cluster role bindings")
@@ -482,9 +571,55 @@ var _ = Describe("Manager", Ordered, func() {
 
 			getClusterURL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s", apiURL, clusterID)
 			clusterResp := map[string]interface{}{}
-			err = fetchFromAPI(getClusterURL, http.MethodGet, &clusterResp)
+			err = fetchFromAPI(getClusterURL, http.MethodGet, nil, &clusterResp)
 			Expect(err).ToNot(HaveOccurred())
 			organizationID = clusterResp["organizationId"].(string)
+		})
+
+		It("should self upgrade", func() {
+			// operatorComponentID := ""
+			By("fetching operator component ID")
+			getClusterURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components:view",
+				apiURL, organizationID, clusterID)
+			componentsResp := struct {
+				Components []component `json:"components"`
+			}{}
+			err := fetchFromAPI(getClusterURL, http.MethodGet, nil, &componentsResp)
+			Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("Failed to fetch components  list: %v", err))
+			operatorComponent, ok := lo.Find(componentsResp.Components, func(item component) bool {
+				return item.Name == components.ComponentNameOperator
+			})
+			Expect(ok).To(BeTrue(), "Operator component not found")
+			Expect(operatorComponent.ID).NotTo(BeEmpty(), "Operator component id not found")
+
+			By("calling the run action endpoint to trigger a self upgrade")
+			runActionURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components/%s:runAction", apiURL, organizationID, clusterID, operatorComponent.ID)
+			reqBody := map[string]interface{}{"action": "UPDATE"}
+			err = fetchFromAPI(runActionURL, http.MethodPost, reqBody, nil)
+			Expect(err).ToNot(HaveOccurred(), "Failed to run update action")
+
+			By("checking that self upgrade job is completed successfully")
+			verifyUpgradeJobCompleted := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "jobs",
+					"-n", namespace,
+					"-l", "app.kubernetes.io/name=castware-operator,app.kubernetes.io/component=upgrade-job",
+					"-o", "json",
+				)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get upgrade job")
+
+				var jobList struct {
+					Items []batchv1.Job `json:"items"`
+				}
+				err = json.Unmarshal([]byte(output), &jobList)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to parse job list")
+				g.Expect(jobList.Items).NotTo(BeEmpty(), "No upgrade job found")
+
+				job := jobList.Items[0]
+				g.Expect(job.Status.Succeeded).To(BeEquivalentTo(1), "Upgrade job has not completed successfully")
+			}
+			Eventually(verifyUpgradeJobCompleted, 5*time.Minute, 10*time.Second).Should(Succeed())
+
 		})
 
 		It("should install castai-agent", func() {
@@ -550,7 +685,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			getClusterURL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s", apiURL, clusterID)
 			clusterResp := map[string]interface{}{}
-			err = fetchFromAPI(getClusterURL, http.MethodGet, &clusterResp)
+			err = fetchFromAPI(getClusterURL, http.MethodGet, nil, &clusterResp)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(clusterResp["status"]).To(Equal("ready"))
 			Expect(clusterResp["castwareInstallMethod"]).To(Equal("OPERATOR"))
@@ -639,7 +774,7 @@ var _ = Describe("Manager", Ordered, func() {
 			componentsResp := struct {
 				Components []component `json:"components"`
 			}{}
-			err = fetchFromAPI(getClusterURL, http.MethodGet, &componentsResp)
+			err = fetchFromAPI(getClusterURL, http.MethodGet, nil, &componentsResp)
 			Expect(err).ToNot(HaveOccurred())
 			agentComponent, ok := lo.Find(componentsResp.Components, func(item component) bool {
 				return item.Name == components.ComponentNameAgent
@@ -739,7 +874,7 @@ var _ = Describe("Manager", Ordered, func() {
 			componentsResp := struct {
 				Components []component `json:"components"`
 			}{}
-			err = fetchFromAPI(getClusterURL, http.MethodGet, &componentsResp)
+			err = fetchFromAPI(getClusterURL, http.MethodGet, nil, &componentsResp)
 			Expect(err).ToNot(HaveOccurred())
 			agentComponent, ok := lo.Find(componentsResp.Components, func(item component) bool {
 				return item.Name == components.ComponentNameAgent
@@ -866,7 +1001,7 @@ var _ = Describe("Manager", Ordered, func() {
 			componentsResp := struct {
 				Components []component `json:"components"`
 			}{}
-			err = fetchFromAPI(getClusterURL, http.MethodGet, &componentsResp)
+			err = fetchFromAPI(getClusterURL, http.MethodGet, nil, &componentsResp)
 			Expect(err).ToNot(HaveOccurred())
 			agentComponent, ok := lo.Find(componentsResp.Components, func(item component) bool {
 				return item.Name == components.ComponentNameSpotHandler
@@ -946,7 +1081,7 @@ var _ = Describe("Manager", Ordered, func() {
 			componentsResp := struct {
 				Components []component `json:"components"`
 			}{}
-			err = fetchFromAPI(getClusterURL, http.MethodGet, &componentsResp)
+			err = fetchFromAPI(getClusterURL, http.MethodGet, nil, &componentsResp)
 			Expect(err).ToNot(HaveOccurred())
 			agentComponent, ok := lo.Find(componentsResp.Components, func(item component) bool {
 				return item.Name == components.ComponentNameSpotHandler
@@ -965,7 +1100,7 @@ var _ = Describe("Manager", Ordered, func() {
 			// nolint: lll
 			getPhase2URL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s/credentials-script?crossRole=true&nvidiaDevicePlugin=false&installSecurityAgent=true&installAutoscalerAgent=true&installGpuMetricsExporter=false&installNetflowExporter=false&installWorkloadAutoscaler=true&installPodMutator=false&installOmni=false",
 				apiURL, clusterID)
-			err := fetchFromAPI(getPhase2URL, http.MethodGet, &scriptResp)
+			err := fetchFromAPI(getPhase2URL, http.MethodGet, nil, &scriptResp)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase2 script")
 
 			cmd := exec.Command("bash", "-c", scriptResp.Script)
@@ -975,7 +1110,6 @@ var _ = Describe("Manager", Ordered, func() {
 			// Checking successful install of spot-handler and cluster-controller is enough for this test.
 			Expect(output).To(ContainSubstring("cluster-controller ready with version"), "Failed to install cluster-controller")
 			Expect(output).To(ContainSubstring("spot-handler ready with version "), "Phase2 spot handler install failed")
-			// err = fetchFromAPI(getClusterURL, http.MethodGet, &componentsResp)
 		})
 
 		It("should offboard the operator and all components", func() {
@@ -1030,7 +1164,7 @@ var _ = Describe("Manager", Ordered, func() {
 			var scriptResp string
 			// nolint: lll
 			getScriptURL := fmt.Sprintf("%s/v1/agent.sh?provider=gke", apiURL)
-			err := fetchFromAPI(getScriptURL, http.MethodGet, &scriptResp)
+			err := fetchFromAPI(getScriptURL, http.MethodGet, nil, &scriptResp)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase1 script")
 
 			cmd := exec.Command("bash", "-c", scriptResp)
@@ -1156,7 +1290,7 @@ var _ = Describe("Manager", Ordered, func() {
 			// nolint: lll
 			getPhase2URL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s/credentials-script?crossRole=true&nvidiaDevicePlugin=false&installSecurityAgent=true&installAutoscalerAgent=true&installGpuMetricsExporter=false&installNetflowExporter=false&installWorkloadAutoscaler=true&installPodMutator=false&installOmni=false",
 				apiURL, clusterID)
-			err := fetchFromAPI(getPhase2URL, http.MethodGet, &scriptResp)
+			err := fetchFromAPI(getPhase2URL, http.MethodGet, nil, &scriptResp)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase2 script")
 
 			cmd := exec.Command("bash", "-c", scriptResp.Script)
@@ -1254,7 +1388,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("getting phase1 script")
 			var scriptResp string
 			getScriptURL := fmt.Sprintf("%s/v1/agent.sh?provider=gke", apiURL)
-			err = fetchFromAPI(getScriptURL, http.MethodGet, &scriptResp)
+			err = fetchFromAPI(getScriptURL, http.MethodGet, nil, &scriptResp)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase1 script")
 
 			cmd = exec.Command("bash", "-c", scriptResp)
@@ -1309,7 +1443,7 @@ var _ = Describe("Manager", Ordered, func() {
 			// nolint: lll
 			getPhase2URL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s/credentials-script?crossRole=true&nvidiaDevicePlugin=false&installSecurityAgent=true&installAutoscalerAgent=true&installGpuMetricsExporter=false&installNetflowExporter=false&installWorkloadAutoscaler=true&installPodMutator=false&installOmni=false&installOperator=false",
 				apiURL, clusterID)
-			err = fetchFromAPI(getPhase2URL, http.MethodGet, &scriptResp2)
+			err = fetchFromAPI(getPhase2URL, http.MethodGet, nil, &scriptResp2)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase2 script")
 
 			By("modifying phase2 script to set OPERATOR_MANAGED=false")
@@ -1486,7 +1620,7 @@ var _ = Describe("Manager", Ordered, func() {
 			var scriptResp string
 			// nolint: lll
 			getScriptURL := fmt.Sprintf("%s/v1/agent.sh?provider=gke", apiURL)
-			err := fetchFromAPI(getScriptURL, http.MethodGet, &scriptResp)
+			err := fetchFromAPI(getScriptURL, http.MethodGet, nil, &scriptResp)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase1 script")
 
 			cmd := exec.Command("bash", "-c", scriptResp)
@@ -1544,7 +1678,7 @@ var _ = Describe("Manager", Ordered, func() {
 			// nolint: lll
 			getPhase2URL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s/credentials-script?crossRole=true&nvidiaDevicePlugin=false&installSecurityAgent=true&installAutoscalerAgent=true&installGpuMetricsExporter=false&installNetflowExporter=false&installWorkloadAutoscaler=true&installPodMutator=false&installOmni=false",
 				apiURL, clusterID)
-			err = fetchFromAPI(getPhase2URL, http.MethodGet, &phase2ScriptResp)
+			err = fetchFromAPI(getPhase2URL, http.MethodGet, nil, &phase2ScriptResp)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase2 script")
 
 			// Install phase2 as not operator managed
@@ -1721,6 +1855,30 @@ func getMetricsOutput() string {
 	return metricsOutput
 }
 
+func verifyPodReady(g Gomega, label, deploymentName, namespace string) {
+	// Get pods with label app.kubernetes.io/name=deploymentName
+	cmd := exec.Command("kubectl", "get", "pods",
+		"-l", fmt.Sprintf("%s=%s", label, deploymentName),
+		"-n", namespace,
+		"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+	output, err := utils.Run(cmd)
+	g.Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to get %s pods", deploymentName))
+	g.Expect(output).NotTo(BeEmpty(), fmt.Sprintf("No %s pods found", deploymentName))
+
+	// Check that at least one pod has Ready=True
+	lines := utils.GetNonEmptyLines(output)
+	g.Expect(lines).ToNot(BeEmpty(), fmt.Sprintf("No %s pods found", deploymentName))
+
+	foundReady := false
+	for _, line := range lines {
+		if podReady(line) {
+			foundReady = true
+			break
+		}
+	}
+	g.Expect(foundReady).To(BeTrue(), fmt.Sprintf("No %s pods are in Ready state", deploymentName))
+}
+
 func podReady(line string) bool {
 	return len(line) > 0 && (line[len(line)-4:] == "True" || line[len(line)-1:] == "T")
 }
@@ -1734,6 +1892,7 @@ type tokenRequest struct {
 }
 
 type component struct {
+	ID            string `json:"id"`
 	Name          string `json:"name"`
 	UsedVersion   string `json:"usedVersion"`
 	LatestVersion string `json:"latestVersion"`

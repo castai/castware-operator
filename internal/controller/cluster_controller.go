@@ -1007,6 +1007,8 @@ func (r *ClusterReconciler) handleOperatorUpgrade(ctx context.Context, cluster *
 		return err
 	}
 
+	log.Infof("operator upgrade action: version %s, image %s", action.Version, operatorImage)
+
 	jobName, err := r.createUpgradeJob(ctx, cluster, operatorImage, action.Version)
 	if err != nil {
 		log.WithError(err).Error("Failed to create upgrade job")
@@ -1109,6 +1111,13 @@ func (r *ClusterReconciler) createUpgradeJob(ctx context.Context, cluster *castw
 				Spec: corev1.PodSpec{
 					RestartPolicy:      corev1.RestartPolicyNever,
 					ServiceAccountName: operatorServiceAccountName,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: lo.ToPtr(true),
+						RunAsUser:    lo.ToPtr(int64(1000)),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
 					Volumes: []corev1.Volume{
 						{
 							Name: "helm-cache",
@@ -1175,11 +1184,16 @@ func (r *ClusterReconciler) createUpgradeJob(ctx context.Context, cluster *castw
 								PeriodSeconds:       10,
 							},
 							SecurityContext: &corev1.SecurityContext{
+								RunAsNonRoot:             lo.ToPtr(true),
+								RunAsUser:                lo.ToPtr(int64(1000)),
 								AllowPrivilegeEscalation: lo.ToPtr(false),
 								Capabilities: &corev1.Capabilities{
 									Drop: []corev1.Capability{"ALL"},
 								},
 								ReadOnlyRootFilesystem: lo.ToPtr(true),
+								SeccompProfile: &corev1.SeccompProfile{
+									Type: corev1.SeccompProfileTypeRuntimeDefault,
+								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
