@@ -3,6 +3,8 @@ kind: Deployment
 metadata:
   name: {{ include "castware-operator.fullname" . }}
   namespace: {{ .Release.Namespace }}
+  annotations:
+    ignore-check.kube-linter.io/env-var-secret: "CERTS_SECRET contains secret name, not secret value"
   labels:
     {{- include "castware-operator.labels" . | nindent 4 }}
 spec:
