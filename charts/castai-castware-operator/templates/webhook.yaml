@@ -25,8 +25,8 @@ webhooks:
       - v1
     clientConfig:
       service:
-        name: castware-operator-webhook-service
-        namespace: castai-agent
+        name: {{ include "castware-operator.fullname" . }}-webhook-service
+        namespace: {{ .Release.Namespace }}
         path: /mutate-castware-cast-ai-v1alpha1-cluster
     failurePolicy: Fail
     name: mcluster-v1alpha1.kb.io
@@ -45,8 +45,8 @@ webhooks:
       - v1
     clientConfig:
       service:
-        name: castware-operator-webhook-service
-        namespace: castai-agent
+        name: {{ include "castware-operator.fullname" . }}-webhook-service
+        namespace: {{ .Release.Namespace }}
         path: /mutate-castware-cast-ai-v1alpha1-component
     failurePolicy: Fail
     name: mcomponent-v1alpha1.kb.io

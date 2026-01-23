@@ -229,11 +229,11 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: castware-operator-namespace-role-ext
+  name: {{ include "castware-operator.fullname" . }}-namespace-role-ext
 subjects:
 - kind: ServiceAccount
   name: {{ include "castware-operator.fullname" . }}-controller-manager
-  namespace: castai-agent
+  namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -245,9 +245,9 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: castware-operator-manager-role-ext
+  name: {{ include "castware-operator.fullname" . }}-manager-role-ext
 subjects:
 - kind: ServiceAccount
   name: {{ include "castware-operator.fullname" . }}-controller-manager
-  namespace: castai-agent
+  namespace: {{ .Release.Namespace }}
 {{- end }}
