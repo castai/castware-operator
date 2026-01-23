@@ -112,6 +112,11 @@ type ClusterStatus struct {
 	// Empty value indicates the cluster has not been registered by the operator yet.
 	// +optional
 	LastRegistrationVersion string `json:"lastRegistrationVersion,omitempty"`
+	// LastReportedOperatorVersion is the operator version that was last reported to Mothership.
+	// Format is semantic version without 'v' prefix (e.g., "0.3.0").
+	// Used to detect out-of-band upgrades (e.g., direct helm upgrade) and report them to Mothership.
+	// +optional
+	LastReportedOperatorVersion string `json:"lastReportedOperatorVersion,omitempty"`
 }
 
 //+kubebuilder:object:root=true

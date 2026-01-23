@@ -1,17 +1,16 @@
 package controller
 
 import (
-	"castai-agent/pkg/services/providers/aks"
-	"castai-agent/pkg/services/providers/eks"
-	"castai-agent/pkg/services/providers/gke"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
-	components "github.com/castai/castware-operator/internal/component"
-	"github.com/castai/castware-operator/internal/rolebindings"
+	"castai-agent/pkg/services/providers/aks"
+	"castai-agent/pkg/services/providers/eks"
+	"castai-agent/pkg/services/providers/gke"
+
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/storage/driver"
@@ -30,8 +29,11 @@ import (
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 	"github.com/castai/castware-operator/internal/castai"
 	"github.com/castai/castware-operator/internal/castai/auth"
+	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/internal/config"
 	"github.com/castai/castware-operator/internal/helm"
+	"github.com/castai/castware-operator/internal/params"
+	"github.com/castai/castware-operator/internal/rolebindings"
 )
 
 // Definitions to manage status conditions
@@ -373,6 +375,7 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.Fie
 			"apiKey":    apiKey,
 			"apiURL":    cluster.Spec.API.APIURL,
 		}
+
 	case components.ComponentNameSpotHandler:
 		auth := auth.NewAuth(cluster.Namespace, cluster.Name)
 		apiKey, err := auth.GetApiKey(ctx, r.Client)
@@ -864,6 +867,28 @@ func (r *ComponentReconciler) recordActionResult(
 	if actionErr != nil {
 		req.Status = castai.Status_ERROR
 		req.Message = actionErr.Error()
+	}
+
+	// Extract component parameters only when the operation is complete (OK or ERROR status)
+	// Don't extract for PROGRESSING status as the component may not be fully installed yet
+	if action != castai.Action_DELETE && req.Status != castai.Status_PROGRESSING {
+		helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+			Namespace:   component.Namespace,
+			ReleaseName: getReleaseName(component),
+		})
+		if err != nil {
+			log.WithError(err).Warn("Failed to get Helm release for parameter extraction, continuing without parameters")
+		} else {
+			componentParams := params.ExtractComponentParams(
+				ctx,
+				log,
+				component.Spec.Component,
+				helmRelease,
+				r.Client,
+				component.Namespace,
+			)
+			req.ComponentParams = componentParams
+		}
 	}
 
 	if err := castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, req); err != nil {

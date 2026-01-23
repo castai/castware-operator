@@ -64,6 +64,10 @@ type ComponentActionResult struct {
 	ReleaseName string `json:"release_name,omitempty"`
 	// The verbose details of the outcome.
 	Message string `json:"message,omitempty"`
+	// Component-specific installation parameters.
+	// Only specific, non-sensitive parameters are included (not all Helm values).
+	// Examples: {"extendedPermissions": true}, {"phase2Permissions": true}
+	ComponentParams map[string]interface{} `json:"component_params,omitempty"`
 }
 
 // The action that can be performed on a CASTware component.

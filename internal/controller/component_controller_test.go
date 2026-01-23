@@ -150,7 +150,7 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 				Config: map[string]interface{}{},
-			}, nil).Times(2)
+			}, nil).Times(3)
 
 			testOps.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), testCluster.Spec.Cluster.ClusterID, gomock.Any()).Return(nil).AnyTimes()
 
