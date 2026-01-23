@@ -109,7 +109,36 @@ affinity:
               values:
                 - windows
 
-# Whether to create the extended permissions for the operator, needed for phase2 components
+# Whether to create the extended permissions for the operator, needed for Phase 2 components.
+#
+# When set to false (default - Phase 1):
+#   - Standard read-only RBAC permissions
+#   - Components from defaultComponents are installed:
+#     * castai-agent: monitors cluster
+#     * spot-handler: read-only mode (phase2Permissions: false)
+#   - Components from defaultPhase2Components are NOT installed
+#
+# When set to true (Phase 2):
+#   - Extended write RBAC permissions created (rbac-ext.yaml)
+#   - Components from defaultComponents are installed:
+#     * castai-agent: monitors cluster
+#     * spot-handler: write mode (phase2Permissions: true automatically set)
+#   - Components from defaultPhase2Components are installed (if defaultPhase2Components.enabled=true):
+#     * cluster-controller: manages autoscaling
+#
+# Phase 2 installation example:
+#   helm install castware-operator castai-helm/castware-operator \
+#     -n castai-agent \
+#     --set apiKeySecret.apiKey=<YOUR_API_KEY> \
+#     --set extendedPermissions=true
+#
+# Install extended permissions without Phase 2 components (manual control):
+#   helm install castware-operator castai-helm/castware-operator \
+#     -n castai-agent \
+#     --set apiKeySecret.apiKey=<YOUR_API_KEY> \
+#     --set extendedPermissions=true \
+#     --set defaultPhase2Components.enabled=false
+#
 extendedPermissions: false
 
 # Default cluster configuration
@@ -125,20 +154,71 @@ defaultCluster:
   provider: ""
   helmRepoURL: "https://castai.github.io/helm-charts"
 
-# Default components configuration
+# Default components configuration (Phase 1)
+#
+# Phase 1 components are always created when defaultComponents.enabled=true:
+#   - castai-agent: Monitors cluster state and reports to CAST AI
+#   - spot-handler: Handles spot instance lifecycle events
+#
+# Note: spot-handler automatically switches to write mode (phase2Permissions: true)
+#       when extendedPermissions=true is set.
+#
 defaultComponents:
   enabled: true
-  # List of default components to create
+  # List of Phase 1 components to create
   # Each component will be created with the specified configuration
   components:
     castai-agent:
       component: "castai-agent"
       cluster: "castai"
       enabled: true
+      # Optional: specify version (defaults to latest from CAST AI API)
+      # version: "0.52.0"
+      # Optional: custom Helm values
+      # overrides:
+      #   resources:
+      #     limits:
+      #       memory: "256Mi"
     spot-handler:
       component: "spot-handler"
       cluster: "castai"
       enabled: true
+      # Optional: specify version (defaults to latest from CAST AI API)
+      # version: "0.10.0"
+      # Optional: custom Helm values
+      # Note: phase2Permissions is automatically set based on extendedPermissions flag
+      # overrides:
+      #   resources:
+      #     limits:
+      #       memory: "512Mi"
+
+# Default Phase 2 components configuration
+#
+# Phase 2 components are only created when:
+#   1. defaultPhase2Components.enabled=true (default)
+#   2. extendedPermissions=true
+#
+# Phase 2 components require extended RBAC permissions:
+#   - cluster-controller: Manages cluster autoscaling and node operations
+#
+# Set defaultPhase2Components.enabled=false to install extended permissions
+# without automatically installing Phase 2 components (useful for manual control).
+#
+defaultPhase2Components:
+  enabled: true
+  # List of Phase 2 components to create
+  # Each component will be created with the specified configuration
+  components:
+    cluster-controller:
+      component: "cluster-controller"
+      cluster: "castai"
+      enabled: true
+      # Optional: specify version (defaults to latest from CAST AI API)
+      # version: "0.40.0"
+      # Optional: custom Helm values
+      overrides:
+        autoscaling:
+          enabled: true
 # -- Used to set additional volumes.
 extraVolumes: []
 
