@@ -72,6 +72,7 @@ var ErrNothingToRollback = errors.New("nothing to rollback")
 // +kubebuilder:rbac:groups="",resources=limitranges;namespaces;persistentvolumeclaims;persistentvolumes;replicationcontrollers;resourcequotas,verbs=get;list;watch
 // +kubebuilder:rbac:groups=argoproj.io,resources=rollouts,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling.cast.ai,resources=recommendations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling.cast.ai,resources=custommetricsexporterconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=cronjobs;jobs,verbs=get;list;watch
