@@ -46,6 +46,8 @@ spec:
                   fieldPath: metadata.namespace
             - name: OPERATOR_NAME
               value: {{ include "castware-operator.fullname" . }}
+            - name: HELM_RELEASE_NAME
+              value: {{ .Release.Name }}
             - name: LOG_LEVEL
               value: "info"
             - name: API_URL

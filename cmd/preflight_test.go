@@ -400,3 +400,71 @@ type: application
 
 	return buf.Bytes()
 }
+
+func TestPreflightInstallCheckCmd_ReleaseNameValidation(t *testing.T) {
+	t.Run(
+		"failure - invalid release name", func(t *testing.T) {
+			cfg := &config.Config{
+				PodNamespace:    "castai-agent",
+				HelmReleaseName: "invalid-release-name",
+			}
+
+			// Test the validation logic directly
+			err := validatePreflightInstallConfig(cfg)
+
+			assert.Error(t, err)
+			assert.Contains(
+				t, err.Error(), "Operator must be installed with release name 'castware-operator'",
+			)
+			assert.Contains(t, err.Error(), "invalid-release-name")
+		},
+	)
+
+	t.Run(
+		"failure - namespace check runs before release name check", func(t *testing.T) {
+			cfg := &config.Config{
+				PodNamespace:    "wrong-namespace",
+				HelmReleaseName: "invalid-release-name",
+			}
+
+			// Test the validation logic directly
+			err := validatePreflightInstallConfig(cfg)
+
+			assert.Error(t, err)
+			// Should fail on namespace check first
+			assert.Contains(t, err.Error(), "Operator must be installed in namespace 'castai-agent'")
+			assert.NotContains(t, err.Error(), "release name")
+		},
+	)
+
+	t.Run(
+		"passes release name validation with correct name", func(t *testing.T) {
+			cfg := &config.Config{
+				PodNamespace:    "castai-agent",
+				HelmReleaseName: "castware-operator",
+			}
+
+			// Test the validation logic directly
+			err := validatePreflightInstallConfig(cfg)
+
+			assert.NoError(t, err)
+		},
+	)
+
+	t.Run(
+		"failure - empty release name", func(t *testing.T) {
+			cfg := &config.Config{
+				PodNamespace:    "castai-agent",
+				HelmReleaseName: "",
+			}
+
+			// Test the validation logic directly
+			err := validatePreflightInstallConfig(cfg)
+
+			assert.Error(t, err)
+			assert.Contains(
+				t, err.Error(), "Operator must be installed with release name 'castware-operator'",
+			)
+		},
+	)
+}

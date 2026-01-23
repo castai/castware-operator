@@ -111,6 +111,37 @@ func newPreflightCheckCmd() *cobra.Command {
 	return preflightCheckCmd
 }
 
+// validatePreflightInstallConfig validates the configuration for preflight install check.
+func validatePreflightInstallConfig(cfg *config.Config) error {
+	// Validate namespace is castai-agent
+	if cfg.PodNamespace != "castai-agent" {
+		return fmt.Errorf(`
+==========================================
+PREFLIGHT CHECK FAILED
+Operator must be installed in namespace 'castai-agent'
+==========================================
+Current namespace: %s
+
+Action: Install with --namespace castai-agent
+==========================================`, cfg.PodNamespace)
+	}
+
+	// Validate release name is castware-operator
+	if cfg.HelmReleaseName != "castware-operator" {
+		return fmt.Errorf(`
+==========================================
+PREFLIGHT CHECK FAILED
+Operator must be installed with release name 'castware-operator'
+==========================================
+Current release name: %s
+
+Action: Install with release name castware-operator
+==========================================`, cfg.HelmReleaseName)
+	}
+
+	return nil
+}
+
 func newPreflightInstallCheckCmd() *cobra.Command {
 	preflightInstallCheckCmd := &cobra.Command{
 		Use:   "preflight-install-check",
@@ -132,17 +163,9 @@ func newPreflightInstallCheckCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(controllerruntime.SetupSignalHandler(), time.Minute*5)
 			defer cancel()
 
-			// Validate namespace is castai-agent
-			if cfg.PodNamespace != "castai-agent" {
-				return fmt.Errorf(`
-==========================================
-PREFLIGHT CHECK FAILED
-Operator must be installed in namespace 'castai-agent'
-==========================================
-Current namespace: %s
-
-Action: Install with --namespace castai-agent
-==========================================`, cfg.PodNamespace)
+			// Validate configuration
+			if err := validatePreflightInstallConfig(cfg); err != nil {
+				return err
 			}
 
 			// Get API key from environment
