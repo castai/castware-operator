@@ -119,7 +119,7 @@ defaultCluster:
   # This will create a default Cluster CR if enabled
   name: "castai"
   api:
-    apiUrl: "https://api.dev-master.cast.ai"  # "https://api.cast.ai"
+    apiUrl: "https://api.cast.ai"
   # If not specified, will use apiKeySecret.name from above
   apiKeySecret: ""
   provider: ""

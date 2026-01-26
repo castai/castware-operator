@@ -1,9 +1,6 @@
 package controller
 
 import (
-	"castai-agent/pkg/services/providers/aks"
-	"castai-agent/pkg/services/providers/eks"
-	"castai-agent/pkg/services/providers/gke"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,10 +12,11 @@ import (
 	"time"
 
 	agentcastai "castai-agent/pkg/castai"
-
+	"castai-agent/pkg/services/providers/aks"
+	"castai-agent/pkg/services/providers/eks"
+	"castai-agent/pkg/services/providers/gke"
 	providers "castai-agent/pkg/services/providers/types"
 
-	"github.com/castai/castware-operator/internal/rolebindings"
 	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/storage/driver"
@@ -48,6 +46,8 @@ import (
 	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/internal/config"
 	"github.com/castai/castware-operator/internal/helm"
+	"github.com/castai/castware-operator/internal/params"
+	"github.com/castai/castware-operator/internal/rolebindings"
 	"github.com/castai/castware-operator/internal/utils"
 )
 
@@ -145,6 +145,11 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return result, err
 	}
 	log.Debug("Initial setup completed")
+
+	// Detect and report operator version changes (e.g., from direct helm upgrades)
+	if err := r.detectAndReportOperatorVersionChange(ctx, cluster, castAiClient); err != nil {
+		log.WithError(err).Error("Failed to detect operator version change")
+	}
 
 	reconcile, err := r.reconcileSecret(ctx, cluster)
 	if err != nil {
@@ -292,20 +297,34 @@ func (r *ClusterReconciler) completeInitialSetup(ctx context.Context, cluster *c
 		releaseName = helmRelease.Name
 	}
 
+	// Extract operator parameters
+	componentParams := params.ExtractComponentParams(
+		ctx,
+		log,
+		components.ComponentNameOperator,
+		nil, // helmRelease may be nil if installed via manifests
+		r.Client,
+		r.Config.PodNamespace,
+	)
+
 	err = castAiClient.RecordActionResult(ctx, clusterMetadata.ClusterID, &castai.ComponentActionResult{
-		Name:           components.ComponentNameOperator,
-		Action:         castai.Action_INSTALL,
-		CurrentVersion: operatorVersion,
-		Version:        operatorVersion,
-		Status:         castai.Status_OK,
-		ImageVersions:  nil,
-		ReleaseName:    releaseName,
-		Message:        "Operator installed",
+		Name:            components.ComponentNameOperator,
+		Action:          castai.Action_INSTALL,
+		CurrentVersion:  operatorVersion,
+		Version:         operatorVersion,
+		Status:          castai.Status_OK,
+		ImageVersions:   nil,
+		ReleaseName:     releaseName,
+		Message:         "Operator installed",
+		ComponentParams: componentParams,
 	})
 	if err != nil {
 		log.WithError(err).Error("Failed to record action result")
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
+
+	// Track the reported version to detect future out-of-band upgrades
+	cluster.Status.LastReportedOperatorVersion = operatorVersion
 
 	log.Info("Cluster reconciled")
 	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{Type: typeAvailableCluster, Status: metav1.ConditionTrue, Reason: "ClusterIdAvailable", Message: "Cluster reconciled"})
@@ -315,6 +334,85 @@ func (r *ClusterReconciler) completeInitialSetup(ctx context.Context, cluster *c
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+}
+
+// detectAndReportOperatorVersionChange detects if the operator version has changed from what was
+// last reported to Mothership (e.g., due to a direct helm upgrade) and reports it.
+// This only triggers if there's NO active upgrade job (to avoid double-reporting with Mothership-initiated upgrades).
+func (r *ClusterReconciler) detectAndReportOperatorVersionChange(ctx context.Context, cluster *castwarev1alpha1.Cluster, castAiClient castai.CastAIClient) error {
+	log := r.Log.WithField("action", "detect-version-change")
+
+	// Skip if there's an active upgrade job (Mothership-initiated upgrade in progress)
+	if cluster.Status.UpgradeJobName != "" {
+		log.Debug("Skipping version detection: upgrade job in progress")
+		return nil
+	}
+
+	// Skip if cluster is not yet fully set up
+	if cluster.Spec.Cluster.ClusterID == "" || !meta.IsStatusConditionTrue(cluster.Status.Conditions, typeAvailableCluster) {
+		return nil
+	}
+
+	// Get current operator version from Helm
+	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+		Namespace:   r.Config.PodNamespace,
+		ReleaseName: r.Config.HelmReleaseName,
+	})
+	if err != nil {
+		// If Helm release not found (e.g., manifests-based install), skip version detection
+		if errors.Is(err, driver.ErrReleaseNotFound) {
+			log.Debug("Helm release not found, skipping version detection")
+			return nil
+		}
+		return fmt.Errorf("failed to get Helm release: %w", err)
+	}
+
+	currentVersion := helmRelease.Chart.Metadata.Version
+	lastReportedVersion := cluster.Status.LastReportedOperatorVersion
+
+	// Check if version has changed
+	if currentVersion == lastReportedVersion {
+		return nil
+	}
+
+	// Version changed! Report it to Mothership
+	log.WithFields(logrus.Fields{
+		"currentVersion":  currentVersion,
+		"previousVersion": lastReportedVersion,
+	}).Info("Detected operator version change, reporting to Mothership")
+
+	// Extract operator parameters
+	componentParams := params.ExtractComponentParams(
+		ctx,
+		log,
+		components.ComponentNameOperator,
+		helmRelease,
+		r.Client,
+		r.Config.PodNamespace,
+	)
+
+	err = castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, &castai.ComponentActionResult{
+		Name:            components.ComponentNameOperator,
+		Action:          castai.Action_UPGRADE,
+		CurrentVersion:  currentVersion,
+		Version:         currentVersion,
+		Status:          castai.Status_OK,
+		ReleaseName:     helmRelease.Name,
+		Message:         "Operator version change detected",
+		ComponentParams: componentParams,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to record version change: %w", err)
+	}
+
+	// Update the tracking field
+	cluster.Status.LastReportedOperatorVersion = currentVersion
+	if err := r.Status().Update(ctx, cluster); err != nil {
+		return fmt.Errorf("failed to update LastReportedOperatorVersion: %w", err)
+	}
+
+	log.Info("Successfully reported operator version change to Mothership")
+	return nil
 }
 
 // syncTerraformComponents handles Component CRs that are created by Terraform with migration mode
@@ -1045,15 +1143,26 @@ func (r *ClusterReconciler) handleOperatorUpgrade(ctx context.Context, cluster *
 		return nil
 	}
 
+	// Extract operator parameters
+	componentParams := params.ExtractComponentParams(
+		ctx,
+		log,
+		components.ComponentNameOperator,
+		helmRelease,
+		r.Client,
+		r.Config.PodNamespace,
+	)
+
 	err = castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, &castai.ComponentActionResult{
-		Name:           components.ComponentNameOperator,
-		Action:         castai.Action_UPGRADE,
-		CurrentVersion: helmRelease.Chart.Metadata.Version,
-		Version:        helmRelease.Chart.Metadata.Version,
-		Status:         castai.Status_PROGRESSING,
-		ImageVersions:  nil,
-		ReleaseName:    helmRelease.Name,
-		Message:        "Operator upgrading",
+		Name:            components.ComponentNameOperator,
+		Action:          castai.Action_UPGRADE,
+		CurrentVersion:  helmRelease.Chart.Metadata.Version,
+		Version:         helmRelease.Chart.Metadata.Version,
+		Status:          castai.Status_PROGRESSING,
+		ImageVersions:   nil,
+		ReleaseName:     helmRelease.Name,
+		Message:         "Operator upgrading",
+		ComponentParams: componentParams,
 	})
 	if err != nil {
 		log.WithError(err).Error("Failed to record action result")
@@ -1250,6 +1359,50 @@ func (r *ClusterReconciler) checkUpgradeJobStatus(ctx context.Context, cluster *
 
 	if job.Status.Succeeded > 0 {
 		log.Info("Upgrade job succeeded")
+
+		// Record the successful upgrade to Mothership with component parameters
+		castAiClient, err := r.getCastaiClient(ctx, cluster)
+		if err != nil {
+			log.WithError(err).Error("Failed to get castaiClient to record upgrade completion")
+		} else {
+			// Get the current operator Helm release to determine the version
+			helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+				Namespace:   r.Config.PodNamespace,
+				ReleaseName: r.Config.HelmReleaseName,
+			})
+			if err != nil {
+				log.WithError(err).Error("Failed to get operator helm release to record upgrade completion")
+			} else {
+				// Extract operator parameters
+				componentParams := params.ExtractComponentParams(
+					ctx,
+					log,
+					components.ComponentNameOperator,
+					helmRelease,
+					r.Client,
+					r.Config.PodNamespace,
+				)
+
+				// Record the upgrade completion with OK status and component parameters
+				err = castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, &castai.ComponentActionResult{
+					Name:            components.ComponentNameOperator,
+					Action:          castai.Action_UPGRADE,
+					CurrentVersion:  helmRelease.Chart.Metadata.Version,
+					Version:         helmRelease.Chart.Metadata.Version,
+					Status:          castai.Status_OK,
+					ReleaseName:     helmRelease.Name,
+					Message:         "Operator upgrade completed successfully",
+					ComponentParams: componentParams,
+				})
+				if err != nil {
+					log.WithError(err).Error("Failed to record operator upgrade completion")
+				} else {
+					log.Info("Recorded operator upgrade completion to Mothership")
+					// Track the reported version to prevent duplicate reporting
+					cluster.Status.LastReportedOperatorVersion = helmRelease.Chart.Metadata.Version
+				}
+			}
+		}
 
 		// Clean up the job
 		if err := r.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
