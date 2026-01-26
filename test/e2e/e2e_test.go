@@ -289,6 +289,41 @@ var _ = Describe("Preflight Install Check", Ordered, Serial, func() {
 		Expect(output).To(ContainSubstring("True"), "Preflight job should have failed")
 	})
 
+	It("should fail preflight-install-check when release name is different than castware-operator", func() {
+		By("creating test namespace")
+		cmd := exec.Command("kubectl", "create", "ns", namespace)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to create test namespace")
+
+		By("attempting to install operator with invalid release name")
+		invalidReleaseName := "invalid-release-name"
+		cmd = installOperatorWithPreflight(
+			invalidReleaseName,
+			namespace,
+			apiKey,
+			apiURL,
+			"",
+		)
+
+		_, err = utils.Run(cmd)
+		Expect(err).To(HaveOccurred(), "Installation should fail with invalid release name")
+		Expect(err.Error()).To(
+			ContainSubstring("preflight-install-check"),
+			"Error should mention preflight-install-check",
+		)
+
+		By("verifying preflight-install-check job failed")
+		cmd = exec.Command(
+			"kubectl", "get", "job",
+			"-l", "app.kubernetes.io/name=castware-operator",
+			"-n", namespace,
+			"-o", "jsonpath={.items[*].status.conditions[?(@.type=='Failed')].status}",
+		)
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(output).To(ContainSubstring("True"), "Preflight job should have failed")
+	})
+
 	It("should pass preflight-install-check with valid configuration", func() {
 		//testReleaseName := "castware-operator-valid"
 		testReleaseName := "castware-operator"
