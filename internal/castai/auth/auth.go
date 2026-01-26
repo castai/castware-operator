@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"sync"
 
-	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 )
 
 type Auth interface {
@@ -81,4 +82,29 @@ func (a *auth) ApiKey() string {
 	a.lock.RLock()
 	defer a.lock.RUnlock()
 	return a.apiKey
+}
+
+// staticAuth is a simple implementation of Auth that returns a static API key
+// without needing to load it from a Kubernetes secret. This is useful for
+// preflight checks and other scenarios where the API key is provided directly.
+type staticAuth struct {
+	apiKey string
+}
+
+// NewStaticAuth creates a new Auth implementation with a static API key.
+func NewStaticAuth(apiKey string) Auth {
+	return &staticAuth{apiKey: apiKey}
+}
+
+func (s *staticAuth) LoadApiKey(_ context.Context, _ client.Reader) error {
+	// No-op for static auth as the key is already loaded
+	return nil
+}
+
+func (s *staticAuth) GetApiKey(_ context.Context, _ client.Reader) (string, error) {
+	return s.apiKey, nil
+}
+
+func (s *staticAuth) ApiKey() string {
+	return s.apiKey
 }

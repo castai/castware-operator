@@ -151,3 +151,33 @@ func (cl *remoteChartLoader) chartURL(index *repo.IndexFile, name, version strin
 
 	return "", ErrChartNotFound
 }
+
+// HelmRepo is a wrapper around helm's ChartRepository that provides
+// a simpler interface for accessing helm repository indexes.
+type HelmRepo struct {
+	repo *repo.ChartRepository
+}
+
+// NewHelmRepo creates a new HelmRepo for the given repository URL.
+func NewHelmRepo(repoURL string) (*HelmRepo, error) {
+	r, err := repo.NewChartRepository(&repo.Entry{URL: repoURL}, getter.All(&cli.EnvSettings{}))
+	if err != nil {
+		return nil, fmt.Errorf("initializing chart repo: %w", err)
+	}
+	return &HelmRepo{repo: r}, nil
+}
+
+// DownloadIndex downloads and parses the helm repository index file.
+func (hr *HelmRepo) DownloadIndex() (*repo.IndexFile, error) {
+	indexFilepath, err := hr.repo.DownloadIndexFile()
+	if err != nil {
+		return nil, fmt.Errorf("downloading index file: %w", err)
+	}
+
+	index, err := repo.LoadIndexFile(indexFilepath)
+	if err != nil {
+		return nil, fmt.Errorf("loading index file: %w", err)
+	}
+
+	return index, nil
+}
