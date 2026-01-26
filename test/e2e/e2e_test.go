@@ -146,7 +146,6 @@ var _ = Describe("Manager", Ordered, func() {
 		}
 
 		if responseBody != nil {
-			fmt.Println("RESPONSE BODY", string(body))
 			switch t := responseBody.(type) {
 			case *string:
 				*t = string(body)
@@ -593,10 +592,19 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(operatorComponent.ID).NotTo(BeEmpty(), "Operator component id not found")
 
 			By("calling the run action endpoint to trigger a self upgrade")
-			runActionURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components/%s:runAction", apiURL, organizationID, clusterID, operatorComponent.ID)
+			runActionURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components/%s:runAction",
+				apiURL, organizationID, clusterID, operatorComponent.ID)
 			reqBody := map[string]interface{}{"action": "UPDATE"}
-			err = fetchFromAPI(runActionURL, http.MethodPost, reqBody, nil)
+			resp := struct {
+				Action struct {
+					Action    string `json:"action"`
+					Automated bool   `json:"automated"`
+				} `json:"action"`
+			}{}
+			err = fetchFromAPI(runActionURL, http.MethodPost, reqBody, &resp)
+			// TODO: fix already up to date error
 			Expect(err).ToNot(HaveOccurred(), "Failed to run update action")
+			Expect(resp.Action.Automated).To(BeTrue(), "Action should be automated")
 
 			By("checking that self upgrade job is completed successfully")
 			verifyUpgradeJobCompleted := func(g Gomega) {

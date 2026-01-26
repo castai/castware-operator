@@ -2,11 +2,14 @@ package e2e
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/util/yaml"
 
 	"github.com/castai/castware-operator/test/utils"
 )
@@ -29,8 +32,22 @@ func TestE2E(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 	By("building the manager(Operator) image")
+	// TODO: better way to locate file
+	b, err := os.ReadFile("../../charts/castai-castware-operator/Chart.yaml")
+	Expect(err).NotTo(HaveOccurred(), "Failed to read Chart.yaml")
+	chart := map[string]interface{}{}
+	err = yaml.Unmarshal(b, &chart)
+	Expect(err).NotTo(HaveOccurred(), "Failed to unmarshal Chart.yaml")
+	appVersion := strings.Trim(chart["appVersion"].(string), " ")
+	versionedImage := strings.Replace(projectImage, ":e2e", ":"+appVersion, 1)
+	// projectImage = fmt.Sprintf("cast.ai/castware-operator:%s", version)
+	fmt.Println("APP VERSION: ", appVersion)
 	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
-	_, err := utils.Run(cmd)
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
+
+	cmd = exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", versionedImage))
+	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
 
 	// built and available before running the tests. Also, remove the following block.
@@ -39,6 +56,8 @@ var _ = BeforeSuite(func() {
 	By("loading the manager(Operator) image on Kind")
 	err = utils.LoadImageToKindClusterWithName(projectImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
+	err = utils.LoadImageToKindClusterWithName(versionedImage)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) versioned image into Kind")
 })
 
 var _ = AfterSuite(func() {
