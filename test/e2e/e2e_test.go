@@ -96,6 +96,9 @@ spec:
       GKE_REGION: e2e
 `
 
+// To run the tests enable wire-castware-skip-version-check feature flag for the test organization,
+// otherwise the self upgrade test will fail
+
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
 	var clusterID string
@@ -602,7 +605,6 @@ var _ = Describe("Manager", Ordered, func() {
 				} `json:"action"`
 			}{}
 			err = fetchFromAPI(runActionURL, http.MethodPost, reqBody, &resp)
-			// TODO: fix already up to date error
 			Expect(err).ToNot(HaveOccurred(), "Failed to run update action")
 			Expect(resp.Action.Automated).To(BeTrue(), "Action should be automated")
 
