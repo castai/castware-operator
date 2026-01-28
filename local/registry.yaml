@@ -31,7 +31,7 @@ spec:
             - name: CONTEXT_PATH
               value: /helm-charts
             - name: CHART_URL
-              value: http://localhost:5001 #http://chartmuseum.registry.svc.cluster.local:8080
+              value: http://localhost:5001
           volumeMounts:
             - name: charts-storage
               mountPath: /charts
