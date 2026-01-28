@@ -9,6 +9,11 @@ on:
   pull_request:
     branches:
       - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - labeled
   workflow_dispatch:
     inputs:
       chart:
@@ -138,7 +143,7 @@ jobs:
     if: |
       (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'HOTFIX')) ||
       (github.event_name == 'release' && !startsWith(github.event.release.name, 'HOTFIX')) ||
-      (github.event_name == 'pull_request' && startsWith(github.event.pull_request.title, 'e2e:'))
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'e2e'))
     needs: build
     steps:
       - name: Checkout
