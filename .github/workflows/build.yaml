@@ -9,6 +9,11 @@ on:
   pull_request:
     branches:
       - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - labeled
   workflow_dispatch:
     inputs:
       chart:
@@ -137,7 +142,8 @@ jobs:
     runs-on: ubuntu-24.04
     if: |
       (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'HOTFIX')) ||
-      (github.event_name == 'release' && !startsWith(github.event.release.name, 'HOTFIX'))
+      (github.event_name == 'release' && !startsWith(github.event.release.name, 'HOTFIX')) ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'e2e'))
     needs: build
     steps:
       - name: Checkout
@@ -173,6 +179,7 @@ jobs:
           cluster_name: castware-operator-e2e
           node_image: kindest/node:v1.27.3
           kubectl_version: v1.27.3
+          config: test/e2e/kind-config.yaml
 
       - name: Run E2E tests
         env:
