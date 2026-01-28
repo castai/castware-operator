@@ -191,9 +191,7 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install helm registry")
 
-		// TODO: wait for registry pod ready
 		Eventually(verifyPodReady, 5*time.Minute).WithArguments("app", "chartmuseum", "registry").Should(Succeed())
-		// time.Sleep(time.Minute)
 
 		cmd = exec.Command("helm", "repo", "add", "local", "http://localhost:5001/helm-charts")
 		_, err = utils.Run(cmd)
@@ -1678,7 +1676,7 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
 
-			// TODO: wait for cluster ready
+			// Wait for cluster onboarding before running phase2 script
 			time.Sleep(time.Minute)
 
 			By("getting phase2 script")
