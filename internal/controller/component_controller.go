@@ -418,7 +418,12 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.Fie
 		overrides["apiURL"] = cluster.Spec.API.APIURL
 		overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
 		overrides["provider"] = cluster.Spec.Provider
-		overrides["createNamespace"] = false // TODO decide based on the namespace if it has label already
+		createNamespace, err := r.shouldCreateNamespace(ctx, component)
+		if err != nil {
+			log.WithError(err).Warn("Failed to determine namespace ownership, defaulting to true")
+			createNamespace = true
+		}
+		overrides["createNamespace"] = createNamespace
 	default:
 		overrides["apiURL"] = cluster.Spec.API.APIURL
 		overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
@@ -427,6 +432,29 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.Fie
 	}
 
 	return overrides, nil
+}
+
+func (r *ComponentReconciler) shouldCreateNamespace(ctx context.Context, component *castwarev1alpha1.Component) (bool, error) {
+	ns := &v1.Namespace{}
+	err := r.Get(ctx, client.ObjectKey{Name: component.Namespace}, ns)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+		return false, err
+	}
+
+	releaseName, hasReleaseName := ns.Annotations["meta.helm.sh/release-name"]
+	releaseNamespace, hasReleaseNamespace := ns.Annotations["meta.helm.sh/release-namespace"]
+
+	if hasReleaseName && hasReleaseNamespace {
+		expectedReleaseName := getReleaseName(component)
+		if releaseName == expectedReleaseName && releaseNamespace == component.Namespace {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 // nolint:unparam
