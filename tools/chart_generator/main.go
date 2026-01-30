@@ -130,24 +130,104 @@ func injectAndWrite(objs []*unstructured.Unstructured, outFilePath, header, foot
 }
 
 func injectTemplating(in []byte, obj *unstructured.Unstructured) []byte {
-	lines := splitLines(in)
+	// ============================================================
+	// Phase 1: RBAC structural mutation
+	// - Split namespaces rule
+	// - Global read rule (get/list/watch)
+	// - Scoped patch rule (Release.Namespace only)
+	// ============================================================
 
+	var data map[string]interface{}
+	if err := yaml.Unmarshal(in, &data); err == nil {
+
+		kind := obj.GetKind()
+		if kind == "Role" || kind == "ClusterRole" {
+
+			rules, found, err := unstructured.NestedSlice(data, "rules")
+			if err == nil && found {
+
+				var newRules []interface{}
+
+				for _, r := range rules {
+					rule, ok := r.(map[string]interface{})
+					if !ok {
+						newRules = append(newRules, r)
+						continue
+					}
+
+					apiGroups, _ := rule["apiGroups"].([]interface{})
+					resources, _ := rule["resources"].([]interface{})
+					verbs, _ := rule["verbs"].([]interface{})
+
+					// detect: core/namespaces rule with patch + other verbs
+					if containsStr(apiGroups, "") &&
+						len(resources) == 1 && containsStr(resources, "namespaces") &&
+						containsStr(verbs, "patch") &&
+						len(verbs) > 1 {
+
+						// ---------- Rule 1: global read ----------
+						readVerbs := []interface{}{}
+						for _, v := range verbs {
+							if s, ok := v.(string); ok && s != "patch" {
+								readVerbs = append(readVerbs, s)
+							}
+						}
+
+						readRule := map[string]interface{}{
+							"apiGroups": apiGroups,
+							"resources": resources,
+							"verbs":     readVerbs,
+						}
+
+						// ---------- Rule 2: scoped patch ----------
+						patchRule := map[string]interface{}{
+							"apiGroups": apiGroups,
+							"resources": resources,
+							"verbs":     []interface{}{"patch"},
+							"resourceNames": []interface{}{
+								"{{ .Release.Namespace }}",
+							},
+						}
+
+						newRules = append(newRules, readRule, patchRule)
+						continue
+					}
+
+					newRules = append(newRules, rule)
+				}
+
+				_ = unstructured.SetNestedSlice(data, newRules, "rules")
+			}
+		}
+
+		// re-marshal after RBAC mutation
+		if out, err := yaml.Marshal(data); err == nil {
+			in = out
+		}
+	}
+
+	// ============================================================
+	// Phase 2: Helm templating + metadata injection
+	// ============================================================
+
+	lines := splitLines(in)
 	var out []string
+
 	for i := 0; i < len(lines); {
 		line := lines[i]
+
+		// ---- metadata injection ----
 		if strings.TrimSpace(line) == "metadata:" {
-			// determine indentation
 			indentLen := countLeadingSpaces(line)
 			indent := strings.Repeat(" ", indentLen)
+
 			namespace := `"{{ .Release.Namespace }}"`
 			if obj.GetNamespace() != "castai-agent" {
 				namespace = obj.GetNamespace()
 			}
 
-			// emit the templated metadata block
 			out = append(out, indent+"metadata:")
 
-			// ClusterRole and ClusterRoleBinding are not namespaced
 			if !strings.HasPrefix(obj.GetKind(), "Cluster") {
 				out = append(out, indent+`  namespace: `+namespace)
 			}
@@ -155,15 +235,23 @@ func injectTemplating(in []byte, obj *unstructured.Unstructured) []byte {
 			extendedPermissions := obj.GetLabels()["castware.cast.ai/extended-permissions"] == "true"
 
 			out = append(out,
-				indent+`  name: `+strings.Replace(obj.GetName(), "castware-operator", `{{ include "castware-operator.fullname" . }}`, 1), // nolint:lll
+				indent+`  name: `+
+					strings.Replace(
+						obj.GetName(),
+						"castware-operator",
+						`{{ include "castware-operator.fullname" . }}`,
+						1,
+					),
 				indent+"  labels:",
 			)
+
 			if extendedPermissions {
 				out = append(out, indent+"    castware.cast.ai/extended-permissions: \"true\"")
 			}
+
 			out = append(out, indent+"    {{- include \"castware-operator.labels\" . | nindent 4 }}")
 
-			// skip the original metadata block
+			// skip original metadata
 			i++
 			for i < len(lines) {
 				if countLeadingSpaces(lines[i]) <= indentLen {
@@ -173,12 +261,28 @@ func injectTemplating(in []byte, obj *unstructured.Unstructured) []byte {
 			}
 			continue
 		}
-		line = strings.ReplaceAll(line, "castware-operator-controller-manager", "{{ include \"castware-operator.fullname\" . }}-controller-manager") // nolint:lll
+
+		// ---- controller-manager rename ----
+		line = strings.ReplaceAll(
+			line,
+			"castware-operator-controller-manager",
+			"{{ include \"castware-operator.fullname\" . }}-controller-manager",
+		)
+
 		out = append(out, line)
 		i++
 	}
 
 	return []byte(strings.Join(out, "\n"))
+}
+
+func containsStr(list []interface{}, v string) bool {
+	for _, x := range list {
+		if s, ok := x.(string); ok && s == v {
+			return true
+		}
+	}
+	return false
 }
 
 func splitLines(b []byte) []string {
