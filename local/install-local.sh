@@ -45,8 +45,6 @@ helm upgrade --install ${RELEASE_NAME} \
     --set webhook.env.GKE_LOCATION="${GKE_LOCATION:-local}" \
     --set webhook.env.GKE_PROJECT_ID="${GKE_PROJECT_ID:-local-test}" \
     --set webhook.env.GKE_REGION="${GKE_REGION:-local1}" \
-    --set defaultCluster.migrationMode=autoUpgrade \
-    --set defaultComponents.enabled=false \
     --set "defaultComponents.components.castai-agent.overrides.additionalEnv.GKE_CLUSTER_NAME=${GKE_CLUSTER_NAME:-castware-operator-test}" \
     --set "defaultComponents.components.castai-agent.overrides.additionalEnv.GKE_LOCATION=${GKE_LOCATION:-local}" \
     --set "defaultComponents.components.castai-agent.overrides.additionalEnv.GKE_PROJECT_ID=${GKE_PROJECT_ID:-local-test}" \

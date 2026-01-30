@@ -212,20 +212,8 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - namespaces
-  resourceNames:
-  - {{ .Release.Namespace }}
-  verbs:
-  - get
-  - list
-  - watch
-  - patch
-- apiGroups:
-  - ""
-  resources:
   - events
   - limitranges
-  - namespaces
   - nodes
   - persistentvolumeclaims
   - persistentvolumes
@@ -237,6 +225,22 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resourceNames:
+  - '{{ .Release.Namespace }}'
+  resources:
+  - namespaces
+  verbs:
+  - patch
 - apiGroups:
   - admissionregistration.k8s.io
   resources:
