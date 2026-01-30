@@ -212,6 +212,17 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - namespaces
+  resourceNames:
+  - {{ .Release.Namespace }}
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+- apiGroups:
+  - ""
+  resources:
   - events
   - limitranges
   - namespaces

@@ -412,6 +412,11 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.Fie
 			phase2Permissions = true
 		}
 		overrides["phase2Permissions"] = phase2Permissions
+	case components.ComponentNameAgent:
+		overrides["apiURL"] = cluster.Spec.API.APIURL
+		overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
+		overrides["provider"] = cluster.Spec.Provider
+		overrides["createNamespace"] = true
 	default:
 		overrides["apiURL"] = cluster.Spec.API.APIURL
 		overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
