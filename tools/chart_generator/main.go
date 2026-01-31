@@ -174,6 +174,10 @@ func injectTemplating(in []byte, obj *unstructured.Unstructured) []byte {
 			continue
 		}
 		line = strings.ReplaceAll(line, "castware-operator-controller-manager", "{{ include \"castware-operator.fullname\" . }}-controller-manager") // nolint:lll
+		// Replace role/clusterrole names in RoleBindings and ClusterRoleBindings
+		line = strings.ReplaceAll(line, "name: castware-operator-", "name: {{ include \"castware-operator.fullname\" . }}-")
+		// Replace namespace references in subjects
+		line = strings.ReplaceAll(line, "namespace: castai-agent", "namespace: {{ .Release.Namespace }}")
 		out = append(out, line)
 		i++
 	}
