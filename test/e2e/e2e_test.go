@@ -1099,27 +1099,6 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(agentComponent.UsedVersion).To(Equal(versionBeforeDowngrade))
 		})
 
-		It("should onboard phase2", func() {
-			By("getting phase2 script")
-
-			scriptResp := struct {
-				Script string `json:"script"`
-			}{}
-			// nolint: lll
-			getPhase2URL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s/credentials-script?crossRole=true&nvidiaDevicePlugin=false&installSecurityAgent=true&installAutoscalerAgent=true&installGpuMetricsExporter=false&installNetflowExporter=false&installWorkloadAutoscaler=true&installPodMutator=false&installOmni=false",
-				apiURL, clusterID)
-			err := fetchFromAPI(getPhase2URL, http.MethodGet, nil, &scriptResp)
-			Expect(err).NotTo(HaveOccurred(), "Failed to get phase2 script")
-
-			cmd := exec.Command("bash", "-c", scriptResp.Script)
-			output, _ := utils.Run(cmd)
-			// Phase2 script returns an error, but it's expected because it tries to
-			// run "gcloud container clusters describe", but the cluster is not running in GKE.
-			// Checking successful install of spot-handler and cluster-controller is enough for this test.
-			Expect(output).To(ContainSubstring("cluster-controller ready with version"), "Failed to install cluster-controller")
-			Expect(output).To(ContainSubstring("spot-handler ready with version "), "Phase2 spot handler install failed")
-		})
-
 		It("should offboard the operator and all components", func() {
 			By("uninstalling the operator")
 			cmd := exec.Command("helm", "uninstall", "castware-operator", "-n", namespace)
@@ -1809,6 +1788,26 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err.Error()).To(ContainSubstring("job castware-operator-preflight-check failed"))
 		})
 		// +kubebuilder:scaffold:e2e-webhooks-checks
+		It("should onboard phase2", func() {
+			By("getting phase2 script")
+
+			scriptResp := struct {
+				Script string `json:"script"`
+			}{}
+			// nolint: lll
+			getPhase2URL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s/credentials-script?crossRole=true&nvidiaDevicePlugin=false&installSecurityAgent=true&installAutoscalerAgent=true&installGpuMetricsExporter=false&installNetflowExporter=false&installWorkloadAutoscaler=true&installPodMutator=false&installOmni=false",
+				apiURL, clusterID)
+			err := fetchFromAPI(getPhase2URL, http.MethodGet, nil, &scriptResp)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get phase2 script")
+
+			cmd := exec.Command("bash", "-c", scriptResp.Script)
+			output, _ := utils.Run(cmd)
+			// Phase2 script returns an error, but it's expected because it tries to
+			// run "gcloud container clusters describe", but the cluster is not running in GKE.
+			// Checking successful install of spot-handler and cluster-controller is enough for this test.
+			Expect(output).To(ContainSubstring("cluster-controller ready with version"), "Failed to install cluster-controller")
+			Expect(output).To(ContainSubstring("spot-handler ready with version "), "Phase2 spot handler install failed")
+		})
 	})
 })
 
