@@ -576,60 +576,6 @@ var _ = Describe("Manager", Ordered, func() {
 			organizationID = clusterResp["organizationId"].(string)
 		})
 
-		It("should self upgrade", func() {
-			// operatorComponentID := ""
-			By("fetching operator component ID")
-			getClusterURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components:view",
-				apiURL, organizationID, clusterID)
-			componentsResp := struct {
-				Components []component `json:"components"`
-			}{}
-			err := fetchFromAPI(getClusterURL, http.MethodGet, nil, &componentsResp)
-			Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("Failed to fetch components  list: %v", err))
-			operatorComponent, ok := lo.Find(componentsResp.Components, func(item component) bool {
-				return item.Name == components.ComponentNameOperator
-			})
-			Expect(ok).To(BeTrue(), "Operator component not found")
-			Expect(operatorComponent.ID).NotTo(BeEmpty(), "Operator component id not found")
-
-			By("calling the run action endpoint to trigger a self upgrade")
-			runActionURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components/%s:runAction",
-				apiURL, organizationID, clusterID, operatorComponent.ID)
-			reqBody := map[string]interface{}{"action": "UPDATE"}
-			resp := struct {
-				Action struct {
-					Action    string `json:"action"`
-					Automated bool   `json:"automated"`
-				} `json:"action"`
-			}{}
-			err = fetchFromAPI(runActionURL, http.MethodPost, reqBody, &resp)
-			Expect(err).ToNot(HaveOccurred(), "Failed to run update action")
-			Expect(resp.Action.Automated).To(BeTrue(), "Action should be automated")
-
-			By("checking that self upgrade job is completed successfully")
-			verifyUpgradeJobCompleted := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "jobs",
-					"-n", namespace,
-					"-l", "app.kubernetes.io/name=castware-operator,app.kubernetes.io/component=upgrade-job",
-					"-o", "json",
-				)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to get upgrade job")
-
-				var jobList struct {
-					Items []batchv1.Job `json:"items"`
-				}
-				err = json.Unmarshal([]byte(output), &jobList)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to parse job list")
-				g.Expect(jobList.Items).NotTo(BeEmpty(), "No upgrade job found")
-
-				job := jobList.Items[0]
-				g.Expect(job.Status.Succeeded).To(BeEquivalentTo(1), "Upgrade job has not completed successfully")
-			}
-			Eventually(verifyUpgradeJobCompleted, 5*time.Minute, 10*time.Second).Should(Succeed())
-
-		})
-
 		It("should install castai-agent", func() {
 			By("creating a component custom resource")
 			componentYAML := fmt.Sprintf(componentYaml, components.ComponentNameAgent, namespace, components.ComponentNameAgent)
@@ -1097,6 +1043,27 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(ok).To(BeTrue(), "Failed to find spot-handler component")
 			Expect(agentComponent.LatestVersion).ToNot(BeEmpty(), "Failed to get latest version of spot-handler")
 			Expect(agentComponent.UsedVersion).To(Equal(versionBeforeDowngrade))
+		})
+
+		It("should onboard phase2", func() {
+			By("getting phase2 script")
+
+			scriptResp := struct {
+				Script string `json:"script"`
+			}{}
+			// nolint: lll
+			getPhase2URL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s/credentials-script?crossRole=true&nvidiaDevicePlugin=false&installSecurityAgent=true&installAutoscalerAgent=true&installGpuMetricsExporter=false&installNetflowExporter=false&installWorkloadAutoscaler=true&installPodMutator=false&installOmni=false",
+				apiURL, clusterID)
+			err := fetchFromAPI(getPhase2URL, http.MethodGet, nil, &scriptResp)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get phase2 script")
+
+			cmd := exec.Command("bash", "-c", scriptResp.Script)
+			output, _ := utils.Run(cmd)
+			// Phase2 script returns an error, but it's expected because it tries to
+			// run "gcloud container clusters describe", but the cluster is not running in GKE.
+			// Checking successful install of spot-handler and cluster-controller is enough for this test.
+			Expect(output).To(ContainSubstring("cluster-controller ready with version"), "Failed to install cluster-controller")
+			Expect(output).To(ContainSubstring("spot-handler ready with version "), "Phase2 spot handler install failed")
 		})
 
 		It("should offboard the operator and all components", func() {
@@ -1788,25 +1755,58 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err.Error()).To(ContainSubstring("job castware-operator-preflight-check failed"))
 		})
 
-		It("should onboard phase2", func() {
-			By("getting phase2 script")
-
-			scriptResp := struct {
-				Script string `json:"script"`
+		It("should self upgrade", func() {
+			// operatorComponentID := ""
+			By("fetching operator component ID")
+			getClusterURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components:view",
+				apiURL, organizationID, clusterID)
+			componentsResp := struct {
+				Components []component `json:"components"`
 			}{}
-			// nolint: lll
-			getPhase2URL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s/credentials-script?crossRole=true&nvidiaDevicePlugin=false&installSecurityAgent=true&installAutoscalerAgent=true&installGpuMetricsExporter=false&installNetflowExporter=false&installWorkloadAutoscaler=true&installPodMutator=false&installOmni=false",
-				apiURL, clusterID)
-			err := fetchFromAPI(getPhase2URL, http.MethodGet, nil, &scriptResp)
-			Expect(err).NotTo(HaveOccurred(), "Failed to get phase2 script")
+			err := fetchFromAPI(getClusterURL, http.MethodGet, nil, &componentsResp)
+			Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("Failed to fetch components  list: %v", err))
+			operatorComponent, ok := lo.Find(componentsResp.Components, func(item component) bool {
+				return item.Name == components.ComponentNameOperator
+			})
+			Expect(ok).To(BeTrue(), "Operator component not found")
+			Expect(operatorComponent.ID).NotTo(BeEmpty(), "Operator component id not found")
 
-			cmd := exec.Command("bash", "-c", scriptResp.Script)
-			output, _ := utils.Run(cmd)
-			// Phase2 script returns an error, but it's expected because it tries to
-			// run "gcloud container clusters describe", but the cluster is not running in GKE.
-			// Checking successful install of spot-handler and cluster-controller is enough for this test.
-			Expect(output).To(ContainSubstring("cluster-controller ready with version"), "Failed to install cluster-controller")
-			Expect(output).To(ContainSubstring("spot-handler ready with version "), "Phase2 spot handler install failed")
+			By("calling the run action endpoint to trigger a self upgrade")
+			runActionURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components/%s:runAction",
+				apiURL, organizationID, clusterID, operatorComponent.ID)
+			reqBody := map[string]interface{}{"action": "UPDATE"}
+			resp := struct {
+				Action struct {
+					Action    string `json:"action"`
+					Automated bool   `json:"automated"`
+				} `json:"action"`
+			}{}
+			err = fetchFromAPI(runActionURL, http.MethodPost, reqBody, &resp)
+			Expect(err).ToNot(HaveOccurred(), "Failed to run update action")
+			Expect(resp.Action.Automated).To(BeTrue(), "Action should be automated")
+
+			By("checking that self upgrade job is completed successfully")
+			verifyUpgradeJobCompleted := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "jobs",
+					"-n", namespace,
+					"-l", "app.kubernetes.io/name=castware-operator,app.kubernetes.io/component=upgrade-job",
+					"-o", "json",
+				)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get upgrade job")
+
+				var jobList struct {
+					Items []batchv1.Job `json:"items"`
+				}
+				err = json.Unmarshal([]byte(output), &jobList)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to parse job list")
+				g.Expect(jobList.Items).NotTo(BeEmpty(), "No upgrade job found")
+
+				job := jobList.Items[0]
+				g.Expect(job.Status.Succeeded).To(BeEquivalentTo(1), "Upgrade job has not completed successfully")
+			}
+			Eventually(verifyUpgradeJobCompleted, 5*time.Minute, 10*time.Second).Should(Succeed())
+
 		})
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 	})
