@@ -1787,7 +1787,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("job castware-operator-preflight-check failed"))
 		})
-		// +kubebuilder:scaffold:e2e-webhooks-checks
+
 		It("should onboard phase2", func() {
 			By("getting phase2 script")
 
@@ -1808,6 +1808,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(output).To(ContainSubstring("cluster-controller ready with version"), "Failed to install cluster-controller")
 			Expect(output).To(ContainSubstring("spot-handler ready with version "), "Phase2 spot handler install failed")
 		})
+		// +kubebuilder:scaffold:e2e-webhooks-checks
 	})
 })
 
