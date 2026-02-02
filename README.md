@@ -90,6 +90,8 @@ kind delete cluster --name castware-operator
 
 ### How to use local helm registry
 
+
+
 #### 1. Deploy ChartMuseum in the cluster
 
 ```bash
