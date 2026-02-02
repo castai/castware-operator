@@ -1,4 +1,4 @@
-name: Test Bot Commit (Delete After)
+name: test-bot-commit
 
 on:
   pull_request:
