@@ -191,16 +191,20 @@ jobs:
     runs-on: ubuntu-24.04
     if: github.event_name == 'release'
     needs: e2e
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release castware-operator chart
         uses: castai/helm-charts/.github/actions/remote-release@63bde69f5e2672f08583b6963c555fde5fe13e6c
         with:
           helm-charts-repo-token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           chart-path: "${{ github.workspace }}/charts/castai-castware-operator"
           chart-releaser-configfile: "${{ github.workspace }}/cr.yaml"
           chart-version-from-tag: "true"
@@ -210,16 +214,20 @@ jobs:
     runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.chart == 'components'
     needs: build
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release castware-components chart
         uses: castai/helm-charts/.github/actions/remote-release@63bde69f5e2672f08583b6963c555fde5fe13e6c
         with:
           helm-charts-repo-token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           chart-path: "${{ github.workspace }}/charts/castai-castware-components"
           chart-releaser-configfile: "${{ github.workspace }}/cr.yaml"
           chart-version-from-tag: "true"

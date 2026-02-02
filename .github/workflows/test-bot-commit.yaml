@@ -1,0 +1,44 @@
+name: Test Bot Commit (Delete After)
+
+on:
+  pull_request:
+
+jobs:
+  test_bot_identity:
+    name: Test GitHub Actions Bot Commit
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout with GITHUB_TOKEN
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.ref }}
+
+      - name: Create test file
+        run: |
+          echo "Test commit by github-actions[bot]" > .github-actions-bot-test.txt
+          echo "Timestamp: $(date)" >> .github-actions-bot-test.txt
+
+      - name: Commit as github-actions[bot]
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github-actions-bot-test.txt
+          git commit -m "Test commit by github-actions[bot]"
+
+      - name: Push to branch
+        run: |
+          git push origin HEAD:refs/heads/test-bot-commit
+
+      - name: Instructions
+        run: |
+          echo "✅ Test workflow complete!"
+          echo ""
+          echo "Next steps:"
+          echo "1. Check that the commit was made by github-actions[bot]"
+          echo "2. Go to Settings → Branches → Edit main protection"
+          echo "3. Search for 'github-actions' in the bypass list"
+          echo "4. If it appears, add it and delete this test workflow"
+          echo "5. Delete the test branch: test-bot-commit"
