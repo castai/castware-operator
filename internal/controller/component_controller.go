@@ -418,7 +418,7 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.Fie
 		overrides["apiURL"] = cluster.Spec.API.APIURL
 		overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
 		overrides["provider"] = cluster.Spec.Provider
-		overrides["createNamespace"] = true
+		overrides["createNamespace"] = false // TODO decide based on the namespace if it has label already
 	default:
 		overrides["apiURL"] = cluster.Spec.API.APIURL
 		overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
