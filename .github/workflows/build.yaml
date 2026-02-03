@@ -191,11 +191,14 @@ jobs:
     runs-on: ubuntu-24.04
     if: github.event_name == 'release'
     needs: e2e
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.BOT_GITHUB_TOKEN }}
 
       - name: Release castware-operator chart
         uses: castai/helm-charts/.github/actions/remote-release@63bde69f5e2672f08583b6963c555fde5fe13e6c
@@ -210,11 +213,14 @@ jobs:
     runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.chart == 'components'
     needs: build
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.BOT_GITHUB_TOKEN }}
 
       - name: Release castware-components chart
         uses: castai/helm-charts/.github/actions/remote-release@63bde69f5e2672f08583b6963c555fde5fe13e6c
