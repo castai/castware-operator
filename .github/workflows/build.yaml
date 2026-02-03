@@ -204,7 +204,6 @@ jobs:
         uses: castai/helm-charts/.github/actions/remote-release@63bde69f5e2672f08583b6963c555fde5fe13e6c
         with:
           helm-charts-repo-token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
-          github-token: ${{ secrets.BOT_GITHUB_TOKEN }}
           chart-path: "${{ github.workspace }}/charts/castai-castware-operator"
           chart-releaser-configfile: "${{ github.workspace }}/cr.yaml"
           chart-version-from-tag: "true"
@@ -227,7 +226,6 @@ jobs:
         uses: castai/helm-charts/.github/actions/remote-release@63bde69f5e2672f08583b6963c555fde5fe13e6c
         with:
           helm-charts-repo-token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
-          github-token: ${{ secrets.BOT_GITHUB_TOKEN }}
           chart-path: "${{ github.workspace }}/charts/castai-castware-components"
           chart-releaser-configfile: "${{ github.workspace }}/cr.yaml"
           chart-version-from-tag: "true"
