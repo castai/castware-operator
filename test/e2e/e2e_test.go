@@ -576,60 +576,6 @@ var _ = Describe("Manager", Ordered, func() {
 			organizationID = clusterResp["organizationId"].(string)
 		})
 
-		It("should self upgrade", func() {
-			// operatorComponentID := ""
-			By("fetching operator component ID")
-			getClusterURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components:view",
-				apiURL, organizationID, clusterID)
-			componentsResp := struct {
-				Components []component `json:"components"`
-			}{}
-			err := fetchFromAPI(getClusterURL, http.MethodGet, nil, &componentsResp)
-			Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("Failed to fetch components  list: %v", err))
-			operatorComponent, ok := lo.Find(componentsResp.Components, func(item component) bool {
-				return item.Name == components.ComponentNameOperator
-			})
-			Expect(ok).To(BeTrue(), "Operator component not found")
-			Expect(operatorComponent.ID).NotTo(BeEmpty(), "Operator component id not found")
-
-			By("calling the run action endpoint to trigger a self upgrade")
-			runActionURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components/%s:runAction",
-				apiURL, organizationID, clusterID, operatorComponent.ID)
-			reqBody := map[string]interface{}{"action": "UPDATE"}
-			resp := struct {
-				Action struct {
-					Action    string `json:"action"`
-					Automated bool   `json:"automated"`
-				} `json:"action"`
-			}{}
-			err = fetchFromAPI(runActionURL, http.MethodPost, reqBody, &resp)
-			Expect(err).ToNot(HaveOccurred(), "Failed to run update action")
-			Expect(resp.Action.Automated).To(BeTrue(), "Action should be automated")
-
-			By("checking that self upgrade job is completed successfully")
-			verifyUpgradeJobCompleted := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "jobs",
-					"-n", namespace,
-					"-l", "app.kubernetes.io/name=castware-operator,app.kubernetes.io/component=upgrade-job",
-					"-o", "json",
-				)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to get upgrade job")
-
-				var jobList struct {
-					Items []batchv1.Job `json:"items"`
-				}
-				err = json.Unmarshal([]byte(output), &jobList)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to parse job list")
-				g.Expect(jobList.Items).NotTo(BeEmpty(), "No upgrade job found")
-
-				job := jobList.Items[0]
-				g.Expect(job.Status.Succeeded).To(BeEquivalentTo(1), "Upgrade job has not completed successfully")
-			}
-			Eventually(verifyUpgradeJobCompleted, 5*time.Minute, 10*time.Second).Should(Succeed())
-
-		})
-
 		It("should install castai-agent", func() {
 			By("creating a component custom resource")
 			componentYAML := fmt.Sprintf(componentYaml, components.ComponentNameAgent, namespace, components.ComponentNameAgent)
@@ -1807,6 +1753,60 @@ var _ = Describe("Manager", Ordered, func() {
 			_, err := utils.Run(cmd)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("job castware-operator-preflight-check failed"))
+		})
+
+		It("should self upgrade", func() {
+			// operatorComponentID := ""
+			By("fetching operator component ID")
+			getClusterURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components:view",
+				apiURL, organizationID, clusterID)
+			componentsResp := struct {
+				Components []component `json:"components"`
+			}{}
+			err := fetchFromAPI(getClusterURL, http.MethodGet, nil, &componentsResp)
+			Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("Failed to fetch components  list: %v", err))
+			operatorComponent, ok := lo.Find(componentsResp.Components, func(item component) bool {
+				return item.Name == components.ComponentNameOperator
+			})
+			Expect(ok).To(BeTrue(), "Operator component not found")
+			Expect(operatorComponent.ID).NotTo(BeEmpty(), "Operator component id not found")
+
+			By("calling the run action endpoint to trigger a self upgrade")
+			runActionURL := fmt.Sprintf("%s/cluster-management/v1/organizations/%s/clusters/%s/components/%s:runAction",
+				apiURL, organizationID, clusterID, operatorComponent.ID)
+			reqBody := map[string]interface{}{"action": "UPDATE"}
+			resp := struct {
+				Action struct {
+					Action    string `json:"action"`
+					Automated bool   `json:"automated"`
+				} `json:"action"`
+			}{}
+			err = fetchFromAPI(runActionURL, http.MethodPost, reqBody, &resp)
+			Expect(err).ToNot(HaveOccurred(), "Failed to run update action")
+			Expect(resp.Action.Automated).To(BeTrue(), "Action should be automated")
+
+			By("checking that self upgrade job is completed successfully")
+			verifyUpgradeJobCompleted := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "jobs",
+					"-n", namespace,
+					"-l", "app.kubernetes.io/name=castware-operator,app.kubernetes.io/component=upgrade-job",
+					"-o", "json",
+				)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get upgrade job")
+
+				var jobList struct {
+					Items []batchv1.Job `json:"items"`
+				}
+				err = json.Unmarshal([]byte(output), &jobList)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to parse job list")
+				g.Expect(jobList.Items).NotTo(BeEmpty(), "No upgrade job found")
+
+				job := jobList.Items[0]
+				g.Expect(job.Status.Succeeded).To(BeEquivalentTo(1), "Upgrade job has not completed successfully")
+			}
+			Eventually(verifyUpgradeJobCompleted, 5*time.Minute, 10*time.Second).Should(Succeed())
+
 		})
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 	})
