@@ -1,45 +1,28 @@
-name: Test Bot Commit (Delete After)
+name: Register Bot on Main
 on:
-  pull_request:
+  workflow_dispatch:  # Manual trigger only
 
 jobs:
-  test_bot_identity:
-    name: Test GitHub Actions Bot Commit
+  register_bot:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-      pull-requests: write
     steps:
-      - name: Checkout PR branch
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
+          ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
-          ref: ${{ github.head_ref }}  # Check out the actual PR branch
 
-      - name: Create test file
+      - name: Create bot file
         run: |
-          echo "Test commit by github-actions[bot]" > .github-actions-bot-test.txt
-          echo "Timestamp: $(date)" >> .github-actions-bot-test.txt
+          mkdir -p .github
+          echo "Bot registered: $(date)" > .github/.bot-registered
 
-      - name: Commit as github-actions[bot]
+      - name: Commit and push to main
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github-actions-bot-test.txt
-          git commit -m "Test commit by github-actions[bot]"
-
-      - name: Push to PR branch
-        run: |
-          git push origin HEAD:${{ github.head_ref }}
-
-      - name: Instructions
-        run: |
-          echo "✅ Test workflow complete!"
-          echo ""
-          echo "The commit was pushed to the PR branch: ${{ github.head_ref }}"
-          echo ""
-          echo "Next steps:"
-          echo "1. Check that the commit was made by github-actions[bot]"
-          echo "2. Go to Settings → Branches → Edit main protection"
-          echo "3. Search for 'github-actions' in the bypass list"
-          echo "4. If it appears, add it and delete this workflow file"
+          git add .github/.bot-registered
+          git commit -m "Register github-actions bot"
+          git push
