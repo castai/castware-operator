@@ -1,5 +1,6 @@
 name: Register Bot on Main
 on:
+  pull_request:
   workflow_dispatch:  # Manual trigger only
 
 jobs:
