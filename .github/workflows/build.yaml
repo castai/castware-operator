@@ -189,7 +189,10 @@ jobs:
   release_chart_operator:
     name: Release Helm Chart Operator
     runs-on: ubuntu-24.04
-    if: github.event_name == 'release'
+    if: |
+      github.event_name == 'release' &&
+      always() &&
+      (needs.e2e.result == 'success' || needs.e2e.result == 'skipped')
     needs: e2e
     permissions:
       contents: write
