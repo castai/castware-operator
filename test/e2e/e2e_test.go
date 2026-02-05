@@ -1235,6 +1235,291 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(output).To(ContainSubstring(`"type":"Available"`), "spot-handler component should be Available")
 		})
 
+		It("should not delete namespace when migrating from legacy agent installation", func() {
+			By("deleting any existing operator installation")
+			cmd := exec.Command("helm", "uninstall", "castware-operator", "-n", namespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+
+			By("waiting for CRDs to be deleted")
+			verifyCRDsGone := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "crds", "-o", "name")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get CRDs")
+				g.Expect(output).NotTo(ContainSubstring("castware.cast.ai"), "CRDs should be deleted")
+			}
+			Eventually(verifyCRDsGone, 2*time.Minute).Should(Succeed())
+
+			By("deleting the namespace if it exists")
+			cmd = exec.Command("kubectl", "delete", "ns", namespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+
+			By("waiting for namespace to be fully deleted")
+			verifyNamespaceGone := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "ns", namespace)
+				_, err := utils.Run(cmd)
+				g.Expect(err).To(HaveOccurred(), "Namespace should be deleted")
+			}
+			Eventually(verifyNamespaceGone, 2*time.Minute).Should(Succeed())
+
+			By("installing legacy castai-agent with createNamespace=true")
+			cmd = exec.Command("kubectl", "create", "namespace", namespace)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
+
+			// Add helm labels and annotations to simulate legacy installation
+			cmd = exec.Command("kubectl", "label", "namespace", namespace,
+				"app.kubernetes.io/instance=castai-agent",
+				"app.kubernetes.io/managed-by=Helm",
+				"app.kubernetes.io/name=castai-agent")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to label namespace")
+
+			cmd = exec.Command("kubectl", "annotate", "namespace", namespace,
+				"meta.helm.sh/release-name=castai-agent",
+				"meta.helm.sh/release-namespace=castai-agent")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to annotate namespace")
+
+			// Install legacy agent with createNamespace=true so namespace is in manifest
+			cmd = exec.Command("helm", "install", "castai-agent", "castai-helm/castai-agent",
+				"--namespace", namespace,
+				"--set", "createNamespace=true",
+				"--set", fmt.Sprintf("apiKey=%s", apiKey),
+				"--set", "provider=gke",
+				"--set", "additionalEnv.GKE_CLUSTER_NAME=castware-operator-e2e",
+				"--set", "additionalEnv.GKE_LOCATION=e2e",
+				"--set", "additionalEnv.GKE_PROJECT_ID=e2e",
+				"--set", "additionalEnv.GKE_REGION=e2e",
+				"--version", "0.84.2")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to install legacy castai-agent")
+
+			By("verifying namespace is part of the helm release manifest")
+			verifyNamespaceInManifest := func(g Gomega) {
+				cmd := exec.Command("helm", "get", "manifest", "castai-agent", "-n", namespace)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get helm manifest")
+				g.Expect(output).To(ContainSubstring("kind: Namespace"), "Namespace should be in helm manifest")
+			}
+			Eventually(verifyNamespaceInManifest).Should(Succeed())
+
+			By("verifying at least one castai-agent pod is ready")
+			verifyAgentPodReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", "app.kubernetes.io/name=castai-agent",
+					"-n", namespace,
+					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent pods")
+				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
+
+				lines := utils.GetNonEmptyLines(output)
+				g.Expect(lines).ToNot(BeEmpty(), "No castai-agent pods found")
+
+				foundReady := false
+				for _, line := range lines {
+					if podReady(line) {
+						foundReady = true
+						break
+					}
+				}
+				g.Expect(foundReady).To(BeTrue(), "No castai-agent pods are in Ready state")
+			}
+			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
+
+			By("storing namespace UID before operator installation")
+			cmd = exec.Command("kubectl", "get", "namespace", namespace, "-o", "jsonpath={.metadata.uid}")
+			namespaceUIDBefore, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get namespace UID")
+			Expect(namespaceUIDBefore).NotTo(BeEmpty(), "Namespace UID should not be empty")
+
+			By("installing operator with migrationMode=autoUpgrade to trigger agent upgrade")
+			cmd = exec.Command("helm", "upgrade", "--install", "castware-operator",
+				"--namespace", namespace,
+				"--set", fmt.Sprintf("image.repository=%s", imageParts[0]),
+				"--set", fmt.Sprintf("image.tag=%s", imageParts[1]),
+				"--set", "image.pullPolicy=IfNotPresent",
+				"--set", fmt.Sprintf("apiKeySecret.apiKey=%s", apiKey),
+				"--set", fmt.Sprintf("defaultCluster.api.apiUrl=%s", apiURL),
+				"--set", "defaultCluster.provider=gke",
+				"--set", "defaultCluster.terraform=false",
+				"--set", "defaultCluster.migrationMode=autoUpgrade",
+				"--set", "defaultComponents.enabled=false",
+				"--set", "webhook.env.GKE_CLUSTER_NAME=castware-operator-e2e",
+				"--set", "webhook.env.GKE_LOCATION=e2e",
+				"--set", "webhook.env.GKE_PROJECT_ID=e2e",
+				"--set", "webhook.env.GKE_REGION=e2e",
+				"--atomic",
+				"--timeout", "5m",
+				operatorChartPath,
+			)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to install operator")
+
+			By("verifying namespace still exists with same UID (not deleted and recreated)")
+			cmd = exec.Command("kubectl", "get", "namespace", namespace, "-o", "jsonpath={.metadata.uid}")
+			namespaceUIDAfter, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get namespace UID after operator install")
+			Expect(namespaceUIDAfter).To(Equal(namespaceUIDBefore), "Namespace UID should be the same")
+
+			By("verifying namespace still has helm annotations")
+			cmd = exec.Command("kubectl", "get", "namespace", namespace,
+				"-o", "jsonpath={.metadata.annotations.meta\\.helm\\.sh/release-name}")
+			releaseAnnotation, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get namespace annotations")
+			Expect(releaseAnnotation).To(Equal("castai-agent"), "Namespace should still have helm release annotation")
+
+			By("waiting for castai-agent component to be upgraded")
+			verifyAgentComponentUpgraded := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "component", components.ComponentNameAgent,
+					"-n", namespace,
+					"-o", "jsonpath={.status.currentVersion}",
+				)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent component")
+				g.Expect(output).NotTo(BeEmpty(), "Component version should be set")
+				g.Expect(output).NotTo(Equal("0.84.2"), "Component should be upgraded to newer version")
+			}
+			Eventually(verifyAgentComponentUpgraded, 5*time.Minute).Should(Succeed())
+
+			By("verifying castai-agent component is Available")
+			cmd = exec.Command("kubectl", "get", "component", components.ComponentNameAgent,
+				"-n", namespace,
+				"-o", "jsonpath={.status.conditions[?(@.type=='Available')].status}")
+			availableStatus, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get component Available condition")
+			Expect(availableStatus).To(Equal("True"), "Component should be Available after upgrade")
+
+			By("verifying castai-agent pods are ready after upgrade")
+			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
+
+			By("verifying helm values have createNamespace=true")
+			cmd = exec.Command("helm", "get", "values", "castai-agent", "-n", namespace, "-o", "json")
+			valuesOutput, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get helm values")
+			Expect(valuesOutput).To(ContainSubstring(`"createNamespace":true`),
+				"Helm values should have createNamespace=true to prevent namespace deletion")
+
+			By("verifying namespace is still in the helm manifest after upgrade")
+			cmd = exec.Command("helm", "get", "manifest", "castai-agent", "-n", namespace)
+			manifestOutput, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get helm manifest after upgrade")
+			Expect(manifestOutput).To(ContainSubstring("kind: Namespace"),
+				"Namespace should still be in helm manifest after upgrade")
+		})
+
+		It("should downgrade agent if CR changed when no helm labels on namespace", func() {
+			By("removing helm labels from namespace")
+			cmd := exec.Command("kubectl", "label", "namespace", namespace,
+				"app.kubernetes.io/instance-",
+				"app.kubernetes.io/managed-by-",
+				"app.kubernetes.io/name-")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to remove namespace labels")
+
+			By("removing helm annotations from namespace")
+			cmd = exec.Command("kubectl", "annotate", "namespace", namespace,
+				"meta.helm.sh/release-name-",
+				"meta.helm.sh/release-namespace-")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to remove namespace annotations")
+
+			downgradeVersion := "0.134.0"
+
+			By(fmt.Sprintf("patching castai-agent component to downgrade to version %s", downgradeVersion))
+			patchJSON := fmt.Sprintf(`{"spec":{"version":"%s"}}`, downgradeVersion)
+			cmd = exec.Command("kubectl", "patch", "component", components.ComponentNameAgent,
+				"-n", namespace,
+				"--type=merge",
+				"-p", patchJSON)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to patch component to downgrade version")
+
+			By(fmt.Sprintf("waiting for castai-agent to be downgraded to version %s", downgradeVersion))
+			verifyDowngrade := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "component", components.ComponentNameAgent,
+					"-n", namespace,
+					"-o", "jsonpath={.status.currentVersion}",
+				)
+				version, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get component version")
+				g.Expect(version).To(Equal(downgradeVersion), fmt.Sprintf("Component version should be %s", downgradeVersion))
+			}
+			Eventually(verifyDowngrade, 5*time.Minute).Should(Succeed())
+
+			By(fmt.Sprintf("verifying castai-agent deployment has the correct version label %s", downgradeVersion))
+			cmd = exec.Command("kubectl", "get", "deployments",
+				"-l", fmt.Sprintf("helm.sh/chart=castai-agent-%s", downgradeVersion),
+				"-n", namespace,
+				"-o", "jsonpath={range .items[*]}{.metadata.name}{end}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent deployment")
+			Expect(output).NotTo(BeEmpty(), fmt.Sprintf("No castai-agent deployment found with version %s", downgradeVersion))
+
+			By("verifying castai-agent component is Available after downgrade")
+			cmd = exec.Command("kubectl", "get", "component", components.ComponentNameAgent,
+				"-n", namespace,
+				"-o", "jsonpath={.status.conditions[?(@.type=='Available')].status}")
+			availableStatus, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get component Available condition")
+			Expect(availableStatus).To(Equal("True"), "Component should be Available after downgrade")
+
+			By("verifying at least one castai-agent pod is ready after cleanup")
+			verifyAgentPodReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", "app.kubernetes.io/name=castai-agent",
+					"-n", namespace,
+					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent pods")
+				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
+
+				lines := utils.GetNonEmptyLines(output)
+				g.Expect(lines).ToNot(BeEmpty(), "No castai-agent pods found")
+
+				foundReady := false
+				for _, line := range lines {
+					if podReady(line) {
+						foundReady = true
+						break
+					}
+				}
+				g.Expect(foundReady).To(BeTrue(), "No castai-agent pods are in Ready state")
+			}
+			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
+
+			By("verifying component status conditions after downgrade")
+			cmd = exec.Command("kubectl", "get", "component", components.ComponentNameAgent,
+				"-n", namespace,
+				"-o", "jsonpath={.status.conditions}",
+			)
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get component status")
+			Expect(output).To(ContainSubstring(`"type":"Available"`), "Component should be in Available status")
+
+			By("verifying namespace still has no helm labels after downgrade")
+			cmd = exec.Command("kubectl", "get", "namespace", namespace,
+				"-o", "jsonpath={.metadata.labels}")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get namespace labels")
+			Expect(output).NotTo(ContainSubstring("app.kubernetes.io/instance"),
+				"Namespace should not have app.kubernetes.io/instance label")
+			Expect(output).NotTo(ContainSubstring("app.kubernetes.io/managed-by"),
+				"Namespace should not have app.kubernetes.io/managed-by label")
+			Expect(output).NotTo(ContainSubstring("app.kubernetes.io/name"),
+				"Namespace should not have app.kubernetes.io/name label")
+
+			By("verifying namespace still has no helm annotations after downgrade")
+			cmd = exec.Command("kubectl", "get", "namespace", namespace,
+				"-o", "jsonpath={.metadata.annotations}")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get namespace annotations")
+			Expect(output).NotTo(ContainSubstring("meta.helm.sh/release-name"),
+				"Namespace should not have meta.helm.sh/release-name annotation")
+			Expect(output).NotTo(ContainSubstring("meta.helm.sh/release-namespace"),
+				"Namespace should not have meta.helm.sh/release-namespace annotation")
+		})
+
 		It("should onboard phase2", func() {
 			By("getting phase2 script")
 
