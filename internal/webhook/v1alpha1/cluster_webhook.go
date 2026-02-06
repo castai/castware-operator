@@ -57,11 +57,11 @@ func (d *ClusterCustomDefaulter) Default(ctx context.Context, obj runtime.Object
 	}
 	apiURL, err := url.Parse(cluster.Spec.API.APIURL)
 	if err != nil {
-		return fmt.Errorf("invalid api url: %w", err)
+		return fmt.Errorf("invalid api url '%s': %w", cluster.Spec.API.APIURL, err)
 	}
 	baseUrl := strings.Split(apiURL.Host, ".")
 	if len(baseUrl) < 2 {
-		return fmt.Errorf("invalid api url: %s", cluster.Spec.API.APIURL)
+		return fmt.Errorf("invalid api url host for: %s", cluster.Spec.API.APIURL)
 	}
 	baseUrl = baseUrl[1:]
 
@@ -123,11 +123,11 @@ func (v *ClusterCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 
 	apiURL, err := url.Parse(cluster.Spec.API.APIURL)
 	if err != nil {
-		return nil, fmt.Errorf("invalid api url: %w", err)
+		return nil, fmt.Errorf("invalid api url '%s': %w", cluster.Spec.API.APIURL, err)
 	}
 	baseUrl := strings.Split(apiURL.Host, ".")
 	if len(baseUrl) < 2 {
-		return nil, fmt.Errorf("invalid api url: %s", cluster.Spec.API.APIURL)
+		return nil, fmt.Errorf("invalid api url host for: %s", cluster.Spec.API.APIURL)
 	}
 
 	v.log.WithField("api_url", cluster.Spec.API.APIURL).Info("validating api key")
