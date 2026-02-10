@@ -709,17 +709,14 @@ func TestCheckAndUpdatePhase2Permissions(t *testing.T) {
 
 		testOps := newComponentTestOps(t, testCluster, testComponent, roleBinding, clusterRoleBinding)
 
-		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
-			Namespace:   testComponent.Namespace,
-			ReleaseName: testComponent.Spec.Component,
-		}).Return(&release.Release{
+		helmRel := &release.Release{
 			Name: testComponent.Spec.Component,
 			Config: map[string]interface{}{
 				"phase2Permissions": false,
 			},
-		}, nil)
+		}
 
-		needsUpdate, err := testOps.sut.checkAndUpdatePhase2Permissions(ctx, logrus.New(), testComponent)
+		needsUpdate, err := testOps.sut.checkPhase2PermissionsNeedUpdate(ctx, logrus.New(), testComponent, helmRel)
 		r.NoError(err)
 		r.True(needsUpdate)
 	})
@@ -753,17 +750,14 @@ func TestCheckAndUpdatePhase2Permissions(t *testing.T) {
 
 		testOps := newComponentTestOps(t, testCluster, testComponent, roleBinding, clusterRoleBinding)
 
-		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
-			Namespace:   testComponent.Namespace,
-			ReleaseName: testComponent.Spec.Component,
-		}).Return(&release.Release{
+		helmRel := &release.Release{
 			Name: testComponent.Spec.Component,
 			Config: map[string]interface{}{
 				"phase2Permissions": true,
 			},
-		}, nil)
+		}
 
-		needsUpdate, err := testOps.sut.checkAndUpdatePhase2Permissions(ctx, logrus.New(), testComponent)
+		needsUpdate, err := testOps.sut.checkPhase2PermissionsNeedUpdate(ctx, logrus.New(), testComponent, helmRel)
 		r.NoError(err)
 		r.False(needsUpdate)
 	})
@@ -778,7 +772,12 @@ func TestCheckAndUpdatePhase2Permissions(t *testing.T) {
 
 		testOps := newComponentTestOps(t, testCluster, testComponent)
 
-		needsUpdate, err := testOps.sut.checkAndUpdatePhase2Permissions(ctx, logrus.New(), testComponent)
+		// No helm release needed since extended permissions don't exist
+		helmRel := &release.Release{
+			Name: testComponent.Spec.Component,
+		}
+
+		needsUpdate, err := testOps.sut.checkPhase2PermissionsNeedUpdate(ctx, logrus.New(), testComponent, helmRel)
 		r.NoError(err)
 		r.False(needsUpdate)
 	})
@@ -812,15 +811,12 @@ func TestCheckAndUpdatePhase2Permissions(t *testing.T) {
 
 		testOps := newComponentTestOps(t, testCluster, testComponent, roleBinding, clusterRoleBinding)
 
-		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
-			Namespace:   testComponent.Namespace,
-			ReleaseName: testComponent.Spec.Component,
-		}).Return(&release.Release{
+		helmRel := &release.Release{
 			Name:   testComponent.Spec.Component,
 			Config: map[string]interface{}{},
-		}, nil)
+		}
 
-		needsUpdate, err := testOps.sut.checkAndUpdatePhase2Permissions(ctx, logrus.New(), testComponent)
+		needsUpdate, err := testOps.sut.checkPhase2PermissionsNeedUpdate(ctx, logrus.New(), testComponent, helmRel)
 		r.NoError(err)
 		r.True(needsUpdate)
 	})
@@ -933,6 +929,7 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 		testComponent := newTestComponent(t, testCluster.Name, "spot-handler")
 		testComponent.Spec.Component = "spot-handler"
 		testComponent.Status.CurrentVersion = "v0.1.1"
+		testComponent.Status.LastReportedHelmRevision = 1
 		meta.SetStatusCondition(&testComponent.Status.Conditions, metav1.Condition{
 			Type:   typeAvailableComponent,
 			Status: metav1.ConditionTrue,
@@ -940,6 +937,20 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 		})
 
 		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		// Expect GetRelease call for detectAndReportHelmRevisionChange
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   testComponent.Namespace,
+			ReleaseName: testComponent.Spec.Component,
+		}).Return(&release.Release{
+			Name:    testComponent.Spec.Component,
+			Version: 1, // Same as LastReportedHelmRevision
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "v0.1.1",
+				},
+			},
+		}, nil).Times(1)
 
 		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
 		result, err := testOps.sut.Reconcile(ctx, req)
@@ -965,6 +976,7 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 		testComponent := newTestComponent(t, testCluster.Name, "spot-handler")
 		testComponent.Spec.Component = "spot-handler"
 		testComponent.Status.CurrentVersion = "v0.1.1"
+		testComponent.Status.LastReportedHelmRevision = 1
 		meta.SetStatusCondition(&testComponent.Status.Conditions, metav1.Condition{
 			Type:   typeAvailableComponent,
 			Status: metav1.ConditionTrue,
@@ -992,15 +1004,22 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 
 		testOps := newComponentTestOps(t, testCluster, testComponent, roleBinding, clusterRoleBinding)
 
+		// Single GetRelease call in reconcile loop (cached for both phase2 check and revision check)
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 			Namespace:   testComponent.Namespace,
 			ReleaseName: testComponent.Spec.Component,
 		}).Return(&release.Release{
-			Name: testComponent.Spec.Component,
+			Name:    testComponent.Spec.Component,
+			Version: 1, // Same as LastReportedHelmRevision
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "v0.1.1",
+				},
+			},
 			Config: map[string]interface{}{
 				"phase2Permissions": true,
 			},
-		}, nil).Times(1)
+		}, nil).Times(1) // Single call, result reused for both checks
 
 		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
 		result, err := testOps.sut.Reconcile(ctx, req)

@@ -69,6 +69,10 @@ type ComponentStatus struct {
 	// Set it to true if the component should be rolled back to the previous version,
 	// the reconcile loop will set it to false when the rollback starts.
 	Rollback bool `json:"rollback,omitempty" protobuf:"bool,3,rep,name=rollback"`
+	// LastReportedHelmRevision is the helm release revision number that was last reported to Mothership.
+	// Used to detect helm upgrades (including parameter-only changes without version changes) and report updated parameters.
+	// +optional
+	LastReportedHelmRevision int `json:"lastReportedHelmRevision,omitempty"`
 }
 
 //+kubebuilder:object:root=true
