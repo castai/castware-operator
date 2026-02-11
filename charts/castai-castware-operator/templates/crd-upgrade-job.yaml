@@ -98,6 +98,9 @@ spec:
       serviceAccountName: {{ include "castware-operator.fullname" . }}-crd-upgrade
       securityContext:
         runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
       {{- with .Values.affinity }}
@@ -109,13 +112,11 @@ spec:
         image: {{ .Values.crdUpgrade.image.repository }}:{{ .Values.crdUpgrade.image.tag }}
         imagePullPolicy: {{ .Values.crdUpgrade.image.pullPolicy }}
         command:
-        - /bin/sh
-        - -c
-        - |
-          set -e
-          echo "Applying CRDs..."
-          kubectl apply -f /crds/crds.yaml
-          echo "CRDs applied successfully"
+        - /bin/kubectl
+        args:
+        - apply
+        - -f
+        - /crds/crds.yaml
         volumeMounts:
         - name: crds
           mountPath: /crds
@@ -123,6 +124,7 @@ spec:
         securityContext:
           allowPrivilegeEscalation: false
           runAsNonRoot: true
+          runAsUser: 1000
           readOnlyRootFilesystem: true
           capabilities:
             drop:
