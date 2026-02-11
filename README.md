@@ -152,3 +152,36 @@ curl --data-binary "@castai-spot-handler-0.29.0.tgz" http://localhost:5001/helm-
    ```
 3. The operator will use the in-cluster URL (`chartmuseum.registry.svc.cluster.local:8080`) for self-upgrade
 4. Trigger upgrade via CAST AI action or manually update the Cluster CR
+
+
+### How to run e2e tests
+
+#### Create kind cluster
+
+```bash
+kind create cluster --config test/e2e/kind-config.yaml --name castware-operator-e2e
+```
+
+#### Setup environment variables
+
+```bash
+export API_KEY="your-api-key-from-console"
+export API_URL="https://api.dev-master.cast.ai"  # or your environment URL
+export KIND_CLUSTER=castware-operator-e2e
+```
+
+#### Run tests
+```bash
+make e2e
+```
+
+#### Running specific test
+
+```bash
+go test -v -ginkgo.v -ginkgo.focus="$TEST_PATTERN" -timeout 30m
+```
+e.g.
+
+```bash
+go test -v -ginkgo.v -ginkgo.focus="should run successfully" -timeout 30m
+```
