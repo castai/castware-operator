@@ -96,6 +96,10 @@ spec:
       {{- end }}
       restartPolicy: Never
       serviceAccountName: {{ include "castware-operator.fullname" . }}-crd-upgrade
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       {{- with .Values.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
@@ -119,7 +123,6 @@ spec:
         securityContext:
           allowPrivilegeEscalation: false
           runAsNonRoot: true
-          runAsUser: 65532
           readOnlyRootFilesystem: true
           capabilities:
             drop:
