@@ -12,12 +12,13 @@ import (
 	"strings"
 	"time"
 
-	components "github.com/castai/castware-operator/internal/component"
-	"github.com/castai/castware-operator/test/utils"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/samber/lo"
 	batchv1 "k8s.io/api/batch/v1"
+
+	components "github.com/castai/castware-operator/internal/component"
+	"github.com/castai/castware-operator/test/utils"
 )
 
 // namespace where the project is deployed in
@@ -204,6 +205,7 @@ var _ = Describe("Manager", Ordered, func() {
 		chartPath := strings.Split(output, "/")
 		chartPackage := strings.TrimSuffix(chartPath[len(chartPath)-1], "\n")
 
+		By(fmt.Sprintf("uploading helm chart %s to local registry", chartPackage))
 		// Upload helm chart to ChartMuseum using native Go HTTP client
 		chartFile, err := os.Open(chartPackage)
 		Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to open chart package: %s", chartPackage))
@@ -2038,6 +2040,74 @@ var _ = Describe("Manager", Ordered, func() {
 			_, err := utils.Run(cmd)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("job castware-operator-preflight-check failed"))
+		})
+
+		It("should detect and report operator parameter changes via helm revision tracking", func() {
+			By("waiting for cluster CR to be initialized with lastReportedHelmRevision")
+			var initialRevision string
+			verifyInitialRevision := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "cluster", "castai",
+					"-n", namespace,
+					"-o", "jsonpath={.status.lastReportedHelmRevision}",
+				)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get cluster CR")
+				g.Expect(output).NotTo(BeEmpty(), "lastReportedHelmRevision should be set")
+				initialRevision = output
+			}
+			Eventually(verifyInitialRevision, 5*time.Minute).Should(Succeed())
+			By(fmt.Sprintf("initial operator helm revision: %s", initialRevision))
+
+			By("upgrading operator helm release with extendedPermissions parameter change only")
+			// Change extendedPermissions from false to true without version change
+			// Use local filesystem path instead of helm repo to avoid ChartMuseum issues
+			cmd := exec.Command("helm", "upgrade", "castware-operator",
+				"--namespace", namespace,
+				"--reuse-values",
+				"--set", "extendedPermissions=true",
+				operatorChartPath,
+			)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to upgrade operator with parameter change")
+
+			By("waiting for operator pod to be ready after parameter change")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", "app.kubernetes.io/name=castware-operator",
+					"-n", namespace,
+					"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}",
+				)
+				status, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(status).To(Equal("True"))
+			}, 2*time.Minute).Should(Succeed())
+
+			By("waiting for helm revision to increment in cluster status")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "cluster", "castai",
+					"-n", namespace,
+					"-o", "jsonpath={.status.lastReportedHelmRevision}",
+				)
+				newRevision, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(newRevision).NotTo(Equal(initialRevision),
+					"Operator helm revision should have incremented after parameter change")
+			}, 1*time.Minute).Should(Succeed()) // Operator reconciles immediately
+
+			By("verifying operator logs contain successful reporting message")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "logs",
+					"-l", "app.kubernetes.io/name=castware-operator",
+					"-n", namespace,
+					"--tail=100",
+				)
+				logs, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get operator logs")
+				g.Expect(logs).To(ContainSubstring("Successfully reported operator helm revision change to Mothership"),
+					"Operator should log successful reporting to Mothership")
+			}, 30*time.Second).Should(Succeed())
+
+			By("test completed: operator parameter changes detected and reported via helm revision tracking")
 		})
 
 		It("should self upgrade", func() {
