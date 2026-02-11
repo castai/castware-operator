@@ -74,8 +74,8 @@ installCRDs: true
 crdUpgrade:
   enabled: true
   image:
-    repository: lachlanevenson/k8s-kubectl
-    tag: "v1.25.4"
+    repository: rancher/kubectl
+    tag: "v1.35.0"
     pullPolicy: IfNotPresent
 
 preflightCheck:
