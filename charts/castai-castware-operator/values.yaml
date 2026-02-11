@@ -75,6 +75,7 @@ crdUpgrade:
   enabled: true
   image:
     repository: rancher/kubectl
+    # v1.35.0 - runs as non-root user (UID 1000) to pass Prisma Cloud compliance
     tag: "v1.35.0"
     pullPolicy: IfNotPresent
 
