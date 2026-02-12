@@ -151,9 +151,11 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			// Helm release not found, nothing to do.
 			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 		}
-		if component.Status.CurrentVersion != helmRelease.Chart.Metadata.Version {
+		if component.Status.CurrentVersion != helmRelease.Chart.Metadata.Version ||
+			component.Status.ObservedGeneration != component.Generation {
 			log.Info("Component version changed, updating current version in component status")
 			component.Status.CurrentVersion = helmRelease.Chart.Metadata.Version
+			component.Status.ObservedGeneration = component.Generation
 			if err := r.updateStatus(ctx, component); err != nil {
 				log.WithError(err).Error("Failed to update component status")
 				return ctrl.Result{}, err
@@ -316,11 +318,20 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.installComponent(ctx, log.WithField("action", "install"), component, false)
 	}
 
-	// If current version is not empty, but it's different from the one specified in the CRD the component
-	// must be upgraded or downgraded unless the controller is already performing another action
-	if component.Status.CurrentVersion != "" && component.Status.CurrentVersion != component.Spec.Version &&
+	// If current version is not empty, the component must be upgraded when:
+	// - the desired version differs from the current version (version upgrade/downgrade), or
+	// - the spec generation changed (e.g. values-only change) and ObservedGeneration was already set.
+	// An upgrade is skipped if the controller is already performing another action.
+	if component.Status.CurrentVersion != "" &&
 		!meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
-		return r.upgradeComponent(ctx, log.WithField("action", "upgrade"), component)
+
+		versionChanged := component.Status.CurrentVersion != component.Spec.Version
+		generationChanged := component.Status.ObservedGeneration != 0 &&
+			component.Generation != component.Status.ObservedGeneration
+
+		if versionChanged || generationChanged {
+			return r.upgradeComponent(ctx, log.WithField("action", "upgrade"), component)
+		}
 	}
 
 	// If the component is in rollback mode we disable it and try to rollback.
@@ -347,6 +358,18 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if needsUpdate {
 			log.Info("Extended permissions detected, upgrading spot-handler with phase2Permissions=true")
 			return r.upgradeComponent(ctx, log.WithField("action", "upgrade-phase2"), component)
+		}
+	}
+
+	// Backfill ObservedGeneration for components deployed before this feature was introduced.
+	// This prevents spurious upgrades on operator restart by setting ObservedGeneration to the
+	// current generation when the component is already available and healthy.
+	if component.Status.ObservedGeneration == 0 &&
+		meta.IsStatusConditionTrue(component.Status.Conditions, typeAvailableComponent) {
+		component.Status.ObservedGeneration = component.Generation
+		if err := r.updateStatus(ctx, component); err != nil {
+			log.WithError(err).Error("Failed to backfill ObservedGeneration")
+			return ctrl.Result{RequeueAfter: time.Minute}, nil
 		}
 	}
 
@@ -618,11 +641,17 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 	}
 
 	// Set progressing status before starting the upgrade
+	var progressingMessage string
+	if component.Status.CurrentVersion != component.Spec.Version {
+		progressingMessage = fmt.Sprintf("Upgrading component: %s -> %s", component.Status.CurrentVersion, component.Spec.Version)
+	} else {
+		progressingMessage = fmt.Sprintf("Upgrading component %s (configuration change)", component.Spec.Version)
+	}
 	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
 		Type:    typeProgressingComponent,
 		Status:  metav1.ConditionTrue,
 		Reason:  progressingReasonUpgrading,
-		Message: fmt.Sprintf("Upgrading component: %s -> %s", component.Status.CurrentVersion, component.Spec.Version),
+		Message: progressingMessage,
 	})
 	err = r.updateStatus(ctx, component)
 	if err != nil {
@@ -665,7 +694,11 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 		return r.rollback(ctx, log, component)
 	}
 
-	r.Recorder.Eventf(component, v1.EventTypeNormal, reasonUpgradeStarted, "Upgrade started: %s -> %s", component.Status.CurrentVersion, component.Spec.Version)
+	if component.Status.CurrentVersion != component.Spec.Version {
+		r.Recorder.Eventf(component, v1.EventTypeNormal, reasonUpgradeStarted, "Upgrade started: %s -> %s", component.Status.CurrentVersion, component.Spec.Version)
+	} else {
+		r.Recorder.Eventf(component, v1.EventTypeNormal, reasonUpgradeStarted, "Configuration upgrade started for version %s", component.Spec.Version)
+	}
 
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
@@ -781,6 +814,7 @@ func (r *ComponentReconciler) checkHelmProgress(ctx context.Context, log logrus.
 			Message: progressingCondition.Message,
 		})
 		component.Status.CurrentVersion = helmRelease.Chart.Metadata.Version
+		component.Status.ObservedGeneration = component.Generation
 		r.Recorder.Eventf(component, v1.EventTypeNormal, reasonInstalled, "Version %s installed successfully", component.Status.CurrentVersion)
 	case release.StatusFailed:
 		// defer as we want this action to be recorded after rollback action has been recorded

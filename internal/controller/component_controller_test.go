@@ -536,6 +536,182 @@ func newComponentTestOpsWithCastAIClient(t *testing.T, objs ...client.Object) *c
 	return opts
 }
 
+func TestGenerationBasedUpgrade(t *testing.T) {
+	t.Run("should trigger upgrade when spec.values change but version stays the same", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "test-component")
+		testComponent.Spec.Version = "v0.1.0"
+		testComponent.Status.CurrentVersion = "v0.1.0"
+		// Simulate that ObservedGeneration was previously set (e.g. after a prior successful deploy)
+		testComponent.Status.ObservedGeneration = 1
+		// Simulate a spec change (values change) that incremented the generation
+		testComponent.Generation = 2
+		meta.SetStatusCondition(&testComponent.Status.Conditions, metav1.Condition{
+			Type:   typeAvailableComponent,
+			Status: metav1.ConditionTrue,
+			Reason: reasonInstalled,
+		})
+
+		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, testComponent)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   testComponent.Namespace,
+			ReleaseName: testComponent.Spec.Component,
+		}).Return(&release.Release{
+			Name: testComponent.Spec.Component,
+			Info: &release.Info{Status: release.StatusDeployed},
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Name:    testComponent.Spec.Component,
+					Version: "v0.1.0",
+				},
+			},
+		}, nil)
+
+		testOps.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), testCluster.Spec.Cluster.ClusterID, gomock.Any()).Return(nil).AnyTimes()
+
+		testOps.mockHelm.EXPECT().Upgrade(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(ctx context.Context, opts helm.UpgradeOptions) (*release.Release, error) {
+				// Verify the upgrade is using the same version (config-only upgrade)
+				r.Equal("v0.1.0", opts.ChartSource.Version)
+				return &release.Release{
+					Name: testComponent.Spec.Component,
+					Info: &release.Info{Status: release.StatusDeployed},
+					Chart: &chart.Chart{
+						Metadata: &chart.Metadata{
+							Version: "v0.1.0",
+						},
+					},
+				}, nil
+			})
+
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+		_, err := testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+
+		var actualComponent castwarev1alpha1.Component
+		err = testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+		r.NoError(err)
+
+		// Verify progressing condition was set with configuration change message
+		progressingCondition := meta.FindStatusCondition(actualComponent.Status.Conditions, typeProgressingComponent)
+		r.NotNil(progressingCondition)
+		r.Equal(metav1.ConditionTrue, progressingCondition.Status)
+		r.Equal(progressingReasonUpgrading, progressingCondition.Reason)
+		r.Equal("Upgrading component v0.1.0 (configuration change)", progressingCondition.Message)
+	})
+
+	t.Run("should not trigger upgrade when generation matches observed generation", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "test-component")
+		testComponent.Spec.Version = "v0.1.0"
+		testComponent.Status.CurrentVersion = "v0.1.0"
+		testComponent.Status.ObservedGeneration = 1
+		testComponent.Generation = 1
+		meta.SetStatusCondition(&testComponent.Status.Conditions, metav1.Condition{
+			Type:   typeAvailableComponent,
+			Status: metav1.ConditionTrue,
+			Reason: reasonInstalled,
+		})
+
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		// No helm calls expected - the reconciler should just requeue
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+		result, err := testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+		r.Equal(time.Minute*15, result.RequeueAfter)
+	})
+
+	t.Run("should backfill ObservedGeneration for existing components without triggering upgrade", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "test-component")
+		testComponent.Spec.Version = "v0.1.0"
+		testComponent.Status.CurrentVersion = "v0.1.0"
+		// ObservedGeneration is 0 (not set - pre-existing component)
+		testComponent.Status.ObservedGeneration = 0
+		testComponent.Generation = 3
+		meta.SetStatusCondition(&testComponent.Status.Conditions, metav1.Condition{
+			Type:   typeAvailableComponent,
+			Status: metav1.ConditionTrue,
+			Reason: reasonInstalled,
+		})
+
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		// No helm calls expected - only status backfill
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+		result, err := testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+		// After backfill, reconciler requeues normally
+		r.True(result.RequeueAfter > 0)
+
+		var actualComponent castwarev1alpha1.Component
+		err = testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+		r.NoError(err)
+
+		// ObservedGeneration should be backfilled to the current generation
+		r.Equal(int64(3), actualComponent.Status.ObservedGeneration)
+	})
+
+	t.Run("should set ObservedGeneration after successful deploy", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "test-component")
+		testComponent.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
+		testComponent.Spec.ReleaseName = "release-name"
+		testComponent.Generation = 5
+
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+
+		// First reconcile: sets progressing condition
+		_, err := testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+
+		// Second reconcile: checkHelmProgress sees deployed status
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   testComponent.Namespace,
+			ReleaseName: testComponent.Spec.ReleaseName,
+		}).Return(&release.Release{
+			Name: testComponent.Spec.Component,
+			Info: &release.Info{Status: release.StatusDeployed},
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "0.1.2",
+				},
+			},
+		}, nil)
+
+		_, err = testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+
+		var actualComponent castwarev1alpha1.Component
+		err = testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent)
+		r.NoError(err)
+
+		r.Equal("0.1.2", actualComponent.Status.CurrentVersion)
+		// ObservedGeneration should be set to the component's generation
+		r.Equal(int64(5), actualComponent.Status.ObservedGeneration)
+	})
+}
+
 func TestProgressingStatusSetBeforeOperation(t *testing.T) {
 	t.Run("when installing component", func(t *testing.T) {
 		t.Run("should set progressing status before calling helm install", func(t *testing.T) {

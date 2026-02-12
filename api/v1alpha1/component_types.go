@@ -69,6 +69,10 @@ type ComponentStatus struct {
 	// Set it to true if the component should be rolled back to the previous version,
 	// the reconcile loop will set it to false when the rollback starts.
 	Rollback bool `json:"rollback,omitempty" protobuf:"bool,3,rep,name=rollback"`
+	// ObservedGeneration is the most recent generation observed by the controller.
+	// It corresponds to the Component's generation, which is updated on mutation by the API Server.
+	// Used to detect spec changes (e.g. values) that should trigger a helm upgrade even when the version hasn't changed.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty" protobuf:"varint,4,opt,name=observedGeneration"`
 }
 
 //+kubebuilder:object:root=true
