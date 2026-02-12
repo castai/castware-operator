@@ -642,10 +642,13 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 
 	// Set progressing status before starting the upgrade
 	var progressingMessage string
-	if component.Status.CurrentVersion != component.Spec.Version {
+	switch {
+	case component.Status.CurrentVersion != component.Spec.Version:
 		progressingMessage = fmt.Sprintf("Upgrading component: %s -> %s", component.Status.CurrentVersion, component.Spec.Version)
-	} else {
+	case component.Status.ObservedGeneration != 0 && component.Generation != component.Status.ObservedGeneration:
 		progressingMessage = fmt.Sprintf("Upgrading component %s (configuration change)", component.Spec.Version)
+	default:
+		progressingMessage = fmt.Sprintf("Upgrading component %s", component.Spec.Version)
 	}
 	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
 		Type:    typeProgressingComponent,
@@ -694,10 +697,13 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 		return r.rollback(ctx, log, component)
 	}
 
-	if component.Status.CurrentVersion != component.Spec.Version {
+	switch {
+	case component.Status.CurrentVersion != component.Spec.Version:
 		r.Recorder.Eventf(component, v1.EventTypeNormal, reasonUpgradeStarted, "Upgrade started: %s -> %s", component.Status.CurrentVersion, component.Spec.Version)
-	} else {
+	case component.Status.ObservedGeneration != 0 && component.Generation != component.Status.ObservedGeneration:
 		r.Recorder.Eventf(component, v1.EventTypeNormal, reasonUpgradeStarted, "Configuration upgrade started for version %s", component.Spec.Version)
+	default:
+		r.Recorder.Eventf(component, v1.EventTypeNormal, reasonUpgradeStarted, "Upgrade started for version %s", component.Spec.Version)
 	}
 
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
