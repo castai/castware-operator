@@ -69,6 +69,10 @@ type ComponentStatus struct {
 	// Set it to true if the component should be rolled back to the previous version,
 	// the reconcile loop will set it to false when the rollback starts.
 	Rollback bool `json:"rollback,omitempty" protobuf:"bool,3,rep,name=rollback"`
+	// ObservedGeneration is the most recent generation observed by the controller.
+	// It corresponds to the Component's generation, which is updated on mutation by the API Server.
+	// Used to detect spec changes (e.g. values) that should trigger a helm upgrade even when the version hasn't changed.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty" protobuf:"varint,4,opt,name=observedGeneration"`
 	// LastReportedHelmRevision is the helm release revision number that was last reported to Mothership.
 	// Used to detect helm upgrades (including parameter-only changes without version changes) and report updated parameters.
 	// +optional
@@ -97,6 +101,15 @@ func (c Component) HelmChartName() string {
 
 func (c Component) IsInitiliazedByTerraform() bool {
 	return c.Spec.Migration == ComponentMigrationTerraform
+}
+
+func (c Component) VersionChanged() bool {
+	return c.Status.CurrentVersion != c.Spec.Version
+}
+
+func (c Component) GenerationChanged() bool {
+	return c.Status.ObservedGeneration != 0 &&
+		c.Generation != c.Status.ObservedGeneration
 }
 
 //+kubebuilder:object:root=true
