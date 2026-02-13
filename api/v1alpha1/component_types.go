@@ -103,11 +103,11 @@ func (c Component) IsInitiliazedByTerraform() bool {
 	return c.Spec.Migration == ComponentMigrationTerraform
 }
 
-func (c Component) HasVersionChanged() bool {
+func (c Component) VersionChanged() bool {
 	return c.Status.CurrentVersion != c.Spec.Version
 }
 
-func (c Component) HasGenerationChanged() bool {
+func (c Component) GenerationChanged() bool {
 	return c.Status.ObservedGeneration != 0 &&
 		c.Generation != c.Status.ObservedGeneration
 }

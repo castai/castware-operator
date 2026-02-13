@@ -151,7 +151,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 		}
 		if component.Status.CurrentVersion != helmRelease.Chart.Metadata.Version ||
-			component.Status.ObservedGeneration != component.Generation {
+			component.GenerationChanged() {
 			log.Info("Component version changed, updating current version in component status")
 			component.Status.CurrentVersion = helmRelease.Chart.Metadata.Version
 			component.Status.ObservedGeneration = component.Generation
@@ -324,11 +324,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if component.Status.CurrentVersion != "" &&
 		!meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
 
-		versionChanged := component.Status.CurrentVersion != component.Spec.Version
-		generationChanged := component.Status.ObservedGeneration != 0 &&
-			component.Generation != component.Status.ObservedGeneration
-
-		if versionChanged || generationChanged {
+		if component.VersionChanged() || component.GenerationChanged() {
 			return r.upgradeComponent(ctx, log.WithField("action", "upgrade"), component)
 		}
 	}
@@ -657,9 +653,9 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 	// Set progressing status before starting the upgrade
 	var progressingMessage string
 	switch {
-	case component.HasVersionChanged():
+	case component.VersionChanged():
 		progressingMessage = fmt.Sprintf("Upgrading component: %s -> %s", component.Status.CurrentVersion, component.Spec.Version)
-	case component.HasGenerationChanged():
+	case component.GenerationChanged():
 		progressingMessage = fmt.Sprintf("Upgrading component %s (configuration change)", component.Spec.Version)
 	default:
 		progressingMessage = fmt.Sprintf("Upgrading component %s", component.Spec.Version)
@@ -712,9 +708,9 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 	}
 
 	switch {
-	case component.HasVersionChanged():
+	case component.VersionChanged():
 		r.Recorder.Eventf(component, v1.EventTypeNormal, reasonUpgradeStarted, "Upgrade started: %s -> %s", component.Status.CurrentVersion, component.Spec.Version)
-	case component.HasGenerationChanged():
+	case component.GenerationChanged():
 		r.Recorder.Eventf(component, v1.EventTypeNormal, reasonUpgradeStarted, "Configuration upgrade started for version %s", component.Spec.Version)
 	default:
 		r.Recorder.Eventf(component, v1.EventTypeNormal, reasonUpgradeStarted, "Upgrade started for version %s", component.Spec.Version)
