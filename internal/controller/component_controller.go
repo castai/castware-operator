@@ -1,15 +1,14 @@
 package controller
 
 import (
+	"castai-agent/pkg/services/providers/aks"
+	"castai-agent/pkg/services/providers/eks"
+	"castai-agent/pkg/services/providers/gke"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
-
-	"castai-agent/pkg/services/providers/aks"
-	"castai-agent/pkg/services/providers/eks"
-	"castai-agent/pkg/services/providers/gke"
 
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/release"
@@ -579,7 +578,6 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 		Namespace:   component.Namespace,
 		ReleaseName: getReleaseName(component),
 	})
-
 	// If release is not found we install it, otherwise we just set status as progressing and wait for completion.
 	// This could happen if we start to install but fail to set progressing
 	// status condition (for example because the operator is restarted).
@@ -659,9 +657,9 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 	// Set progressing status before starting the upgrade
 	var progressingMessage string
 	switch {
-	case component.Status.CurrentVersion != component.Spec.Version:
+	case component.HasVersionChanged():
 		progressingMessage = fmt.Sprintf("Upgrading component: %s -> %s", component.Status.CurrentVersion, component.Spec.Version)
-	case component.Status.ObservedGeneration != 0 && component.Generation != component.Status.ObservedGeneration:
+	case component.HasGenerationChanged():
 		progressingMessage = fmt.Sprintf("Upgrading component %s (configuration change)", component.Spec.Version)
 	default:
 		progressingMessage = fmt.Sprintf("Upgrading component %s", component.Spec.Version)
@@ -714,9 +712,9 @@ func (r *ComponentReconciler) upgradeComponent(ctx context.Context, log logrus.F
 	}
 
 	switch {
-	case component.Status.CurrentVersion != component.Spec.Version:
+	case component.HasVersionChanged():
 		r.Recorder.Eventf(component, v1.EventTypeNormal, reasonUpgradeStarted, "Upgrade started: %s -> %s", component.Status.CurrentVersion, component.Spec.Version)
-	case component.Status.ObservedGeneration != 0 && component.Generation != component.Status.ObservedGeneration:
+	case component.HasGenerationChanged():
 		r.Recorder.Eventf(component, v1.EventTypeNormal, reasonUpgradeStarted, "Configuration upgrade started for version %s", component.Spec.Version)
 	default:
 		r.Recorder.Eventf(component, v1.EventTypeNormal, reasonUpgradeStarted, "Upgrade started for version %s", component.Spec.Version)
