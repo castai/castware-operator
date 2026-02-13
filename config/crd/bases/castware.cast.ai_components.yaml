@@ -150,6 +150,11 @@ spec:
                 type: array
               currentVersion:
                 type: string
+              lastReportedHelmRevision:
+                description: |-
+                  LastReportedHelmRevision is the helm release revision number that was last reported to Mothership.
+                  Used to detect helm upgrades (including parameter-only changes without version changes) and report updated parameters.
+                type: integer
               rollback:
                 description: |-
                   Set it to true if the component should be rolled back to the previous version,
