@@ -624,7 +624,19 @@ func TestGenerationBasedUpgrade(t *testing.T) {
 
 		testOps := newComponentTestOps(t, testCluster, testComponent)
 
-		// No helm calls expected - the reconciler should just requeue
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   testComponent.Namespace,
+			ReleaseName: testComponent.Spec.Component,
+		}).Return(&release.Release{
+			Name: testComponent.Spec.Component,
+			Info: &release.Info{Status: release.StatusDeployed},
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "v0.1.0",
+				},
+			},
+		}, nil)
+
 		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
 		result, err := testOps.sut.Reconcile(ctx, req)
 		r.NoError(err)
@@ -651,7 +663,19 @@ func TestGenerationBasedUpgrade(t *testing.T) {
 
 		testOps := newComponentTestOps(t, testCluster, testComponent)
 
-		// No helm calls expected - only status backfill
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   testComponent.Namespace,
+			ReleaseName: testComponent.Spec.Component,
+		}).Return(&release.Release{
+			Name: testComponent.Spec.Component,
+			Info: &release.Info{Status: release.StatusDeployed},
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{
+					Version: "v0.1.0",
+				},
+			},
+		}, nil)
+
 		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
 		result, err := testOps.sut.Reconcile(ctx, req)
 		r.NoError(err)
