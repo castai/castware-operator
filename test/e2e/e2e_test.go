@@ -104,7 +104,6 @@ var _ = Describe("Manager", Ordered, func() {
 	var clusterID string
 	var organizationID string
 	var apiKey string
-	var apiURL = "https://api.dev-master.cast.ai"
 	var agentInstalled bool
 	var spotHandlerInstalled bool
 	var versionBeforeDowngrade string
@@ -114,6 +113,11 @@ var _ = Describe("Manager", Ordered, func() {
 	// Extract image repository and tag from projectImage (format: repository:tag)
 	imageParts := strings.Split(projectImage, ":")
 	Expect(imageParts).To(HaveLen(2), "invalid projectImage format")
+
+	var apiURL = os.Getenv("API_URL")
+	if apiURL == "" {
+		apiURL = "https://api.dev-master.cast.ai"
+	}
 
 	fetchFromAPI := func(apiURL string, httpMethod string, requestBody interface{}, responseBody interface{}) error {
 		req, err := http.NewRequest(httpMethod, apiURL, nil)
