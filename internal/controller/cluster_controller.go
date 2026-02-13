@@ -146,9 +146,9 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	log.Debug("Initial setup completed")
 
-	// Detect and report operator version changes (e.g., from direct helm upgrades)
-	if err := r.detectAndReportOperatorVersionChange(ctx, cluster, castAiClient); err != nil {
-		log.WithError(err).Error("Failed to detect operator version change")
+	// Detect and report operator helm revision changes (e.g., from direct helm upgrades)
+	if err := r.detectAndReportOperatorHelmRevisionChange(ctx, cluster, castAiClient); err != nil {
+		log.WithError(err).Error("Failed to detect operator helm revision change")
 	}
 
 	reconcile, err := r.reconcileSecret(ctx, cluster)
@@ -323,8 +323,11 @@ func (r *ClusterReconciler) completeInitialSetup(ctx context.Context, cluster *c
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
 
-	// Track the reported version to detect future out-of-band upgrades
-	cluster.Status.LastReportedOperatorVersion = operatorVersion
+	// Initialize LastReportedHelmRevision if we have a helm release
+	// This prevents duplicate reporting on the next reconcile loop
+	if helmRelease != nil {
+		cluster.Status.LastReportedHelmRevision = helmRelease.Version
+	}
 
 	log.Info("Cluster reconciled")
 	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{Type: typeAvailableCluster, Status: metav1.ConditionTrue, Reason: "ClusterIdAvailable", Message: "Cluster reconciled"})
@@ -336,15 +339,15 @@ func (r *ClusterReconciler) completeInitialSetup(ctx context.Context, cluster *c
 	return ctrl.Result{RequeueAfter: time.Second * 5}, nil
 }
 
-// detectAndReportOperatorVersionChange detects if the operator version has changed from what was
-// last reported to Mothership (e.g., due to a direct helm upgrade) and reports it.
+// detectAndReportOperatorHelmRevisionChange detects if the operator helm release revision has changed
+// (e.g., from a direct helm upgrade without version change) and reports updated parameters to Mothership.
 // This only triggers if there's NO active upgrade job (to avoid double-reporting with Mothership-initiated upgrades).
-func (r *ClusterReconciler) detectAndReportOperatorVersionChange(ctx context.Context, cluster *castwarev1alpha1.Cluster, castAiClient castai.CastAIClient) error {
-	log := r.Log.WithField("action", "detect-version-change")
+func (r *ClusterReconciler) detectAndReportOperatorHelmRevisionChange(ctx context.Context, cluster *castwarev1alpha1.Cluster, castAiClient castai.CastAIClient) error {
+	log := r.Log.WithField("action", "detect-operator-revision-change")
 
 	// Skip if there's an active upgrade job (Mothership-initiated upgrade in progress)
 	if cluster.Status.UpgradeJobName != "" {
-		log.Debug("Skipping version detection: upgrade job in progress")
+		log.Debug("Skipping operator revision detection: upgrade job in progress")
 		return nil
 	}
 
@@ -353,33 +356,37 @@ func (r *ClusterReconciler) detectAndReportOperatorVersionChange(ctx context.Con
 		return nil
 	}
 
-	// Get current operator version from Helm
+	// Get current operator helm release
 	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   r.Config.PodNamespace,
 		ReleaseName: r.Config.HelmReleaseName,
 	})
 	if err != nil {
-		// If Helm release not found (e.g., manifests-based install), skip version detection
+		// If Helm release not found (e.g., manifests-based install), skip revision detection
 		if errors.Is(err, driver.ErrReleaseNotFound) {
-			log.Debug("Helm release not found, skipping version detection")
+			log.Debug("Helm release not found, skipping operator revision detection")
 			return nil
 		}
 		return fmt.Errorf("failed to get Helm release: %w", err)
 	}
 
-	currentVersion := helmRelease.Chart.Metadata.Version
-	lastReportedVersion := cluster.Status.LastReportedOperatorVersion
+	currentRevision := helmRelease.Version
+	lastReportedRevision := cluster.Status.LastReportedHelmRevision
 
-	// Check if version has changed
-	if currentVersion == lastReportedVersion {
+	// Check if revision has changed
+	if currentRevision == lastReportedRevision {
 		return nil
 	}
 
-	// Version changed! Report it to Mothership
+	// Revision changed! This could be from:
+	// 1. Version upgrade (already handled by upgrade job)
+	// 2. Parameter-only change (e.g., helm upgrade --set extendedPermissions=true without version change)
+	// 3. Direct helm upgrade outside operator control
 	log.WithFields(logrus.Fields{
-		"currentVersion":  currentVersion,
-		"previousVersion": lastReportedVersion,
-	}).Info("Detected operator version change, reporting to Mothership")
+		"currentRevision":      currentRevision,
+		"lastReportedRevision": lastReportedRevision,
+		"operatorVersion":      helmRelease.Chart.Metadata.Version,
+	}).Info("Detected operator helm revision change, reporting to Mothership")
 
 	// Extract operator parameters
 	componentParams := params.ExtractComponentParams(
@@ -394,24 +401,24 @@ func (r *ClusterReconciler) detectAndReportOperatorVersionChange(ctx context.Con
 	err = castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, &castai.ComponentActionResult{
 		Name:            components.ComponentNameOperator,
 		Action:          castai.Action_UPGRADE,
-		CurrentVersion:  currentVersion,
-		Version:         currentVersion,
+		CurrentVersion:  helmRelease.Chart.Metadata.Version,
+		Version:         helmRelease.Chart.Metadata.Version,
 		Status:          castai.Status_OK,
 		ReleaseName:     helmRelease.Name,
-		Message:         "Operator version change detected",
+		Message:         "Operator helm revision change detected",
 		ComponentParams: componentParams,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to record version change: %w", err)
+		return fmt.Errorf("failed to record operator revision change: %w", err)
 	}
 
 	// Update the tracking field
-	cluster.Status.LastReportedOperatorVersion = currentVersion
+	cluster.Status.LastReportedHelmRevision = currentRevision
 	if err := r.Status().Update(ctx, cluster); err != nil {
-		return fmt.Errorf("failed to update LastReportedOperatorVersion: %w", err)
+		return fmt.Errorf("failed to update LastReportedHelmRevision: %w", err)
 	}
 
-	log.Info("Successfully reported operator version change to Mothership")
+	log.WithField("params", componentParams).Info("Successfully reported operator helm revision change to Mothership")
 	return nil
 }
 
@@ -1398,8 +1405,8 @@ func (r *ClusterReconciler) checkUpgradeJobStatus(ctx context.Context, cluster *
 					log.WithError(err).Error("Failed to record operator upgrade completion")
 				} else {
 					log.Info("Recorded operator upgrade completion to Mothership")
-					// Track the reported version to prevent duplicate reporting
-					cluster.Status.LastReportedOperatorVersion = helmRelease.Chart.Metadata.Version
+					// Track the reported revision to prevent duplicate reporting
+					cluster.Status.LastReportedHelmRevision = helmRelease.Version
 				}
 			}
 		}

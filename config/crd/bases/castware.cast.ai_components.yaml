@@ -156,6 +156,10 @@ spec:
                   It corresponds to the Component's generation, which is updated on mutation by the API Server.
                   Used to detect spec changes (e.g. values) that should trigger a helm upgrade even when the version hasn't changed.
                 format: int64
+              lastReportedHelmRevision:
+                description: |-
+                  LastReportedHelmRevision is the helm release revision number that was last reported to Mothership.
+                  Used to detect helm upgrades (including parameter-only changes without version changes) and report updated parameters.
                 type: integer
               rollback:
                 description: |-

@@ -73,6 +73,10 @@ type ComponentStatus struct {
 	// It corresponds to the Component's generation, which is updated on mutation by the API Server.
 	// Used to detect spec changes (e.g. values) that should trigger a helm upgrade even when the version hasn't changed.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty" protobuf:"varint,4,opt,name=observedGeneration"`
+	// LastReportedHelmRevision is the helm release revision number that was last reported to Mothership.
+	// Used to detect helm upgrades (including parameter-only changes without version changes) and report updated parameters.
+	// +optional
+	LastReportedHelmRevision int `json:"lastReportedHelmRevision,omitempty"`
 }
 
 //+kubebuilder:object:root=true

@@ -186,12 +186,11 @@ spec:
                   Format is semantic version without 'v' prefix (e.g., "0.0.24").
                   Empty value indicates the cluster has not been registered by the operator yet.
                 type: string
-              lastReportedOperatorVersion:
+              lastReportedHelmRevision:
                 description: |-
-                  LastReportedOperatorVersion is the operator version that was last reported to Mothership.
-                  Format is semantic version without 'v' prefix (e.g., "0.3.0").
-                  Used to detect out-of-band upgrades (e.g., direct helm upgrade) and report them to Mothership.
-                type: string
+                  LastReportedHelmRevision is the helm release revision number of the operator that was last reported to Mothership.
+                  Used to detect operator helm upgrades (including parameter-only changes without version changes) and report updated parameters.
+                type: integer
               lastSecretVersion:
                 type: string
               upgradeJobName:
@@ -361,6 +360,10 @@ spec:
                   It corresponds to the Component's generation, which is updated on mutation by the API Server.
                   Used to detect spec changes (e.g. values) that should trigger a helm upgrade even when the version hasn't changed.
                 format: int64
+              lastReportedHelmRevision:
+                description: |-
+                  LastReportedHelmRevision is the helm release revision number that was last reported to Mothership.
+                  Used to detect helm upgrades (including parameter-only changes without version changes) and report updated parameters.
                 type: integer
               rollback:
                 description: |-

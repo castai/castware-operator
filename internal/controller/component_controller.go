@@ -347,18 +347,34 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.rollback(ctx, log, updatedComponent)
 	}
 
-	// Check if spot-handler needs phase2Permissions update
-	if component.Spec.Component == components.ComponentNameSpotHandler &&
-		meta.IsStatusConditionTrue(component.Status.Conditions, typeAvailableComponent) {
-		needsUpdate, err := r.checkAndUpdatePhase2Permissions(ctx, log, component)
+	if meta.IsStatusConditionTrue(component.Status.Conditions, typeAvailableComponent) {
+		helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+			Namespace:   component.Namespace,
+			ReleaseName: getReleaseName(component),
+		})
 		if err != nil {
-			log.WithError(err).Error("Failed to check/update phase2Permissions")
+			log.WithError(err).Warn("Failed to get helm release for available component checks")
 			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 		}
-		if needsUpdate {
-			log.Info("Extended permissions detected, upgrading spot-handler with phase2Permissions=true")
-			return r.upgradeComponent(ctx, log.WithField("action", "upgrade-phase2"), component)
+		// Check if spot-handler needs phase2Permissions update
+		if component.Spec.Component == components.ComponentNameSpotHandler {
+			needsUpdate, err := r.checkPhase2PermissionsNeedUpdate(ctx, log, component, helmRelease)
+			if err != nil {
+				log.WithError(err).Error("Failed to check phase2Permissions")
+				return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+			}
+			if needsUpdate {
+				log.Info("Extended permissions detected, upgrading spot-handler with phase2Permissions=true")
+				return r.upgradeComponent(ctx, log.WithField("action", "upgrade-phase2"), component)
+			}
 		}
+
+		// Check if helm release revision changed (e.g., from direct helm upgrade without version change)
+		// This detects parameter-only changes and reports them to Mothership
+		if err := r.detectAndReportHelmRevisionChange(ctx, log, component, cluster, helmRelease); err != nil {
+			log.WithError(err).Warn("Failed to detect/report helm revision change")
+		}
+
 	}
 
 	// Backfill ObservedGeneration for components deployed before this feature was introduced.
@@ -947,6 +963,7 @@ func (r *ComponentReconciler) recordActionResult(
 
 	// Extract component parameters only when the operation is complete (OK or ERROR status)
 	// Don't extract for PROGRESSING status as the component may not be fully installed yet
+	var helmReleaseForTracking *release.Release
 	if action != castai.Action_DELETE && req.Status != castai.Status_PROGRESSING {
 		helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 			Namespace:   component.Namespace,
@@ -964,6 +981,11 @@ func (r *ComponentReconciler) recordActionResult(
 				component.Namespace,
 			)
 			req.ComponentParams = componentParams
+
+			// Store for later revision tracking after successful API call
+			if req.Status == castai.Status_OK {
+				helmReleaseForTracking = helmRelease
+			}
 		}
 	}
 
@@ -973,6 +995,83 @@ func (r *ComponentReconciler) recordActionResult(
 	}
 
 	log.WithFields(logrus.Fields{"request": fmt.Sprintf("%+v", req)}).Info("Recorded action result for component")
+
+	// Update LastReportedHelmRevision only AFTER successfully reporting to Mothership
+	// This prevents desync where operator thinks it reported but Mothership didn't receive it
+	if helmReleaseForTracking != nil {
+		component.Status.LastReportedHelmRevision = helmReleaseForTracking.Version
+		if err := r.updateStatus(ctx, component); err != nil {
+			log.WithError(err).Warn("Failed to update LastReportedHelmRevision after recording action")
+		}
+	}
+}
+
+// detectAndReportHelmRevisionChange detects if the helm release revision has changed
+// (e.g., from a direct helm upgrade without version change) and reports updated parameters to Mothership.
+// helmRelease parameter is passed in to avoid redundant GetRelease calls.
+func (r *ComponentReconciler) detectAndReportHelmRevisionChange(
+	ctx context.Context,
+	log logrus.FieldLogger,
+	component *castwarev1alpha1.Component,
+	cluster *castwarev1alpha1.Cluster,
+	helmRelease *release.Release,
+) error {
+	currentRevision := helmRelease.Version
+	lastReportedRevision := component.Status.LastReportedHelmRevision
+
+	// Check if revision has changed
+	if currentRevision == lastReportedRevision {
+		return nil
+	}
+
+	// Revision changed! This could be from:
+	// 1. Version upgrade (already handled by upgradeComponent)
+	// 2. Parameter-only change (e.g., helm upgrade --set extendedPermissions=true without version change)
+	// 3. Direct helm upgrade outside operator control
+	log.WithFields(logrus.Fields{
+		"currentRevision":      currentRevision,
+		"lastReportedRevision": lastReportedRevision,
+		"componentVersion":     helmRelease.Chart.Metadata.Version,
+	}).Info("Detected helm revision change, reporting updated parameters to Mothership")
+
+	// Extract current component parameters
+	componentParams := params.ExtractComponentParams(
+		ctx,
+		log,
+		component.Spec.Component,
+		helmRelease,
+		r.Client,
+		component.Namespace,
+	)
+
+	castAiClient, err := r.getCastaiClient(ctx, cluster)
+	if err != nil {
+		return fmt.Errorf("failed to get castaiClient for revision change reporting: %w", err)
+	}
+
+	// Report to Mothership with UPGRADE action (since helm revision changed)
+	err = castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, &castai.ComponentActionResult{
+		Name:            component.Spec.Component,
+		Action:          castai.Action_UPGRADE,
+		CurrentVersion:  helmRelease.Chart.Metadata.Version,
+		Version:         helmRelease.Chart.Metadata.Version,
+		Status:          castai.Status_OK,
+		ReleaseName:     helmRelease.Name,
+		Message:         "Helm revision change detected",
+		ComponentParams: componentParams,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to record helm revision change: %w", err)
+	}
+
+	// Update the tracking field
+	component.Status.LastReportedHelmRevision = currentRevision
+	if err := r.updateStatus(ctx, component); err != nil {
+		return fmt.Errorf("failed to update LastReportedHelmRevision: %w", err)
+	}
+
+	log.WithField("params", componentParams).Info("Successfully reported helm revision change to Mothership")
+	return nil
 }
 
 func (r *ComponentReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
@@ -991,7 +1090,9 @@ func (r *ComponentReconciler) getCastaiClient(ctx context.Context, cluster *cast
 	return client, nil
 }
 
-func (r *ComponentReconciler) checkAndUpdatePhase2Permissions(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (bool, error) {
+// checkPhase2PermissionsNeedUpdate checks if spot-handler needs to be upgraded with phase2Permissions=true.
+// helmRelease parameter is passed in to avoid redundant GetRelease calls.
+func (r *ComponentReconciler) checkPhase2PermissionsNeedUpdate(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, helmRelease *release.Release) (bool, error) {
 	extendedPermsExist, err := rolebindings.CheckExtendedPermissionsExist(ctx, r.Client, component.Namespace)
 	if err != nil {
 		return false, fmt.Errorf("failed to check extended permissions: %w", err)
@@ -999,14 +1100,6 @@ func (r *ComponentReconciler) checkAndUpdatePhase2Permissions(ctx context.Contex
 
 	if !extendedPermsExist {
 		return false, nil
-	}
-
-	helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
-		Namespace:   component.Namespace,
-		ReleaseName: getReleaseName(component),
-	})
-	if err != nil {
-		return false, fmt.Errorf("failed to get helm release: %w", err)
 	}
 
 	// Check current phase2Permissions value in helm values
