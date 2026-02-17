@@ -1461,7 +1461,8 @@ var _ = Describe("Manager", Ordered, func() {
 
 			// Install phase2 as not operator managed
 			phase2ScriptResp.Script = strings.ReplaceAll(phase2ScriptResp.Script, "OPERATOR_MANAGED=true", "")
-			phase2ScriptResp.Script = strings.ReplaceAll(phase2ScriptResp.Script, "PREFLIGHT_CHECKS=true", "PREFLIGHT_CHECKS=false")
+			phase2ScriptResp.Script = strings.ReplaceAll(phase2ScriptResp.Script,
+				"PREFLIGHT_CHECKS=true", "PREFLIGHT_CHECKS=false")
 
 			cmd = exec.Command("bash", "-c", phase2ScriptResp.Script)
 			output, _ = utils.Run(cmd)
