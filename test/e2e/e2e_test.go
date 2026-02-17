@@ -753,7 +753,8 @@ var _ = Describe("Manager", Ordered, func() {
 			err := apiHelper.FetchFromAPI(getPhase2URL, http.MethodGet, nil, &scriptResp)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase2 script")
 
-			cmd := exec.Command("bash", "-c", scriptResp.Script)
+			phase2Script := strings.ReplaceAll(scriptResp.Script, "PREFLIGHT_CHECKS=true", "PREFLIGHT_CHECKS=false")
+			cmd := exec.Command("bash", "-c", phase2Script)
 			output, _ := utils.Run(cmd)
 			// Phase2 script returns an error, but it's expected because it tries to
 			// run "gcloud container clusters describe", but the cluster is not running in GKE.
@@ -1143,7 +1144,8 @@ var _ = Describe("Manager", Ordered, func() {
 			err := apiHelper.FetchFromAPI(getPhase2URL, http.MethodGet, nil, &scriptResp)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase2 script")
 
-			cmd := exec.Command("bash", "-c", scriptResp.Script)
+			phase2Script := strings.ReplaceAll(scriptResp.Script, "PREFLIGHT_CHECKS=true", "PREFLIGHT_CHECKS=false")
+			cmd := exec.Command("bash", "-c", phase2Script)
 			output, _ := utils.Run(cmd)
 			// Phase2 script returns an error, but it's expected because it tries to
 			// run "gcloud container clusters describe", but the cluster is not running in GKE.
@@ -1459,6 +1461,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			// Install phase2 as not operator managed
 			phase2ScriptResp.Script = strings.ReplaceAll(phase2ScriptResp.Script, "OPERATOR_MANAGED=true", "")
+			phase2ScriptResp.Script = strings.ReplaceAll(phase2ScriptResp.Script, "PREFLIGHT_CHECKS=true", "PREFLIGHT_CHECKS=false")
 
 			cmd = exec.Command("bash", "-c", phase2ScriptResp.Script)
 			output, _ = utils.Run(cmd)
