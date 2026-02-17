@@ -950,28 +950,9 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyNamespaceInManifest).Should(Succeed())
 
 			By("verifying at least one castai-agent pod is ready")
-			verifyAgentPodReady := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods",
-					"-l", "app.kubernetes.io/name=castai-agent",
-					"-n", namespace,
-					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent pods")
-				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
-
-				lines := utils.GetNonEmptyLines(output)
-				g.Expect(lines).ToNot(BeEmpty(), "No castai-agent pods found")
-
-				foundReady := false
-				for _, line := range lines {
-					if podReady(line) {
-						foundReady = true
-						break
-					}
-				}
-				g.Expect(foundReady).To(BeTrue(), "No castai-agent pods are in Ready state")
-			}
-			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
+			Eventually(podHelper.VerifyPodsReady, 5*time.Minute).
+				WithArguments("app.kubernetes.io/name", "castai-agent").
+				Should(Succeed())
 
 			By("storing namespace UID before operator installation")
 			cmd = exec.Command("kubectl", "get", "namespace", namespace, "-o", "jsonpath={.metadata.uid}")
@@ -1029,7 +1010,9 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "Component should be Available after upgrade")
 
 			By("verifying castai-agent pods are ready after upgrade")
-			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
+			Eventually(podHelper.VerifyPodsReady, 5*time.Minute).
+				WithArguments("app.kubernetes.io/name", "castai-agent").
+				Should(Succeed())
 
 			By("verifying helm values have createNamespace=true")
 			cmd = exec.Command("helm", "get", "values", "castai-agent", "-n", namespace, "-o", "json")
@@ -1082,28 +1065,9 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "Component should be Available after downgrade")
 
 			By("verifying at least one castai-agent pod is ready after cleanup")
-			verifyAgentPodReady := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods",
-					"-l", "app.kubernetes.io/name=castai-agent",
-					"-n", namespace,
-					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent pods")
-				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
-
-				lines := utils.GetNonEmptyLines(output)
-				g.Expect(lines).ToNot(BeEmpty(), "No castai-agent pods found")
-
-				foundReady := false
-				for _, line := range lines {
-					if podReady(line) {
-						foundReady = true
-						break
-					}
-				}
-				g.Expect(foundReady).To(BeTrue(), "No castai-agent pods are in Ready state")
-			}
-			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
+			Eventually(podHelper.VerifyPodsReady, 5*time.Minute).
+				WithArguments("app.kubernetes.io/name", "castai-agent").
+				Should(Succeed())
 
 			By("verifying component status conditions after downgrade")
 			err = componentHelper.VerifyStatusCondition(components.ComponentNameAgent, "Available")
@@ -1239,28 +1203,9 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyDeploymentUpdated, 2*time.Minute).Should(Succeed())
 
 			By("verifying at least one castai-agent pod is in ready state after phase1")
-			verifyAgentPodReady := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods",
-					"-l", "app.kubernetes.io/name=castai-agent",
-					"-n", namespace,
-					"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent pods")
-				g.Expect(output).NotTo(BeEmpty(), "No castai-agent pods found")
-
-				lines := utils.GetNonEmptyLines(output)
-				g.Expect(lines).ToNot(BeEmpty(), "No castai-agent pods found")
-
-				foundReady := false
-				for _, line := range lines {
-					if podReady(line) {
-						foundReady = true
-						break
-					}
-				}
-				g.Expect(foundReady).To(BeTrue(), "No castai-agent pods are in Ready state")
-			}
-			Eventually(verifyAgentPodReady, 5*time.Minute).Should(Succeed())
+			Eventually(podHelper.VerifyPodsReady, 5*time.Minute).
+				WithArguments("app.kubernetes.io/name", "castai-agent").
+				Should(Succeed())
 
 			By("getting phase2 script with operator=false")
 			scriptResp2 := struct {
@@ -1273,8 +1218,9 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase2 script")
 
 			By("modifying phase2 script to set OPERATOR_MANAGED=false")
+			modifiedScript := strings.ReplaceAll(scriptResp2.Script, "PREFLIGHT_CHECKS=true", "PREFLIGHT_CHECKS=false")
 			// Replace OPERATOR_MANAGED=true with OPERATOR_MANAGED=false if it exists
-			modifiedScript := strings.ReplaceAll(scriptResp2.Script, "OPERATOR_MANAGED=true", "OPERATOR_MANAGED=false")
+			modifiedScript = strings.ReplaceAll(modifiedScript, "OPERATOR_MANAGED=true", "OPERATOR_MANAGED=false")
 
 			By("running phase2 script")
 			cmd = exec.Command("bash", "-c", modifiedScript)
