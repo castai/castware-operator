@@ -32,6 +32,30 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	// E2E_OPERATOR_IMAGE is set by CI on release runs to point at the pre-pushed
+	// RC image (e.g. castware-operator:0.10.0-rc1). We pull it into Kind directly
+	// instead of building from source, because the RC version must already be known
+	// to Mothership before the tests run.
+	if ciImage := os.Getenv("E2E_OPERATOR_IMAGE"); ciImage != "" {
+		projectImage = ciImage
+		By(fmt.Sprintf("using pre-built CI operator image: %s", projectImage))
+
+		// E2E_OPERATOR_VERSION carries the RC version string (e.g. "0.10.0-rc1").
+		// Patch Chart.yaml so helm installs exactly that version during the tests.
+		if ciVersion := os.Getenv("E2E_OPERATOR_VERSION"); ciVersion != "" {
+			By(fmt.Sprintf("patching Chart.yaml to version: %s", ciVersion))
+			wd, _ := os.Getwd()
+			chartPath := filepath.Join(wd, "..", "..", "charts", "castai-castware-operator", "Chart.yaml")
+			patchChartVersion(chartPath, ciVersion)
+		}
+
+		By("pulling RC image into Kind cluster")
+		err := utils.LoadImageToKindClusterWithName(projectImage)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load RC image into Kind")
+		return
+	}
+
+	// Local / push / PR flow: build from source.
 	By("building the manager(Operator) image")
 
 	wd, _ := os.Getwd()
@@ -49,9 +73,9 @@ var _ = BeforeSuite(func() {
 
 	cmd = exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", versionedImage))
 	_, err = utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the versioned manager(Operator) image")
 
-	// load image as cast.ai/castware-operator:e2e and as cast.ai/castware-operator:(latest_version) to test self upgrade
+	// load image as cast.ai/castware-operator:e2e and as cast.ai/castware-operator:(appVersion) to test self upgrade
 	By("loading the manager(Operator) image on Kind")
 	err = utils.LoadImageToKindClusterWithName(projectImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
@@ -62,3 +86,21 @@ var _ = BeforeSuite(func() {
 var _ = AfterSuite(func() {
 
 })
+
+// patchChartVersion rewrites the version and appVersion fields in a Chart.yaml file in-place
+func patchChartVersion(chartPath, version string) {
+	b, err := os.ReadFile(chartPath)
+	ExpectWithOffset(2, err).NotTo(HaveOccurred(), "Failed to read Chart.yaml for patching")
+
+	lines := strings.Split(string(b), "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "version:") {
+			lines[i] = "version: " + version
+		} else if strings.HasPrefix(line, "appVersion:") {
+			lines[i] = `appVersion: "` + version + `"`
+		}
+	}
+
+	err = os.WriteFile(chartPath, []byte(strings.Join(lines, "\n")), 0o644)
+	ExpectWithOffset(2, err).NotTo(HaveOccurred(), "Failed to write patched Chart.yaml")
+}

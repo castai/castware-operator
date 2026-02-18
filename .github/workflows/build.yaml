@@ -27,6 +27,9 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-24.04
+    outputs:
+      rc_version: ${{ steps.rc_version.outputs.rc_version }}
+      release_tag: ${{ steps.set_version.outputs.release_tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -44,18 +47,18 @@ jobs:
           restore-keys: ${{ runner.os }}-build-
 
       - name: Set version from git tag or Chart.yaml
+        id: set_version
         run: |
-          # Try to get the git tag first
           GIT_TAG=$(git describe --tags --exact-match 2>/dev/null || echo "")
-
           if [ -n "$GIT_TAG" ]; then
             echo "Using git tag: $GIT_TAG"
             echo "RELEASE_TAG=$GIT_TAG" >> $GITHUB_ENV
+            echo "release_tag=$GIT_TAG" >> $GITHUB_OUTPUT
           else
-            # Fall back to Chart.yaml version
             VERSION=$(grep '^version:' charts/castai-castware-operator/Chart.yaml | awk '{print $2}')
             echo "Using Chart.yaml version: $VERSION"
             echo "RELEASE_TAG=$VERSION" >> $GITHUB_ENV
+            echo "release_tag=$VERSION" >> $GITHUB_OUTPUT
           fi
 
       - name: Generate Helm charts
@@ -123,8 +126,41 @@ jobs:
           push: true
           platforms: linux/arm64,linux/amd64
           tags: |
-           us-docker.pkg.dev/castai-hub/library/castware-operator:${{ env.RELEASE_TAG }}
-           us-docker.pkg.dev/castai-hub/library/castware-operator:latest
+            us-docker.pkg.dev/castai-hub/library/castware-operator:${{ env.RELEASE_TAG }}
+            us-docker.pkg.dev/castai-hub/library/castware-operator:latest
+
+      - name: Determine RC version
+        id: rc_version
+        if: github.event_name == 'release'
+        run: |
+          BASE_VERSION="${RELEASE_TAG}"
+
+          INDEX_URL="https://castai.github.io/helm-charts/index.yaml"
+
+          # Find the highest existing rc number for this base version in the helm index
+          # scoped to the castai-castware-operator chart block
+          curl -sf "$INDEX_URL" -o /tmp/helm-index.yaml || touch /tmp/helm-index.yaml
+          EXISTING_RC=$(awk '/^  castai-castware-operator:/,/^  [a-z]/' /tmp/helm-index.yaml | grep -oE "version:\s+${BASE_VERSION}-rc[0-9]+" | grep -oE "[0-9]+$" | sort -n | tail -1)
+
+          if [ -z "$EXISTING_RC" ]; then
+            RC_NUM=1
+          else
+            RC_NUM=$((EXISTING_RC + 1))
+          fi
+
+          RC_VERSION="${BASE_VERSION}-rc${RC_NUM}"
+          echo "RC_VERSION=${RC_VERSION}"
+          echo "RC_VERSION=${RC_VERSION}" >> $GITHUB_ENV
+          echo "rc_version=${RC_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Build and push RC image
+        if: github.event_name == 'release'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/arm64,linux/amd64
+          tags: us-docker.pkg.dev/castai-hub/library/castware-operator:${{ env.RC_VERSION }}
 
       - name: Docker pull for fossa main
         if: github.event_name == 'release'
@@ -137,14 +173,78 @@ jobs:
         with:
           api-key: ${{ secrets.FOSSA_API_KEY }}
           container: us-docker.pkg.dev/castai-hub/library/castware-operator:${{ env.RELEASE_TAG }}
+
+  release_chart_rc:
+    name: Release Helm Chart RC
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'release'
+    needs: build
+    permissions:
+      contents: write
+    env:
+      RC_VERSION: ${{ needs.build.outputs.rc_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+      - name: Set RC version in Chart.yaml
+        # Patch Chart.yaml in-place with the RC version. We do NOT commit this
+        # back — RC versions are ephemeral and must not pollute the source history.
+        run: |
+          sed -i "s/^version:.*/version: ${RC_VERSION}/" charts/castai-castware-operator/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${RC_VERSION}\"/" charts/castai-castware-operator/Chart.yaml
+
+      - name: Release RC chart
+        uses: helm/chart-releaser-action@v1.7.0
+        with:
+          charts_dir: charts
+          config: cr.yaml
+          mark_as_latest: false
+          skip_existing: true
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for RC version to appear in helm index
+        # Retry until the RC version is visible in the published index so the
+        # castware service won't reject the operator version during E2E.
+        run: |
+          PAGES_URL=$(gh api "repos/${{ github.repository }}/pages" --jq '.html_url')
+          INDEX_URL="${PAGES_URL%/}/index.yaml"
+          echo "Polling index at: $INDEX_URL"
+          for i in $(seq 1 10); do
+            INDEX=$(curl -sf "$INDEX_URL" || echo "")
+            if echo "$INDEX" | grep -qP "version:\s+${RC_VERSION}"; then
+              echo "RC version ${RC_VERSION} is visible in the index."
+              exit 0
+            fi
+            echo "Attempt $i/10: not yet visible, waiting 10s..."
+            sleep 10
+          done
+          echo "::error ::RC version ${RC_VERSION} did not appear in the helm index after 100 seconds."
+          exit 1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   e2e:
     name: E2E test
     runs-on: ubuntu-24.04
     if: |
-      (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'HOTFIX')) ||
-      (github.event_name == 'release' && !startsWith(github.event.release.name, 'HOTFIX')) ||
-      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'e2e'))
-    needs: build
+      needs.release_chart_rc.result != 'failure' &&
+      (
+        (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'HOTFIX')) ||
+        (github.event_name == 'release' && !startsWith(github.event.release.name, 'HOTFIX')) ||
+        (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'e2e'))
+      )
+    needs:
+      - build
+      - release_chart_rc
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -184,6 +284,18 @@ jobs:
       - name: Run E2E tests
         env:
           API_KEY: ${{ secrets.API_KEY }}
+          E2E_OPERATOR_IMAGE: >-
+            ${{
+              github.event_name == 'release'
+              && format('us-docker.pkg.dev/castai-hub/library/castware-operator:{0}', needs.build.outputs.rc_version)
+              || format('us-docker.pkg.dev/castai-hub/library/castware-operator:{0}', github.sha)
+            }}
+          E2E_OPERATOR_VERSION: >-
+            ${{
+              github.event_name == 'release'
+              && needs.build.outputs.rc_version
+              || github.sha
+            }}
         run: make test-e2e
 
   release_chart_operator:
