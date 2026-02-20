@@ -40,18 +40,25 @@ var _ = BeforeSuite(func() {
 		projectImage = ciImage
 		By(fmt.Sprintf("using pre-built CI operator image: %s", projectImage))
 
-		// E2E_OPERATOR_VERSION carries the RC version string (e.g. "0.10.0-rc1").
-		// Patch Chart.yaml so helm installs exactly that version during the tests.
 		if ciVersion := os.Getenv("E2E_OPERATOR_VERSION"); ciVersion != "" {
-			By(fmt.Sprintf("patching Chart.yaml to version: %s", ciVersion))
-			wd, _ := os.Getwd()
-			chartPath := filepath.Join(wd, "..", "..", "charts", "castai-castware-operator", "Chart.yaml")
-			patchChartVersion(chartPath, ciVersion)
+			// Only patch chart version for real RC versions, not git SHAs
+			if strings.Contains(ciVersion, "-rc") {
+				By(fmt.Sprintf("patching Chart.yaml to version: %s", ciVersion))
+				wd, _ := os.Getwd()
+				chartPath := filepath.Join(wd, "..", "..", "charts", "castai-castware-operator", "Chart.yaml")
+				patchChartVersion(chartPath, ciVersion)
+			}
 		}
 
-		By("pulling RC image into Kind cluster")
-		err := utils.LoadImageToKindClusterWithName(projectImage)
+		By("pulling RC image from registry")
+		pullCmd := exec.Command("docker", "pull", projectImage)
+		_, err := utils.Run(pullCmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to pull RC image")
+
+		By("loading RC image into Kind cluster")
+		err = utils.LoadImageToKindClusterWithName(projectImage)
 		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load RC image into Kind")
+
 		return
 	}
 
