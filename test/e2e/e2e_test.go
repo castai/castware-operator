@@ -90,8 +90,7 @@ var _ = Describe("Manager", Ordered, func() {
 	var namespaceHelper *NamespaceHelper
 
 	// Extract image repository and tag from projectImage (format: repository:tag)
-	imageParts := strings.Split(projectImage, ":")
-	Expect(imageParts).To(HaveLen(2), "invalid projectImage format")
+	var imageParts []string
 
 	var apiURL = os.Getenv("API_URL")
 	if apiURL == "" {
@@ -102,6 +101,9 @@ var _ = Describe("Manager", Ordered, func() {
 	// enforce the restricted security policy to the namespace, installing CRDs,
 	// and deploying the controller.
 	BeforeAll(func() {
+		// Extract image repository and tag from projectImage (format: repository:tag)
+		imageParts = strings.Split(projectImage, ":")
+		Expect(imageParts).To(HaveLen(2), "invalid projectImage format")
 		wd, _ := os.Getwd()
 		fmt.Println("Running e2e tests...", wd)
 		apiKey = os.Getenv("API_KEY")
@@ -151,7 +153,6 @@ var _ = Describe("Manager", Ordered, func() {
 		chartPackage := strings.TrimSuffix(chartPath[len(chartPath)-1], "\n")
 
 		By(fmt.Sprintf("uploading helm chart %s to local registry", chartPackage))
-		// Upload helm chart to ChartMuseum using native Go HTTP client
 		chartFile, err := os.Open(chartPackage)
 		Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to open chart package: %s", chartPackage))
 		// nolint: errcheck
@@ -176,7 +177,6 @@ var _ = Describe("Manager", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), "Failed to update helm repo")
 
 		By("installing helm chart")
-		// Use helm upgrade --install command as defined in local/install-local.sh
 		cmd = exec.Command("helm", "upgrade", "--install", "castware-operator",
 			"--namespace", namespace,
 			"--set", fmt.Sprintf("image.repository=%s", imageParts[0]),
@@ -193,7 +193,7 @@ var _ = Describe("Manager", Ordered, func() {
 			"--set", "webhook.env.GKE_REGION=e2e",
 			"--atomic",
 			"--timeout", "5m",
-			"local/castware-operator",
+			operatorChartPath,
 		)
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install helm chart")
@@ -209,7 +209,6 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("kubectl", "rollout", "restart", "deployment", "chartmuseum", "-n", "registry")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to restart chartmuseum deployment")
-
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,

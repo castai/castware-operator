@@ -139,8 +139,10 @@ jobs:
           INDEX_URL="https://castai.github.io/helm-charts/index.yaml"
 
           curl -sf "$INDEX_URL" -o /tmp/helm-index.yaml || touch /tmp/helm-index.yaml
-          EXISTING_RC=$(awk '/^  castai-castware-operator:/,/^  [a-z]/' /tmp/helm-index.yaml | grep -oE "version:\s+${BASE_VERSION}-rc[0-9]+" | grep -oE "[0-9]+$" | sort -n | tail -1)
-
+          EXISTING_RC=$(grep -oE "version:\s+${BASE_VERSION}-rc[0-9]+" /tmp/helm-index.yaml \
+            | grep -oE "[0-9]+$" \
+            | sort -n \
+            | tail -1)
           if [ -z "$EXISTING_RC" ]; then
             RC_NUM=1
           else
@@ -220,6 +222,7 @@ jobs:
     name: E2E test
     runs-on: ubuntu-24.04
     if: |
+      always() &&
       needs.release_chart_rc.result != 'failure' &&
       (
         (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'HOTFIX')) ||
@@ -264,6 +267,13 @@ jobs:
           node_image: kindest/node:v1.27.3
           kubectl_version: v1.27.3
           config: test/e2e/kind-config.yaml
+
+      - name: Login to Google Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: us-docker.pkg.dev
+          username: _json_key
+          password: ${{ secrets.ARTIFACT_BUILDER_JSON_KEY }}
 
       - name: Run E2E tests
         env:
