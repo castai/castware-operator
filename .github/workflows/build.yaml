@@ -26,6 +26,7 @@ on:
 jobs:
   build:
     name: Build
+    if: github.event_name != 'release' || !contains(github.event.release.tag_name, '-rc')
     runs-on: ubuntu-24.04
     outputs:
       rc_version: ${{ steps.rc_version.outputs.rc_version }}
@@ -194,6 +195,9 @@ jobs:
           git config user.name "$GITHUB_ACTOR"
           git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
 
+      - name: Fetch gh-pages branch
+        run: git fetch origin gh-pages
+
       - name: Set RC version in Chart.yaml
         # Patch Chart.yaml in-place with the RC version. We do NOT commit this
         # back — RC versions are ephemeral and must not pollute the source history.
@@ -304,8 +308,12 @@ jobs:
     if: |
       github.event_name == 'release' &&
       always() &&
+      needs.release_chart_rc.result == 'success' &&
       (needs.e2e.result == 'success' || needs.e2e.result == 'skipped')
-    needs: e2e
+    needs:
+      - build
+      - release_chart_rc
+      - e2e
     permissions:
       contents: write
     steps:
