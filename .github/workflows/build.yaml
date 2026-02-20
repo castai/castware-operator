@@ -190,36 +190,64 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Configure Git
+      - name: Checkout helm-charts
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          repository: castai/helm-charts
+          path: helm-charts
+          token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
+
+      - name: Configure Git for helm-charts
         run: |
+          cd helm-charts
           git config user.name "$GITHUB_ACTOR"
           git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
 
-      - name: Fetch gh-pages branch
-        run: git fetch origin gh-pages
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.5.2
+
+      - name: Install CR tool
+        run: |
+          mkdir -p .cr-tool .cr-release-packages .cr-index
+          curl -sSLo cr.tar.gz "https://github.com/helm/chart-releaser/releases/download/v1.4.0/chart-releaser_1.4.0_linux_amd64.tar.gz"
+          tar -xzf cr.tar.gz -C .cr-tool
+          rm -f cr.tar.gz
 
       - name: Set RC version in Chart.yaml
-        # Patch Chart.yaml in-place with the RC version. We do NOT commit this
-        # back — RC versions are ephemeral and must not pollute the source history.
         run: |
           sed -i "s/^version:.*/version: ${RC_VERSION}/" charts/castai-castware-operator/Chart.yaml
           sed -i "s/^appVersion:.*/appVersion: \"${RC_VERSION}\"/" charts/castai-castware-operator/Chart.yaml
 
-      - name: Release RC chart
-        uses: helm/chart-releaser-action@v1.7.0
+      - name: Package RC chart
+        run: |
+          .cr-tool/cr package charts/castai-castware-operator \
+            --config cr.yaml \
+            --package-path .cr-release-packages
+
+      - name: Upload RC chart to helm-charts releases
+        uses: softprops/action-gh-release@v2
         with:
-          charts_dir: charts
-          config: cr.yaml
-          mark_as_latest: false
-          skip_existing: true
-        env:
-          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: .cr-release-packages/castai-castware-operator-${{ env.RC_VERSION }}.tgz
+          repository: castai/helm-charts
+          tag_name: castai-castware-operator-${{ env.RC_VERSION }}
+          token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
+
+      - name: Update helm repo index.yaml
+        run: |
+          cd helm-charts
+          ../.cr-tool/cr index \
+            --config ../cr.yaml \
+            --token "${{ secrets.HELM_CHARTS_REPO_TOKEN }}" \
+            --index-path ../.cr-index \
+            --package-path ../.cr-release-packages \
+            --push
 
       - name: Wait for RC version to appear in helm index
-        # Retry until the RC version is visible in the published index so the
-        # castware service won't reject the operator version during E2E.
         run: |
-          PAGES_URL=$(gh api "repos/${{ github.repository }}/pages" --jq '.html_url')
+          PAGES_URL=$(gh api "repos/castai/helm-charts/pages" --jq '.html_url')
           INDEX_URL="${PAGES_URL%/}/index.yaml"
           echo "Polling index at: $INDEX_URL"
           for i in $(seq 1 10); do
@@ -233,8 +261,6 @@ jobs:
           done
           echo "::error ::RC version ${RC_VERSION} did not appear in the helm index after 100 seconds."
           exit 1
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   e2e:
     name: E2E test
