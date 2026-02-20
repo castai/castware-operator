@@ -190,37 +190,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Configure Git
-        run: |
-          git config user.name "$GITHUB_ACTOR"
-          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
-
-      - name: Fetch gh-pages branch
-        run: git fetch origin gh-pages
-
-      - name: Set RC version in Chart.yaml
-        # Patch Chart.yaml in-place with the RC version. We do NOT commit this
-        # back — RC versions are ephemeral and must not pollute the source history.
-        run: |
-          sed -i "s/^version:.*/version: ${RC_VERSION}/" charts/castai-castware-operator/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"${RC_VERSION}\"/" charts/castai-castware-operator/Chart.yaml
-
       - name: Release RC chart
-        uses: helm/chart-releaser-action@v1.7.0
+        uses: castai/helm-charts/.github/actions/remote-release@24380f1fdd8ca7f33bc82dc04aa29856af567d64
         with:
-          charts_dir: charts
-          config: cr.yaml
-          mark_as_latest: false
-          skip_existing: true
-        env:
-          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          helm-charts-repo-token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
+          source-repo-token: ${{ secrets.BOT_GITHUB_TOKEN }}
+          chart-path: "${{ github.workspace }}/charts/castai-castware-operator"
+          chart-releaser-configfile: "${{ github.workspace }}/cr.yaml"
+          chart-version-from-tag: "true"
+          commit-chart-changes: "false"
+          sync-chart: "false"
+          release-tag: ${{ env.RC_VERSION }}
 
       - name: Wait for RC version to appear in helm index
-        # Retry until the RC version is visible in the published index so the
-        # castware service won't reject the operator version during E2E.
         run: |
-          PAGES_URL=$(gh api "repos/${{ github.repository }}/pages" --jq '.html_url')
-          INDEX_URL="${PAGES_URL%/}/index.yaml"
+          INDEX_URL="https://castai.github.io/helm-charts/index.yaml"
           echo "Polling index at: $INDEX_URL"
           for i in $(seq 1 10); do
             INDEX=$(curl -sf "$INDEX_URL" || echo "")
@@ -233,8 +217,6 @@ jobs:
           done
           echo "::error ::RC version ${RC_VERSION} did not appear in the helm index after 100 seconds."
           exit 1
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   e2e:
     name: E2E test
@@ -324,7 +306,7 @@ jobs:
           token: ${{ secrets.BOT_GITHUB_TOKEN }}
 
       - name: Release castware-operator chart
-        uses: castai/helm-charts/.github/actions/remote-release@bf564764c804b1e40f423120447cd11710cc44ef
+        uses: castai/helm-charts/.github/actions/remote-release@24380f1fdd8ca7f33bc82dc04aa29856af567d64
         with:
           helm-charts-repo-token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
           source-repo-token: ${{ secrets.BOT_GITHUB_TOKEN }}
@@ -347,7 +329,7 @@ jobs:
           token: ${{ secrets.BOT_GITHUB_TOKEN }}
 
       - name: Release castware-components chart
-        uses: castai/helm-charts/.github/actions/remote-release@bf564764c804b1e40f423120447cd11710cc44ef
+        uses: castai/helm-charts/.github/actions/remote-release@24380f1fdd8ca7f33bc82dc04aa29856af567d64
         with:
           helm-charts-repo-token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
           source-repo-token: ${{ secrets.BOT_GITHUB_TOKEN }}
