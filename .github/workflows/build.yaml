@@ -134,12 +134,10 @@ jobs:
         id: rc_version
         if: github.event_name == 'release'
         run: |
-          BASE_VERSION="${RELEASE_TAG}"
+          BASE_VERSION="${RELEASE_TAG#v}"
 
           INDEX_URL="https://castai.github.io/helm-charts/index.yaml"
 
-          # Find the highest existing rc number for this base version in the helm index
-          # scoped to the castai-castware-operator chart block
           curl -sf "$INDEX_URL" -o /tmp/helm-index.yaml || touch /tmp/helm-index.yaml
           EXISTING_RC=$(awk '/^  castai-castware-operator:/,/^  [a-z]/' /tmp/helm-index.yaml | grep -oE "version:\s+${BASE_VERSION}-rc[0-9]+" | grep -oE "[0-9]+$" | sort -n | tail -1)
 
@@ -149,7 +147,7 @@ jobs:
             RC_NUM=$((EXISTING_RC + 1))
           fi
 
-          RC_VERSION="${BASE_VERSION}-rc${RC_NUM}"
+          RC_VERSION="v${BASE_VERSION}-rc${RC_NUM}"
           echo "RC_VERSION=${RC_VERSION}"
           echo "RC_VERSION=${RC_VERSION}" >> $GITHUB_ENV
           echo "rc_version=${RC_VERSION}" >> $GITHUB_OUTPUT
@@ -208,7 +206,7 @@ jobs:
           echo "Polling index at: $INDEX_URL"
           for i in $(seq 1 10); do
             INDEX=$(curl -sf "$INDEX_URL" || echo "")
-            if echo "$INDEX" | grep -qP "version:\s+${RC_VERSION}"; then
+            if echo "$INDEX" | grep -qP "version:\s+${RC_VERSION#v}"; then
               echo "RC version ${RC_VERSION} is visible in the index."
               exit 0
             fi
