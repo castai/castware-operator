@@ -190,65 +190,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Checkout helm-charts
-        uses: actions/checkout@v4
+      - name: Release RC chart
+        uses: castai/helm-charts/.github/actions/remote-release@24380f1fdd8ca7f33bc82dc04aa29856af567d64
         with:
-          fetch-depth: 0
-          repository: castai/helm-charts
-          path: helm-charts
-          token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
-
-      - name: Configure Git for helm-charts
-        run: |
-          cd helm-charts
-          git config user.name "$GITHUB_ACTOR"
-          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
-
-      - name: Install Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: v3.5.2
-
-      - name: Install CR tool
-        run: |
-          mkdir -p .cr-tool .cr-release-packages .cr-index
-          curl -sSLo cr.tar.gz "https://github.com/helm/chart-releaser/releases/download/v1.4.0/chart-releaser_1.4.0_linux_amd64.tar.gz"
-          tar -xzf cr.tar.gz -C .cr-tool
-          rm -f cr.tar.gz
-
-      - name: Set RC version in Chart.yaml
-        run: |
-          sed -i "s/^version:.*/version: ${RC_VERSION}/" charts/castai-castware-operator/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"${RC_VERSION}\"/" charts/castai-castware-operator/Chart.yaml
-
-      - name: Package RC chart
-        run: |
-          .cr-tool/cr package charts/castai-castware-operator \
-            --config cr.yaml \
-            --package-path .cr-release-packages
-
-      - name: Upload RC chart to helm-charts releases
-        uses: softprops/action-gh-release@v2
-        with:
-          files: .cr-release-packages/castai-castware-operator-${{ env.RC_VERSION }}.tgz
-          repository: castai/helm-charts
-          tag_name: castai-castware-operator-${{ env.RC_VERSION }}
-          token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
-
-      - name: Update helm repo index.yaml
-        run: |
-          cd helm-charts
-          ../.cr-tool/cr index \
-            --config ../cr.yaml \
-            --token "${{ secrets.HELM_CHARTS_REPO_TOKEN }}" \
-            --index-path ../.cr-index \
-            --package-path ../.cr-release-packages \
-            --push
+          helm-charts-repo-token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
+          source-repo-token: ${{ secrets.BOT_GITHUB_TOKEN }}
+          chart-path: "${{ github.workspace }}/charts/castai-castware-operator"
+          chart-releaser-configfile: "${{ github.workspace }}/cr.yaml"
+          chart-version-from-tag: "true"
+          commit-chart-changes: "false"
+          sync-chart: "false"
+          release-tag: ${{ env.RC_VERSION }}
 
       - name: Wait for RC version to appear in helm index
         run: |
-          PAGES_URL=$(gh api "repos/castai/helm-charts/pages" --jq '.html_url')
-          INDEX_URL="${PAGES_URL%/}/index.yaml"
+          INDEX_URL="https://castai.github.io/helm-charts/index.yaml"
           echo "Polling index at: $INDEX_URL"
           for i in $(seq 1 10); do
             INDEX=$(curl -sf "$INDEX_URL" || echo "")
@@ -350,7 +306,7 @@ jobs:
           token: ${{ secrets.BOT_GITHUB_TOKEN }}
 
       - name: Release castware-operator chart
-        uses: castai/helm-charts/.github/actions/remote-release@bf564764c804b1e40f423120447cd11710cc44ef
+        uses: castai/helm-charts/.github/actions/remote-release@24380f1fdd8ca7f33bc82dc04aa29856af567d64
         with:
           helm-charts-repo-token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
           source-repo-token: ${{ secrets.BOT_GITHUB_TOKEN }}
@@ -373,7 +329,7 @@ jobs:
           token: ${{ secrets.BOT_GITHUB_TOKEN }}
 
       - name: Release castware-components chart
-        uses: castai/helm-charts/.github/actions/remote-release@bf564764c804b1e40f423120447cd11710cc44ef
+        uses: castai/helm-charts/.github/actions/remote-release@24380f1fdd8ca7f33bc82dc04aa29856af567d64
         with:
           helm-charts-repo-token: ${{ secrets.HELM_CHARTS_REPO_TOKEN }}
           source-repo-token: ${{ secrets.BOT_GITHUB_TOKEN }}
