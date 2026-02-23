@@ -99,10 +99,13 @@ func patchChartVersion(chartPath, version string) {
 	b, err := os.ReadFile(chartPath)
 	ExpectWithOffset(2, err).NotTo(HaveOccurred(), "Failed to read Chart.yaml for patching")
 
+	// Helm chart version field should not have "v" prefix, but appVersion can
+	chartVersion := strings.TrimPrefix(version, "v")
+
 	lines := strings.Split(string(b), "\n")
 	for i, line := range lines {
 		if strings.HasPrefix(line, "version:") {
-			lines[i] = "version: " + version
+			lines[i] = "version: " + chartVersion
 		} else if strings.HasPrefix(line, "appVersion:") {
 			lines[i] = `appVersion: "` + version + `"`
 		}
