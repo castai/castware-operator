@@ -111,7 +111,7 @@ jobs:
           password: ${{ secrets.ARTIFACT_BUILDER_JSON_KEY }}
 
       - name: Build and push pr
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -153,6 +153,17 @@ jobs:
           echo "RC_VERSION=${RC_VERSION}"
           echo "RC_VERSION=${RC_VERSION}" >> $GITHUB_ENV
           echo "rc_version=${RC_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Build Go binaries for RC
+        if: github.event_name == 'release'
+        run: |
+          GOARCH=amd64 go build -ldflags "-s -w -X main.GitCommit=$GITHUB_SHA -X main.GitRef=$GITHUB_REF -X main.Version=${RC_VERSION}" \
+            -o bin/castware-operator-amd64 github.com/castai/castware-operator/cmd
+          GOARCH=arm64 go build -ldflags "-s -w -X main.GitCommit=$GITHUB_SHA -X main.GitRef=$GITHUB_REF -X main.Version=${RC_VERSION}" \
+            -o bin/castware-operator-arm64 github.com/castai/castware-operator/cmd
+        env:
+          GOOS: linux
+          CGO_ENABLED: 0
 
       - name: Build and push RC image
         if: github.event_name == 'release'
