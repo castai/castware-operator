@@ -339,7 +339,7 @@ func TestOperatorUpgrade(t *testing.T) {
 
 		cluster := newTestCluster(t, clusterID, false)
 		cluster.Status.UpgradeJobName = "existing-upgrade-job"
-		cluster.Spec.APIKeySecret = "api-key-secret"
+		cluster.Spec.APIKeySecret = testAPIKeySecretName
 		// Set cluster to Available status to avoid Reconcile setting it and requeueing
 		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 			Type:   typeAvailableCluster,
@@ -350,7 +350,7 @@ func TestOperatorUpgrade(t *testing.T) {
 		// Create API key secret that Reconcile method will look up
 		apiKeySecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "api-key-secret",
+				Name:      testAPIKeySecretName,
 				Namespace: cluster.Namespace,
 			},
 			Data: map[string][]byte{
@@ -375,7 +375,7 @@ func TestOperatorUpgrade(t *testing.T) {
 		actualSecret := &corev1.Secret{}
 		err := testOps.sut.Get(ctx, client.ObjectKey{
 			Namespace: cluster.Namespace,
-			Name:      "api-key-secret",
+			Name:      testAPIKeySecretName,
 		}, actualSecret)
 		r.NoError(err)
 
@@ -583,11 +583,11 @@ func TestRecordOperatorUpgradeProgressing(t *testing.T) {
 		clusterID := uuid.NewString()
 
 		cluster := newTestCluster(t, clusterID, false)
-		cluster.Spec.APIKeySecret = "api-key-secret"
+		cluster.Spec.APIKeySecret = testAPIKeySecretName
 
 		apiKeySecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "api-key-secret",
+				Name:      testAPIKeySecretName,
 				Namespace: cluster.Namespace,
 			},
 			Data: map[string][]byte{"API_KEY": []byte("test-api-key")},
@@ -654,7 +654,7 @@ func TestRecordOperatorUpgradeProgressing(t *testing.T) {
 
 		testOps := newClusterTestOps(t, cluster)
 
-		_, err := testOps.sut.getCastaiClient(ctx, cluster)
+		_, _, err := testOps.sut.getCastaiClient(ctx, cluster)
 		r.Error(err)
 	})
 
@@ -664,11 +664,11 @@ func TestRecordOperatorUpgradeProgressing(t *testing.T) {
 		clusterID := uuid.NewString()
 
 		cluster := newTestCluster(t, clusterID, false)
-		cluster.Spec.APIKeySecret = "api-key-secret"
+		cluster.Spec.APIKeySecret = testAPIKeySecretName
 
 		apiKeySecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "api-key-secret",
+				Name:      testAPIKeySecretName,
 				Namespace: cluster.Namespace,
 			},
 			Data: map[string][]byte{"API_KEY": []byte("test-api-key")},
@@ -697,11 +697,11 @@ func TestRecordOperatorUpgradeProgressing(t *testing.T) {
 		clusterID := uuid.NewString()
 
 		cluster := newTestCluster(t, clusterID, false)
-		cluster.Spec.APIKeySecret = "api-key-secret"
+		cluster.Spec.APIKeySecret = testAPIKeySecretName
 
 		apiKeySecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "api-key-secret",
+				Name:      testAPIKeySecretName,
 				Namespace: cluster.Namespace,
 			},
 			Data: map[string][]byte{"API_KEY": []byte("test-api-key")},
@@ -758,11 +758,11 @@ func TestRecordOperatorUpgradeProgressing(t *testing.T) {
 		clusterID := uuid.NewString()
 
 		cluster := newTestCluster(t, clusterID, false)
-		cluster.Spec.APIKeySecret = "api-key-secret"
+		cluster.Spec.APIKeySecret = testAPIKeySecretName
 
 		apiKeySecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "api-key-secret",
+				Name:      testAPIKeySecretName,
 				Namespace: cluster.Namespace,
 			},
 			Data: map[string][]byte{"API_KEY": []byte("test-api-key")},

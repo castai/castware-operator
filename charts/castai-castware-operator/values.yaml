@@ -99,6 +99,22 @@ apiKeySecret:
   # The actual API key value (should be set via --set apiKeySecret.apiKey=YOUR_API_KEY)
   apiKey: ""
 
+# Log ingestion ships the operator's structured logs to the CAST AI
+# ComponentsAPI.IngestLogs endpoint via a logrus hook. Enabled by default.
+logIngest:
+  # Enable/disable log shipping entirely.
+  enabled: true
+  # Minimum severity shipped to the ingest endpoint. When empty, the ingest
+  # level inherits LOG_LEVEL (the stdout logger level). Set a stricter level
+  # (e.g. "warn") to ship less than what is printed to stdout.
+  level: ""
+  # Maximum number of entries batched into a single POST.
+  batchSize: 100
+  # How often a partial batch is flushed regardless of size.
+  flushInterval: "10s"
+  # Timeout for the ingest HTTP request.
+  requestTimeout: "10s"
+
 # Node affinity configuration
 affinity:
   nodeAffinity:

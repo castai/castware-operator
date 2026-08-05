@@ -38,7 +38,7 @@ func newUpgradeCmd() *cobra.Command {
 				logrus.StandardLogger().Fatalf("failed to get config from environment: %v", err)
 			}
 			logrus.StandardLogger().SetLevel(cfg.LogLevel.Level())
-			log := logrus.StandardLogger().WithField("gitCommit", version.GitCommit).WithField("version", version.Version)
+			log := logrus.StandardLogger().WithField("gitCommit", version.GitCommit).WithField("version", version.LogVersion())
 			controllerruntime.SetLogger(logrusr.New(log))
 
 			if clusterCrNamespace == "" {

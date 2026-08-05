@@ -57,6 +57,10 @@ var _ = Describe("Cluster Controller", func() {
 
 const helmReleaseNameSpotHandler = "castai-spot-handler"
 
+// testAPIKeySecretName is the shared API key secret name used across controller
+// tests. Declared as a const so goconst doesn't flag the repeated literal.
+const testAPIKeySecretName = "api-key-secret"
+
 func TestPollActions(t *testing.T) {
 	t.Run("should poll and ack a valid action with no error", func(t *testing.T) {
 		t.Parallel()
@@ -938,7 +942,7 @@ func TestReconcileCluster(t *testing.T) {
 			Spec: castwarev1alpha1.ClusterSpec{
 				MigrationMode: castwarev1alpha1.ClusterMigrationModeWrite,
 				Provider:      gke.Name,
-				APIKeySecret:  "api-key-secret",
+				APIKeySecret:  testAPIKeySecretName,
 				API: castwarev1alpha1.APISpec{
 					APIURL: apiServer.URL,
 				},
@@ -946,7 +950,7 @@ func TestReconcileCluster(t *testing.T) {
 		}
 		apiKeySecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "api-key-secret",
+				Name:      testAPIKeySecretName,
 				Namespace: "test-namespace",
 			},
 			Data: map[string][]byte{"API_KEY": []byte("api-key")},
@@ -997,7 +1001,7 @@ func TestReconcileCluster(t *testing.T) {
 			Spec: castwarev1alpha1.ClusterSpec{
 				MigrationMode: castwarev1alpha1.ClusterMigrationModeWrite,
 				Provider:      gke.Name,
-				APIKeySecret:  "api-key-secret",
+				APIKeySecret:  testAPIKeySecretName,
 				API: castwarev1alpha1.APISpec{
 					APIURL: apiServer.URL,
 				},
@@ -1008,7 +1012,7 @@ func TestReconcileCluster(t *testing.T) {
 		}
 		apiKeySecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "api-key-secret",
+				Name:      testAPIKeySecretName,
 				Namespace: "test-namespace",
 			},
 			Data: map[string][]byte{"API_KEY": []byte("api-key")},

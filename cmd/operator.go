@@ -9,9 +9,11 @@ import (
 
 	"github.com/bombsimon/logrusr/v4"
 	"github.com/castai/castware-operator/internal/castai"
+	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/internal/config"
 	"github.com/castai/castware-operator/internal/controller"
 	"github.com/castai/castware-operator/internal/helm"
+	"github.com/castai/castware-operator/internal/logingest"
 	"github.com/castai/castware-operator/internal/webhook/v1alpha1"
 	"github.com/open-policy-agent/cert-controller/pkg/rotator"
 	"github.com/sirupsen/logrus"
@@ -91,7 +93,35 @@ func runOperator(args operatorArgs) error {
 
 	logrus.StandardLogger().SetLevel(cfg.LogLevel.Level())
 	logrus.StandardLogger().SetReportCaller(true)
-	log := logrus.StandardLogger().WithField("gitCommit", version.GitCommit).WithField("version", version.Version)
+	log := logrus.StandardLogger().WithField("gitCommit", version.GitCommit).WithField("version", version.LogVersion())
+
+	// Log ingestion: ship the operator's structured logs to the CAST AI
+	// ComponentsAPI.IngestLogs endpoint via a logrus hook. Enabled by default; the
+	// ingest level can differ from the stdout level (e.g. LOG_INGEST_LEVEL=warn
+	// ships only warn+ while stdout stays at info). The hook ships nothing until
+	// the cluster reconciler provides the cluster identity (UpdateState).
+	var logIngestHook *logingest.Hook
+	if cfg.LogIngestEnabled {
+		ingestLevel := cfg.LogIngestLevelOr(cfg.LogLevel.Level())
+		// Diagnostics logger for the hook itself: a plain logger with no hook
+		// attached, so ship-failure warnings don't re-enter the hook (feedback loop).
+		ingestDiagLog := logrus.New()
+		ingestDiagLog.SetLevel(cfg.LogLevel.Level())
+		ingestDiagLog.SetReportCaller(true)
+		logIngestHook = logingest.NewHook(
+			ingestDiagLog,
+			components.ComponentNameOperator,
+			version.LogVersion(),
+			ingestLevel,
+			cfg.LogIngestBatchSize,
+			cfg.LogIngestFlushInterval,
+			cfg.LogIngestRequestTimeout,
+		)
+		logrus.StandardLogger().AddHook(logIngestHook)
+		log.WithField("ingestLevel", ingestLevel).Info("Log ingestion enabled")
+	} else {
+		log.Info("Log ingestion disabled by config")
+	}
 
 	castai.SetVersion(version)
 
@@ -267,11 +297,21 @@ func runOperator(args operatorArgs) error {
 		ChartLoader: chartLoader,
 		RestConfig:  restConfig,
 		Clientset:   clientset,
+		LogIngest:   logIngestHook,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Cluster")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
+
+	// Run the log ingest drain goroutine under the manager lifecycle so it
+	// starts/stops with the operator. nil when log ingestion is disabled.
+	if logIngestHook != nil {
+		if err := mgr.Add(logIngestHook); err != nil {
+			setupLog.Error(err, "unable to add log ingest hook to manager")
+			os.Exit(1)
+		}
+	}
 
 	if metricsCertWatcher != nil {
 		setupLog.Info("Adding metrics certificate watcher to manager")
