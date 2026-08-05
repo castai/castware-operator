@@ -310,10 +310,12 @@ func (h *Hook) ship(entries []*queuedEntry) {
 		h.log.WithError(err).Warn("Failed to ship log ingest batch")
 		return
 	}
-	// Read the body so we can surface the server's error message on non-2xx,
-	// and to allow connection reuse. Cap at a small size to avoid unbounded reads.
+	// Close immediately on return so a panic during the read can't leak the
+	// underlying connection. Read the body to surface the server's error message
+	// on non-2xx and to allow connection reuse; cap at a small size to avoid
+	// unbounded reads.
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	_ = resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
 		// Surface the server's explanation (field violations, validation errors,
