@@ -286,7 +286,12 @@ func (h *Hook) ship(entries []*queuedEntry) {
 		return
 	}
 
-	url := fmt.Sprintf("%s/v1/clusters/%s/components/%s/logs", state.apiURL, state.clusterID, h.component)
+	// Trim trailing slashes from the API URL so a configured base like
+	// "https://api.cast.ai/" doesn't produce a double slash ("...//v1/...") that
+	// the server may reject. This mirrors resty's SetBaseURL behavior, which the
+	// operator's other API calls rely on.
+	baseURL := strings.TrimRight(state.apiURL, "/")
+	url := fmt.Sprintf("%s/v1/clusters/%s/components/%s/logs", baseURL, state.clusterID, h.component)
 	// Use a fresh context rather than the manager ctx: during shutdown the drain
 	// flush runs after ctx is already cancelled, and we still want it to ship.
 	reqCtx, cancel := context.WithTimeout(context.Background(), h.reqTimeout)

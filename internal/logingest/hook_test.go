@@ -187,6 +187,31 @@ func TestShipBodyURLHeaders(t *testing.T) {
 	r.Equal("gke", body.Entries[1].Fields["provider"])
 }
 
+// TestShipTrimsTrailingSlashFromBaseURL verifies that an API URL configured with
+// a trailing slash (e.g. "https://api.cast.ai/") doesn't produce a double slash
+// in the request path, which the server may reject. This matches resty's
+// SetBaseURL behavior used by the operator's other API calls.
+func TestShipTrimsTrailingSlashFromBaseURL(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		gotPath = req.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	h := newTestHook(t, logrus.InfoLevel)
+	// httptest.Server.URL is like "http://127.0.0.1:PORT"; append a trailing
+	// slash to prove it gets trimmed.
+	h.UpdateState("11111111-1111-1111-1111-111111111111", srv.URL+"/", "key", "gke")
+	h.ship([]*queuedEntry{snapshot(entry(logrus.InfoLevel, "msg", nil))})
+
+	r.Equal("/v1/clusters/11111111-1111-1111-1111-111111111111/components/castware-operator/logs", gotPath,
+		"trailing slash on API URL must not produce a double slash in the path")
+}
+
 func TestShipHandlesServerError(t *testing.T) {
 	t.Parallel()
 	r := require.New(t)
