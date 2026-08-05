@@ -62,6 +62,18 @@ type logEntry struct {
 	Fields  map[string]string `json:"fields,omitempty"`
 }
 
+// queuedEntry is an immutable snapshot of a logrus entry taken at Fire time.
+// logrus's Fire contract does not guarantee the *Entry pointer remains valid
+// after Fire returns (the entry may be pooled/reused), so we never retain the
+// raw pointer. Snapshotting the fields we need makes the hook correct regardless
+// of logrus's internal pooling.
+type queuedEntry struct {
+	level   logrus.Level
+	message string
+	time    time.Time
+	fields  map[string]string
+}
+
 // ingestLogsRequest is the HTTP body for POST .../components/{component}/logs.
 // The body maps to the proto's `logs` field (grpc-gateway `body: "logs"`), so it
 // is the ComponentLogs message itself — flat {version, entries} — NOT wrapped in
@@ -86,7 +98,7 @@ type Hook struct {
 	log        logrus.FieldLogger
 
 	state atomic.Pointer[ingestState]
-	ch    chan *logrus.Entry
+	ch    chan *queuedEntry
 	stop  chan struct{}
 	done  chan struct{}
 }
@@ -114,7 +126,7 @@ func NewHook(diag logrus.FieldLogger, component, version string, level logrus.Le
 		reqTimeout: reqTimeout,
 		httpClient: &http.Client{Timeout: reqTimeout},
 		log:        diag,
-		ch:         make(chan *logrus.Entry, batchSize*2+1),
+		ch:         make(chan *queuedEntry, batchSize*2+1),
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
 	}
@@ -139,8 +151,17 @@ func (h *Hook) Fire(entry *logrus.Entry) error {
 	if h.state.Load() == nil {
 		return nil
 	}
+	// Snapshot the entry now: logrus's Fire contract does not guarantee the
+	// *Entry remains valid after Fire returns (it may be pooled/reused), so we
+	// never retain the raw pointer across the async boundary to the ship goroutine.
+	q := &queuedEntry{
+		level:   entry.Level,
+		message: entry.Message,
+		time:    entry.Time,
+		fields:  sanitizeFields(entry.Data),
+	}
 	select {
-	case h.ch <- entry:
+	case h.ch <- q:
 	default:
 		// Buffer full: drop rather than block the caller.
 	}
@@ -170,7 +191,7 @@ func (h *Hook) Start(ctx context.Context) error {
 	ticker := time.NewTicker(h.flushTick)
 	defer ticker.Stop()
 
-	var batch []*logrus.Entry
+	var batch []*queuedEntry
 
 	flush := func() {
 		if len(batch) == 0 {
@@ -229,7 +250,7 @@ func (h *Hook) Stop() {
 
 // ship POSTs a batch of entries to the IngestLogs endpoint. Best-effort: on
 // failure it logs a single warn line to stdout and drops the batch.
-func (h *Hook) ship(entries []*logrus.Entry) {
+func (h *Hook) ship(entries []*queuedEntry) {
 	state := h.state.Load()
 	if state == nil || state.clusterID == "" {
 		return
@@ -240,10 +261,11 @@ func (h *Hook) ship(entries []*logrus.Entry) {
 		Entries: make([]logEntry, 0, len(entries)),
 	}
 	for _, e := range entries {
-		fields := sanitizeFields(e.Data)
-		// Inject cluster-derived context so every shipped entry carries the
-		// same identity fields other CAST AI components emit (e.g. provider=gke).
-		// version is expected on the logger already (WithField at startup).
+		// Fields were already snapshotted/sanitized in Fire. Inject the
+		// cluster-derived provider so every shipped entry carries the same
+		// identity other CAST AI components emit (e.g. provider=gke). version
+		// is expected on the logger already (WithField at startup).
+		fields := e.fields
 		if state.provider != "" {
 			if fields == nil {
 				fields = make(map[string]string, 1)
@@ -251,9 +273,9 @@ func (h *Hook) ship(entries []*logrus.Entry) {
 			fields["provider"] = state.provider
 		}
 		body.Entries = append(body.Entries, logEntry{
-			Level:   mapLevel(e.Level),
-			Message: e.Message,
-			Time:    e.Time,
+			Level:   mapLevel(e.level),
+			Message: e.message,
+			Time:    e.time,
 			Fields:  fields,
 		})
 	}

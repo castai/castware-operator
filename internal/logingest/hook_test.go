@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,6 +40,18 @@ func entry(level logrus.Level, msg string, fields logrus.Fields) *logrus.Entry {
 		e.Data = logrus.Fields{}
 	}
 	return e
+}
+
+// snapshot mirrors what Hook.Fire does: convert a logrus entry into the
+// immutable queuedEntry the ship path consumes. Tests that exercise ship()
+// directly use this to construct input without going through Fire.
+func snapshot(e *logrus.Entry) *queuedEntry {
+	return &queuedEntry{
+		level:   e.Level,
+		message: e.Message,
+		time:    e.Time,
+		fields:  sanitizeFields(e.Data),
+	}
 }
 
 func TestFireLevelFilter(t *testing.T) {
@@ -151,9 +165,9 @@ func TestShipBodyURLHeaders(t *testing.T) {
 	h := newTestHook(t, logrus.InfoLevel)
 	h.UpdateState("11111111-1111-1111-1111-111111111111", srv.URL, "secret-key", "gke")
 
-	h.ship([]*logrus.Entry{
-		entry(logrus.InfoLevel, "rebalance completed", logrus.Fields{"nodes_removed": "2"}),
-		entry(logrus.ErrorLevel, "failed to drain", logrus.Fields{"node": "node-abc"}),
+	h.ship([]*queuedEntry{
+		snapshot(entry(logrus.InfoLevel, "rebalance completed", logrus.Fields{"nodes_removed": "2"})),
+		snapshot(entry(logrus.ErrorLevel, "failed to drain", logrus.Fields{"node": "node-abc"})),
 	})
 
 	r := require.New(t)
@@ -194,7 +208,7 @@ func TestShipHandlesServerError(t *testing.T) {
 	h := NewHook(diag, "castware-operator", "v1", logrus.InfoLevel, 100, time.Hour, 2*time.Second)
 	h.UpdateState("11111111-1111-1111-1111-111111111111", srv.URL, "key", "gke")
 
-	h.ship([]*logrus.Entry{entry(logrus.InfoLevel, "msg", nil)})
+	h.ship([]*queuedEntry{snapshot(entry(logrus.InfoLevel, "msg", nil))})
 
 	out := buf.String()
 	r.Contains(out, "status=500")
@@ -219,7 +233,7 @@ func TestShipHandlesEmptyErrorBody(t *testing.T) {
 	h := NewHook(diag, "castware-operator", "v1", logrus.InfoLevel, 100, time.Hour, 2*time.Second)
 	h.UpdateState("11111111-1111-1111-1111-111111111111", srv.URL, "key", "gke")
 
-	h.ship([]*logrus.Entry{entry(logrus.InfoLevel, "msg", nil)})
+	h.ship([]*queuedEntry{snapshot(entry(logrus.InfoLevel, "msg", nil))})
 
 	out := buf.String()
 	r.Contains(out, "status=401")
@@ -344,5 +358,77 @@ func TestNewHookEmptyVersionFallsBack(t *testing.T) {
 
 	h := NewHook(logrus.New(), "castware-operator", "", logrus.InfoLevel, 100, time.Hour, 2*time.Second)
 	h.UpdateState("11111111-1111-1111-1111-111111111111", srv.URL, "key", "gke")
-	h.ship([]*logrus.Entry{entry(logrus.InfoLevel, "msg", nil)})
+	h.ship([]*queuedEntry{snapshot(entry(logrus.InfoLevel, "msg", nil))})
+}
+
+// TestFireEntrySurvivesPoolReuse drives a real *logrus.Logger (which pools the
+// base entry via sync.Pool) concurrently with the hook attached, then verifies
+// every shipped entry's message and fields are intact — i.e. the entry passed to
+// Fire is not recycled/mutated before the ship goroutine reads it. This guards
+// against the class of bug where a hook retains the raw *logrus.Entry pointer.
+func TestFireEntrySurvivesPoolReuse(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+
+	var mu sync.Mutex
+	got := make(map[string]string) // message -> "req_id" field value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		raw, _ := io.ReadAll(req.Body)
+		var b ingestLogsRequest
+		if err := json.Unmarshal(raw, &b); err == nil {
+			mu.Lock()
+			for _, e := range b.Entries {
+				got[e.Message] = e.Fields["req_id"]
+			}
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Real logger that uses the entry pool, with the hook attached.
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	logger.SetLevel(logrus.InfoLevel)
+	h := NewHook(logger, "castware-operator", "v1", logrus.InfoLevel, 50, 10*time.Millisecond, 2*time.Second)
+	h.UpdateState("11111111-1111-1111-1111-111111111111", srv.URL, "key", "gke")
+	logger.AddHook(h)
+
+	ctx, cancel := contextWithCancel()
+	t.Cleanup(cancel)
+	go func() { _ = h.Start(ctx) }()
+
+	const n = 200
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := fmt.Sprintf("req-%d", i)
+			// Each goroutine logs with a distinct field; if the entry were
+			// pool-reused, fields/messages would cross-contaminate.
+			logger.WithField("req_id", id).Info(id)
+		}(i)
+	}
+	wg.Wait()
+
+	// Flush pending batches.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-h.done
+
+	mu.Lock()
+	defer mu.Unlock()
+	// The buffer can drop entries under burst load (drop-on-full by design), so
+	// we don't assert completeness. What we DO assert — and what the pool-reuse
+	// bug would violate — is that every shipped entry's field matches its own
+	// message, i.e. no cross-contamination from a recycled *logrus.Entry.
+	r.NotEmpty(got, "some entries must have been shipped")
+	var mismatches []string
+	for msg, field := range got {
+		if msg != field {
+			mismatches = append(mismatches, fmt.Sprintf("msg=%q field=%q", msg, field))
+		}
+	}
+	r.Empty(mismatches, "no shipped entry may have a field from a different entry (pool-reuse corruption): %v", mismatches)
 }
