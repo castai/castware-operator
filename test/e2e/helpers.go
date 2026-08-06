@@ -56,6 +56,15 @@ type component struct {
 	LatestVersion string `json:"latestVersion"`
 }
 
+// disablePreflightChecks forces PREFLIGHT_CHECKS=false in an onboarding script.
+// It replaces an explicit PREFLIGHT_CHECKS=true assignment if present and also
+// exports PREFLIGHT_CHECKS=false, because the script defaults to enabled via
+// ${PREFLIGHT_CHECKS:-true} when no assignment exists.
+func disablePreflightChecks(script string) string {
+	script = strings.ReplaceAll(script, "PREFLIGHT_CHECKS=true", "PREFLIGHT_CHECKS=false")
+	return "export PREFLIGHT_CHECKS=false\n" + script
+}
+
 // podReady checks if a pod line indicates the pod is ready
 func podReady(line string) bool {
 	return len(line) > 0 && (line[len(line)-4:] == "True" || line[len(line)-1:] == "T")
