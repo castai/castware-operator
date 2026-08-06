@@ -90,6 +90,18 @@ type ClusterReconciler struct {
 	ChartLoader helm.ChartLoader
 	Clientset   kubernetes.Interface
 	RestConfig  *rest.Config
+	// LogIngest, when set, receives the cluster identity (clusterID, apiURL, apiKey)
+	// once the cluster is registered, enabling structured log shipping to the
+	// mothership. Optional: nil-safe (no-op when unset, e.g. in tests).
+	LogIngest logIngestStateUpdater
+}
+
+// logIngestStateUpdater is the subset of the logingest hook needed by the
+// reconciler. Declared here to avoid importing the logingest package (which
+// would create an import cycle only if reversed; kept local for clarity and
+// testability).
+type logIngestStateUpdater interface {
+	UpdateState(clusterID, apiURL, apiKey, provider string)
 }
 
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=clusters,verbs=get;list;watch;create;update;patch;delete
@@ -116,6 +128,13 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 	}
 
+	// Attach the cluster's provider to the log context, matching other CAST AI
+	// components (e.g. the agent logs provider=gke). It then flows into both
+	// stdout and the shipped IngestLogs fields.
+	if cluster.Spec.Provider != "" {
+		log = log.WithField("provider", cluster.Spec.Provider)
+	}
+
 	// Check if operator upgrade is in progress
 	if cluster.Status.UpgradeJobName != "" {
 		log.Info("Operator upgrade in progress, checking job status")
@@ -123,7 +142,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	log.Debug("getCastaiClient")
-	castAiClient, err := r.getCastaiClient(ctx, cluster)
+	castAiClient, apiKeyAuth, err := r.getCastaiClient(ctx, cluster)
 	if err != nil {
 		log.WithError(err).Error("Failed to get castaiClient")
 		return ctrl.Result{}, err
@@ -138,6 +157,14 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	log.Debug("ensureClusterIDInSpec")
 	if result, err := r.ensureClusterIDInSpec(ctx, cluster, clusterID); err != nil || result.RequeueAfter > 0 {
 		return result, err
+	}
+
+	// Once the cluster is registered and its ID is known, enable structured log
+	// shipping to the mothership. Idempotent: the hook's UpdateState is cheap to
+	// repeat, and re-running on each reconcile picks up API key rotations and
+	// provider changes. A no-op when LogIngest is unset (e.g. in tests).
+	if cluster.Spec.Cluster != nil && cluster.Spec.Cluster.ClusterID != "" && r.LogIngest != nil && apiKeyAuth != nil {
+		r.LogIngest.UpdateState(cluster.Spec.Cluster.ClusterID, cluster.Spec.API.APIURL, apiKeyAuth.ApiKey(), cluster.Spec.Provider)
 	}
 
 	log.Debug("Completing initial setup")
@@ -735,7 +762,7 @@ func (r *ClusterReconciler) reconcileSecret(ctx context.Context, cluster *castwa
 
 	// If api key changed validate the new one.
 	if secret.ResourceVersion != cluster.Status.LastSecretVersion {
-		castAiClient, err := r.getCastaiClient(ctx, cluster)
+		castAiClient, _, err := r.getCastaiClient(ctx, cluster)
 		if err != nil {
 			log.WithError(err).Error("Failed to get api client")
 			return false, err
@@ -1010,16 +1037,16 @@ func (r *ClusterReconciler) handleUninstall(ctx context.Context, cluster *castwa
 	})
 }
 
-func (r *ClusterReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
+func (r *ClusterReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, auth.Auth, error) {
 	auth := auth.NewAuth(cluster.Namespace, cluster.Name)
 	if err := auth.LoadApiKey(ctx, r.Client); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	rest := castai.NewRestyClient(r.Config, cluster.Spec.API.APIURL, auth)
 
 	client := castai.NewClient(nil, r.Config, rest)
 
-	return client, nil
+	return client, auth, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -1135,7 +1162,7 @@ func (r *ClusterReconciler) handleOperatorUpgrade(ctx context.Context, cluster *
 
 	log.Infof("Operator upgrade job created: %s", jobName)
 
-	castAiClient, err := r.getCastaiClient(ctx, cluster)
+	castAiClient, _, err := r.getCastaiClient(ctx, cluster)
 	if err != nil {
 		log.WithError(err).Error("Failed to get castaiClient")
 		return nil
@@ -1368,7 +1395,7 @@ func (r *ClusterReconciler) checkUpgradeJobStatus(ctx context.Context, cluster *
 		log.Info("Upgrade job succeeded")
 
 		// Record the successful upgrade to Mothership with component parameters
-		castAiClient, err := r.getCastaiClient(ctx, cluster)
+		castAiClient, _, err := r.getCastaiClient(ctx, cluster)
 		if err != nil {
 			log.WithError(err).Error("Failed to get castaiClient to record upgrade completion")
 		} else {

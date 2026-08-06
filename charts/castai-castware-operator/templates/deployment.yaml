@@ -71,6 +71,19 @@ spec:
               value: "/webhook-certs"
             - name: HELM_RELEASE_NAME
               value: {{ quote .Release.Name }}
+            # Log ingestion (ships structured logs to the CAST AI IngestLogs endpoint).
+            - name: LOG_INGEST_ENABLED
+              value: {{ quote .Values.logIngest.enabled }}
+            {{- if .Values.logIngest.level }}
+            - name: LOG_INGEST_LEVEL
+              value: {{ quote .Values.logIngest.level }}
+            {{- end }}
+            - name: LOG_INGEST_BATCH_SIZE
+              value: {{ quote .Values.logIngest.batchSize }}
+            - name: LOG_INGEST_FLUSH_INTERVAL
+              value: {{ quote .Values.logIngest.flushInterval }}
+            - name: LOG_INGEST_REQUEST_TIMEOUT
+              value: {{ quote .Values.logIngest.requestTimeout }}
             {{- with .Values.webhook.env }}
             {{- range $key, $value := . }}
             - name: {{ $key }}

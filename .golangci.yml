@@ -6,7 +6,6 @@ linters:
     - copyloopvar
     - dupl
     - ginkgolinter
-    - goconst
     - gocyclo
     - lll
     - misspell
@@ -32,6 +31,16 @@ linters:
           - dupl
           - lll
         path: internal/*
+      # Test files commonly repeat setup boilerplate (mock wiring, fixture
+      # construction) that dupl flags but isn't worth deduplicating.
+      - linters:
+          - dupl
+          - goconst
+        path: _test\.go
+      - linters:
+          - dupl
+          - goconst
+        path: ^test/
     paths:
       - third_party$
       - builtin$
