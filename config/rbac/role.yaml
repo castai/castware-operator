@@ -83,6 +83,7 @@ rules:
   - watch
 - apiGroups:
   - autoscaling.cast.ai
+  - castware.cast.ai
   resources:
   - '*'
   verbs:
@@ -114,11 +115,8 @@ rules:
   verbs:
   - create
   - delete
-  - get
-  - list
   - patch
   - update
-  - watch
 - apiGroups:
   - castware.cast.ai
   resources:
@@ -132,7 +130,6 @@ rules:
   - clusters/status
   - components/status
   verbs:
-  - get
   - patch
   - update
 - apiGroups:
