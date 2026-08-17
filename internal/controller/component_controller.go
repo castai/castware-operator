@@ -1,14 +1,15 @@
 package controller
 
 import (
-	"castai-agent/pkg/services/providers/aks"
-	"castai-agent/pkg/services/providers/eks"
-	"castai-agent/pkg/services/providers/gke"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
+
+	"castai-agent/pkg/services/providers/aks"
+	"castai-agent/pkg/services/providers/eks"
+	"castai-agent/pkg/services/providers/gke"
 
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/release"
@@ -61,8 +62,8 @@ const (
 
 var ErrNothingToRollback = errors.New("nothing to rollback")
 
-// +kubebuilder:rbac:groups=castware.cast.ai,resources=components,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=castware.cast.ai,resources=components/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=castware.cast.ai,resources=components,verbs=create;update;patch;delete
+// +kubebuilder:rbac:groups=castware.cast.ai,resources=components/status,verbs=update;patch
 // +kubebuilder:rbac:groups=castware.cast.ai,resources=components/finalizers,verbs=update
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings;clusterroles;clusterrolebindings,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods;nodes;services;events,verbs=get;list;watch
