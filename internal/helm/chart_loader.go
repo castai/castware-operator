@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/castai/castware-operator/internal/waitext"
@@ -39,6 +40,7 @@ func NewChartLoader(log logrus.FieldLogger) ChartLoader {
 type remoteChartLoader struct {
 	log     logrus.FieldLogger
 	repoURL string
+	mu      sync.Mutex
 }
 
 func (cl *remoteChartLoader) Load(ctx context.Context, c *ChartSource) (*chart.Chart, error) {
@@ -124,6 +126,9 @@ func (cl *remoteChartLoader) fetchArchive(ctx context.Context, archiveURL string
 }
 
 func (cl *remoteChartLoader) downloadHelmIndex(repoURL string) (*repo.IndexFile, error) {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+
 	r, err := repo.NewChartRepository(&repo.Entry{URL: repoURL}, getter.All(&cli.EnvSettings{}))
 	if err != nil {
 		return nil, fmt.Errorf("initializing chart repo %s: %w", repoURL, err)
