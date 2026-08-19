@@ -14,6 +14,7 @@ import (
 	"github.com/castai/castware-operator/internal/waitext"
 
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/cli"
@@ -37,8 +38,10 @@ func NewChartLoader(log logrus.FieldLogger) ChartLoader {
 
 // remoteChartLoader fetches chart from remote source by given url.
 type remoteChartLoader struct {
-	log     logrus.FieldLogger
-	repoURL string
+	log         logrus.FieldLogger
+	repoURL     string
+	sf          singleflight.Group
+	envSettings *cli.EnvSettings
 }
 
 func (cl *remoteChartLoader) Load(ctx context.Context, c *ChartSource) (*chart.Chart, error) {
@@ -124,22 +127,35 @@ func (cl *remoteChartLoader) fetchArchive(ctx context.Context, archiveURL string
 }
 
 func (cl *remoteChartLoader) downloadHelmIndex(repoURL string) (*repo.IndexFile, error) {
-	r, err := repo.NewChartRepository(&repo.Entry{URL: repoURL}, getter.All(&cli.EnvSettings{}))
-	if err != nil {
-		return nil, fmt.Errorf("initializing chart repo %s: %w", repoURL, err)
-	}
+	v, err, _ := cl.sf.Do(repoURL, func() (any, error) {
+		es := cl.envSettings
+		if es == nil {
+			es = &cli.EnvSettings{}
+		}
+		r, err := repo.NewChartRepository(&repo.Entry{URL: repoURL}, getter.All(es))
+		if err != nil {
+			return nil, fmt.Errorf("initializing chart repo %s: %w", repoURL, err)
+		}
+		if es.RepositoryCache != "" {
+			r.CachePath = es.RepositoryCache
+		}
 
-	indexFilepath, err := r.DownloadIndexFile()
-	if err != nil {
-		return nil, fmt.Errorf("downloading index file: %w", err)
-	}
+		indexFilepath, err := r.DownloadIndexFile()
+		if err != nil {
+			return nil, fmt.Errorf("downloading index file: %w", err)
+		}
 
-	index, err := repo.LoadIndexFile(indexFilepath)
-	if err != nil {
-		return nil, fmt.Errorf("reading downloaded index file: %w", err)
-	}
+		index, err := repo.LoadIndexFile(indexFilepath)
+		if err != nil {
+			return nil, fmt.Errorf("reading downloaded index file: %w", err)
+		}
 
-	return index, nil
+		return index, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*repo.IndexFile), nil
 }
 
 func (cl *remoteChartLoader) chartURL(index *repo.IndexFile, name, version string) (string, error) {
