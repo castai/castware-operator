@@ -10,6 +10,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
+	"helm.sh/helm/v3/pkg/cli"
 )
 
 // validIndexYAML is a minimal valid Helm index.yaml used across tests.
@@ -23,18 +24,24 @@ entries:
         - https://example.com/test-chart-1.0.0.tgz
 `
 
-func newTestLoader() *remoteChartLoader {
+func newTestLoader(t *testing.T) *remoteChartLoader {
+	t.Helper()
 	log := logrus.New()
 	log.SetLevel(logrus.DebugLevel)
-	return &remoteChartLoader{log: log}
+	return &remoteChartLoader{
+		log: log,
+		envSettings: &cli.EnvSettings{
+			RepositoryCache: t.TempDir(),
+		},
+	}
 }
 
 func TestDownloadHelmIndex(t *testing.T) {
-	cl := newTestLoader()
-
+	t.Parallel()
 	t.Run("valid response", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
+		cl := newTestLoader(t)
 
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/yaml")
@@ -61,6 +68,7 @@ func TestDownloadHelmIndex(t *testing.T) {
 	t.Run("empty response", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
+		cl := newTestLoader(t)
 
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/yaml")
@@ -78,6 +86,7 @@ func TestDownloadHelmIndex(t *testing.T) {
 	t.Run("non-OK status", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
+		cl := newTestLoader(t)
 
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadGateway)
@@ -94,6 +103,7 @@ func TestDownloadHelmIndex(t *testing.T) {
 	t.Run("concurrent access", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
+		cl := newTestLoader(t)
 
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/yaml")
