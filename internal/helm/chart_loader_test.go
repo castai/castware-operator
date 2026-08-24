@@ -10,7 +10,9 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
+	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/cli"
+	"helm.sh/helm/v3/pkg/repo"
 )
 
 // validIndexYAML is a minimal valid Helm index.yaml used across tests.
@@ -36,7 +38,7 @@ func newTestLoader(t *testing.T) *remoteChartLoader {
 	}
 }
 
-func TestDownloadHelmIndex(t *testing.T) {
+func TestRemoteChartLoader_DownloadHelmIndex(t *testing.T) {
 	t.Parallel()
 	t.Run("valid response", func(t *testing.T) {
 		t.Parallel()
@@ -146,5 +148,55 @@ func TestDownloadHelmIndex(t *testing.T) {
 			}
 		}
 		r.Empty(failures, "%d/%d goroutines failed: %v", len(failures), goroutines, failures)
+	})
+}
+
+func TestRemoteChartLoader_ChartURL(t *testing.T) {
+	t.Parallel()
+	cl := newTestLoader(t)
+	idx := &repo.IndexFile{
+		Entries: map[string]repo.ChartVersions{
+			"test-chart": {
+				{
+					Metadata: &chart.Metadata{
+						Version: "1.0.0",
+					},
+					URLs: []string{"https://example.com/test-chart-1.0.0.tgz"},
+				},
+			},
+		},
+	}
+
+	t.Run("chart found", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+
+		url, err := cl.chartURL(idx, "test-chart", "1.0.0")
+
+		r.NoError(err)
+		r.Equal("https://example.com/test-chart-1.0.0.tgz", url)
+	})
+
+	t.Run("chart version not found", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+
+		url, err := cl.chartURL(idx, "test-chart", "9.9.9")
+
+		r.Empty(url)
+		r.Error(err)
+		r.ErrorIs(err, ErrChartNotFound)
+	})
+
+	t.Run("chart not found", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+
+		url, err := cl.chartURL(idx, "nonexistent-chart", "1.0.0")
+
+		r.Empty(url)
+		r.Error(err)
+		r.ErrorIs(err, ErrChartNotFound)
+		r.Equal(`chart not found: chart "nonexistent-chart" version "1.0.0" not found in index`, err.Error())
 	})
 }

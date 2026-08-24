@@ -165,5 +165,5 @@ func (cl *remoteChartLoader) chartURL(index *repo.IndexFile, name, version strin
 		}
 	}
 
-	return "", ErrChartNotFound
+	return "", fmt.Errorf("%w: chart %q version %q not found in index", ErrChartNotFound, name, version)
 }
