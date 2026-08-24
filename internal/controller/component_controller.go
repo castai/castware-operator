@@ -1,15 +1,14 @@
 package controller
 
 import (
+	"castai-agent/pkg/services/providers/aks"
+	"castai-agent/pkg/services/providers/eks"
+	"castai-agent/pkg/services/providers/gke"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
-
-	"castai-agent/pkg/services/providers/aks"
-	"castai-agent/pkg/services/providers/eks"
-	"castai-agent/pkg/services/providers/gke"
 
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/release"
@@ -460,6 +459,10 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.Fie
 			createNamespace = true
 		}
 		overrides["createNamespace"] = createNamespace
+	case components.ComponentNameUmbrella:
+		// TODO: should we pass specific overrides for umbrella?
+		// For now returning empty overrides.
+		return overrides, nil
 	default:
 		overrides["apiURL"] = cluster.Spec.API.APIURL
 		overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
