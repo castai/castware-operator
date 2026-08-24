@@ -53,8 +53,9 @@ OPERATOR_SDK_VERSION ?= v1.40.0
 IMG ?= $(IMAGE_TAG_BASE):$(VERSION)
 
 # DEVBOX_RUN prefixes commands to run inside the devbox environment.
-# Set DEVBOX_RUN= to run without devbox (e.g. in CI or when tools are on PATH).
-DEVBOX_RUN ?= devbox run --
+# Auto-detected: uses devbox if installed, otherwise runs commands directly.
+# Override with DEVBOX_RUN= to force direct execution, or DEVBOX_RUN="devbox run --" to force devbox.
+DEVBOX_RUN ?= $(shell command -v devbox >/dev/null 2>&1 && echo "devbox run --" || echo "")
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell $(DEVBOX_RUN) go env GOBIN))
