@@ -7,10 +7,12 @@ const (
 	ComponentNameOperator          = "castware-operator"
 	ComponentNameClusterController = "cluster-controller"
 	ComponentNameSpotHandler       = "spot-handler"
+	ComponentNameUmbrella          = "castai-umbrella"
 )
 
 // SupportedComponents List of supported components
 var SupportedComponents = []string{
+	ComponentNameUmbrella,
 	ComponentNameAgent,
 	ComponentNameSpotHandler,
 	ComponentNameClusterController,

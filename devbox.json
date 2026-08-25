@@ -1,0 +1,12 @@
+{
+  "packages": [
+    "go@1.25",
+    "kubectl@1.31",
+    "kind@0.24",
+    "docker@27",
+    "curl@latest"
+  ],
+  "shell": {
+    "init_hook": []
+  }
+}

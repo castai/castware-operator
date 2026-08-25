@@ -4,6 +4,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"io"
 	"testing"
 	"time"
 
@@ -431,6 +432,149 @@ func TestReconcile(t *testing.T) {
 	})
 }
 
+func TestComponentReconciler_ValueOverrides(t *testing.T) {
+	t.Parallel()
+	log := logrus.New()
+	log.SetOutput(io.Discard)
+
+	t.Run("when component.Spec.Values not nil then add overrides", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "test-component")
+		testComponent.Spec.Values = &v1.JSON{Raw: []byte(`{"value1": "value1-value", "value2": true}`)}
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
+
+		r.NoError(err)
+		r.Equal("value1-value", overrides["value1"])
+		r.Equal(true, overrides["value2"])
+	})
+
+	t.Run("when component.Spec.Component is cluster controller then add overrides", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "cluster-controller")
+		apiKeySecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      testCluster.Spec.APIKeySecret,
+				Namespace: testCluster.Namespace,
+			},
+			Data: map[string][]byte{
+				"API_KEY": []byte("test-api-key"),
+			},
+		}
+		testOps := newComponentTestOps(t, testCluster, testComponent, apiKeySecret)
+
+		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
+
+		r.NoError(err)
+		castaiOverrides, ok := overrides["castai"].(map[string]any)
+		r.True(ok)
+		r.Equal(testCluster.Spec.Cluster.ClusterID, castaiOverrides["clusterID"])
+		r.Equal("test-api-key", castaiOverrides["apiKey"])
+		r.Equal("", castaiOverrides["apiURL"])
+		r.Equal("value1-value", overrides["value1"])
+		r.Equal(true, overrides["value2"])
+	})
+
+	t.Run("when component.Spec.Component is spotHandler then add overrides", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "spot-handler")
+		apiKeySecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      testCluster.Spec.APIKeySecret,
+				Namespace: testCluster.Namespace,
+			},
+			Data: map[string][]byte{
+				"API_KEY": []byte("test-api-key"),
+			},
+		}
+		testOps := newComponentTestOps(t, testCluster, testComponent, apiKeySecret)
+
+		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
+
+		r.NoError(err)
+		castaiOverrides, ok := overrides["castai"].(map[string]any)
+		r.True(ok)
+		r.Equal(testCluster.Spec.Cluster.ClusterID, castaiOverrides["clusterID"])
+		r.Equal("test-api-key", castaiOverrides["apiKey"])
+		r.Equal("", castaiOverrides["apiURL"])
+		r.Equal("aws", castaiOverrides["provider"])
+		r.Equal(false, overrides["phase2Permissions"])
+		r.Equal("value1-value", overrides["value1"])
+	})
+
+	t.Run("when component.Spec.Component is agent then add overrides", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "castai-agent")
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
+
+		r.NoError(err)
+		r.Equal("", overrides["apiURL"])
+		r.Equal("test-cluster", overrides["apiKeySecretRef"])
+		r.Equal("eks", overrides["provider"])
+		r.Equal(true, overrides["createNamespace"])
+		r.Equal("value1-value", overrides["value1"])
+	})
+
+	t.Run("when component.Spec.Component is umbrella then do not add overrides", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "castai-umbrella")
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
+
+		r.NoError(err)
+		r.Equal("value1-value", overrides["value1"])
+		r.Equal(true, overrides["value2"])
+		r.NotContains(overrides, "apiURL")
+		r.NotContains(overrides, "apiKeySecretRef")
+		r.NotContains(overrides, "provider")
+		r.NotContains(overrides, "createNamespace")
+		r.NotContains(overrides, "castai")
+	})
+
+	t.Run("when component.Spec.Component is unknown then add default overrides", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "unknown-component")
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
+
+		r.NoError(err)
+		r.Equal("", overrides["apiURL"])
+		r.Equal("test-cluster", overrides["apiKeySecretRef"])
+		r.Equal("eks", overrides["provider"])
+		r.Equal(false, overrides["createNamespace"])
+		r.Equal("value1-value", overrides["value1"])
+	})
+}
+
 // nolint: unparam
 func newTestComponent(t *testing.T, clusterName, name string) *castwarev1alpha1.Component {
 	t.Helper()
@@ -587,7 +731,8 @@ func TestGenerationBasedUpgrade(t *testing.T) {
 						},
 					},
 				}, nil
-			})
+			},
+		)
 
 		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
 		_, err := testOps.sut.Reconcile(ctx, req)
@@ -788,7 +933,8 @@ func TestProgressingStatusSetBeforeOperation(t *testing.T) {
 							},
 						},
 					}, nil
-				})
+				},
+			)
 
 			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
 			_, err := testOps.sut.Reconcile(ctx, req)
@@ -867,7 +1013,8 @@ func TestProgressingStatusSetBeforeOperation(t *testing.T) {
 							},
 						},
 					}, nil
-				})
+				},
+			)
 
 			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
 			_, err := testOps.sut.Reconcile(ctx, req)
@@ -1104,7 +1251,8 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 						},
 					},
 				}, nil
-			})
+			},
+		)
 
 		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
 		_, err := testOps.sut.Reconcile(ctx, req)
