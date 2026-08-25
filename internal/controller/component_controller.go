@@ -460,8 +460,8 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.Fie
 		}
 		overrides["createNamespace"] = createNamespace
 	case components.ComponentNameUmbrella:
-		// TODO: should we pass specific overrides for umbrella?
-		// For now returning empty overrides.
+		// TODO(overrides): https://castai.atlassian.net/browse/CID-1043
+		// TODO(test): overrides["createNamespace"] = createNamespace
 		return overrides, nil
 	default:
 		overrides["apiURL"] = cluster.Spec.API.APIURL
