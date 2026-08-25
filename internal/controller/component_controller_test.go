@@ -434,7 +434,8 @@ func TestReconcile(t *testing.T) {
 
 func TestComponentReconciler_ValueOverrides(t *testing.T) {
 	t.Parallel()
-	log := &logrus.Logger{Out: io.Discard}
+	log := logrus.New()
+	log.SetOutput(io.Discard)
 
 	t.Run("when component.Spec.Values not nil then add overrides", func(t *testing.T) {
 		t.Parallel()
