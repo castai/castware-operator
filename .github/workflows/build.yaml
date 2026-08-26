@@ -87,13 +87,6 @@ jobs:
           GOARCH: arm64
           CGO_ENABLED: 0
 
-      - name: Upload binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: binaries
-          path: bin/
-          retention-days: 1
-
       - name: Test
         run: make test
 
@@ -234,6 +227,7 @@ jobs:
     runs-on: ubuntu-24.04
     if: |
       always() &&
+      needs.build.result == 'success' &&
       needs.release_chart_rc.result != 'failure' &&
       (
         (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'HOTFIX')) ||
@@ -258,15 +252,6 @@ jobs:
           path: ~/go/pkg/mod
           key: ${{ runner.os }}-build-${{ hashFiles('**/go.sum') }}
           restore-keys: ${{ runner.os }}-build-
-
-      - name: Download binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: binaries
-          path: bin/
-
-      - name: Make binaries executable
-        run: chmod +x bin/*
 
       - name: Set cluster name
         run: echo "KIND_CLUSTER=castware-operator-e2e" >> $GITHUB_ENV
