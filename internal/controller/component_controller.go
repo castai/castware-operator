@@ -33,6 +33,7 @@ import (
 	"github.com/castai/castware-operator/internal/helm"
 	"github.com/castai/castware-operator/internal/params"
 	"github.com/castai/castware-operator/internal/rolebindings"
+	"github.com/castai/castware-operator/internal/utils"
 )
 
 // Definitions to manage status conditions
@@ -391,6 +392,15 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]any, error) {
+	// The umbrella component has a dedicated builder that translates the Cluster
+	// spec into the umbrella chart's global.castai.* values and then merges the
+	// user-supplied Component.Spec.Values on top. It is gated strictly on the
+	// component name so the flat value-override path used by the other components
+	// never runs against the umbrella CR.
+	if component.Spec.Component == components.ComponentNameUmbrella {
+		return r.umbrellaValues(component, cluster)
+	}
+
 	overrides := map[string]any{}
 	if component.Spec.Values != nil {
 		if err := json.Unmarshal(component.Spec.Values.Raw, &overrides); err != nil {
@@ -459,10 +469,6 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.Fie
 			createNamespace = true
 		}
 		overrides["createNamespace"] = createNamespace
-	case components.ComponentNameUmbrella:
-		// TODO(overrides): https://castai.atlassian.net/browse/CID-1043
-		// TODO(test): overrides["createNamespace"] = createNamespace
-		return overrides, nil
 	default:
 		overrides["apiURL"] = cluster.Spec.API.APIURL
 		overrides["apiKeySecretRef"] = cluster.Spec.APIKeySecret
@@ -471,6 +477,47 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.Fie
 	}
 
 	return overrides, nil
+}
+
+// umbrellaValues builds the Helm values for the castai-umbrella component from
+// the Cluster spec. It populates global.castai.{apiURL,grpcURL,provider,
+// clusterID,apiKeySecretRef} and then deep-merges the user-supplied
+// Component.Spec.Values on top, so users can disable or tune individual
+// sub-components (e.g. autoscaler.castai-evictor.enabled=false) and override
+// any builder-provided value.
+func (r *ComponentReconciler) umbrellaValues(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]any, error) {
+	globalCastai := map[string]any{
+		"apiURL":          cluster.Spec.API.APIURL,
+		"provider":        cluster.Spec.Provider,
+		"apiKeySecretRef": cluster.Spec.APIKeySecret,
+	}
+	if cluster.Spec.API.GrpcURL != "" {
+		globalCastai["grpcURL"] = cluster.Spec.API.GrpcURL
+	}
+	if cluster.Spec.Cluster != nil && cluster.Spec.Cluster.ClusterID != "" {
+		globalCastai["clusterID"] = cluster.Spec.Cluster.ClusterID
+	}
+
+	values := map[string]any{
+		"global": map[string]any{
+			"castai": globalCastai,
+		},
+	}
+
+	// Merge the user-supplied values on top of the builder output so that
+	// operator-managed global.castai.* fields act as defaults and the user can
+	// override them or tune individual sub-components.
+	if component.Spec.Values != nil {
+		userValues, err := utils.UnmarshalJSON(component.Spec.Values)
+		if err != nil {
+			return nil, fmt.Errorf("failed to unmarshal umbrella values: %w", err)
+		}
+		if err := utils.MergeMaps(values, userValues); err != nil {
+			return nil, fmt.Errorf("failed to merge umbrella values: %w", err)
+		}
+	}
+
+	return values, nil
 }
 
 func (r *ComponentReconciler) shouldCreateNamespace(ctx context.Context, component *castwarev1alpha1.Component) (bool, error) {

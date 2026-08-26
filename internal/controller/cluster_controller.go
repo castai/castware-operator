@@ -481,7 +481,7 @@ func (r *ClusterReconciler) syncTerraformComponents(ctx context.Context, castaiC
 		// Component CR exists, check if it needs terraform migration handling
 		if component.IsInitiliazedByTerraform() {
 			log.Infof("Processing terraform migration for component %s", componentName)
-			if components.RequiresExtendedPermissions(componentName) && !extendedPermsExist {
+			if requiresExtendedPermissions(component) && !extendedPermsExist {
 				log.Warnf("Component %s requires extended permissions, but extendedPermissions flag is not enabled, skipping", componentName)
 				continue
 			}
@@ -573,7 +573,7 @@ func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, castaiCl
 
 	for _, component := range components.SupportedComponents {
 		// Migrate phase1 components first
-		if components.RequiresExtendedPermissions(component) {
+		if requiresExtendedPermissionsByName(ctx, r.Client, cluster.Namespace, component) {
 			continue
 		}
 		mothershipComponent, err := castaiClient.GetComponentByName(ctx, component)
@@ -599,7 +599,7 @@ func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, castaiCl
 	if extendedPermsExist {
 		for _, component := range components.SupportedComponents {
 			// Migrate phase2 components
-			if !components.RequiresExtendedPermissions(component) {
+			if !requiresExtendedPermissionsByName(ctx, r.Client, cluster.Namespace, component) {
 				continue
 			}
 
@@ -620,6 +620,34 @@ func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, castaiCl
 	}
 
 	return false, nil
+}
+
+// requiresExtendedPermissionsByName resolves whether a component requires
+// extended permissions, reading the Component CR's Spec.Values when present so
+// that a tag-aware component (e.g. an umbrella component with tags.readonly)
+// can be satisfied by minimal permissions. If the Component CR is missing or
+// its values cannot be read, it falls back to the name-only check, which
+// treats unknown umbrella state as extended-permissions-required (the safe
+// default).
+func requiresExtendedPermissionsByName(ctx context.Context, c client.Client, namespace, name string) bool {
+	component := &castwarev1alpha1.Component{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, component); err == nil {
+		values, err := utils.UnmarshalJSON(component.Spec.Values)
+		if err == nil {
+			return components.RequiresExtendedPermissionsForValues(name, values)
+		}
+	}
+	return components.RequiresExtendedPermissions(name)
+}
+
+// requiresExtendedPermissions wraps RequiresExtendedPermissionsForValues for a
+// Component that has already been fetched, used by the terraform sync loop.
+func requiresExtendedPermissions(component *castwarev1alpha1.Component) bool {
+	values, err := utils.UnmarshalJSON(component.Spec.Values)
+	if err != nil {
+		return components.RequiresExtendedPermissions(component.Spec.Component)
+	}
+	return components.RequiresExtendedPermissionsForValues(component.Spec.Component, values)
 }
 
 // scanExistingComponent Checks if helm release or deployment exist for a given component, and if they do but
