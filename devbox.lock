@@ -1,7 +1,7 @@
 {
   "lockfile_version": "1",
   "packages": {
-    "curl@latest": {
+    "curl@8": {
       "last_modified": "2025-12-05T15:03:55Z",
       "resolved": "github:NixOS/nixpkgs/a672be65651c80d3f592a89b3945466584a22069#curl",
       "source": "devbox-search",
@@ -170,6 +170,64 @@
             }
           ],
           "store_path": "/nix/store/ln9x6zi5idgbq7lp74xn55jfi3jl849z-docker-27.5.1"
+        }
+      }
+    },
+    "git@2": {
+      "last_modified": "2026-08-12T11:28:58Z",
+      "resolved": "github:NixOS/nixpkgs/044bfe75bfe4c7bbe043dc17b5e42ea823b84a09#git",
+      "source": "devbox-search",
+      "version": "2.55.0",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/hiw6ii978dc8s153v60fzy6myzqxymm7-git-2.55.0",
+              "default": true
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/181ykp1mvmh07rq1sqfss8n7s1sc3mlm-git-2.55.0-doc"
+            }
+          ],
+          "store_path": "/nix/store/hiw6ii978dc8s153v60fzy6myzqxymm7-git-2.55.0"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/q3pvpkn0qmin7x572p3z32hxz9yny73i-git-2.55.0",
+              "default": true
+            },
+            {
+              "name": "debug",
+              "path": "/nix/store/5rjalzcb929d9qrxp8v6xxz99vfhmxhn-git-2.55.0-debug"
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/jbfpbknl5qh0cm5zg48gxgb6fzhwvq04-git-2.55.0-doc"
+            }
+          ],
+          "store_path": "/nix/store/q3pvpkn0qmin7x572p3z32hxz9yny73i-git-2.55.0"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/8wxs6573l730vxkqd6wp58kvxa19csll-git-2.55.0",
+              "default": true
+            },
+            {
+              "name": "debug",
+              "path": "/nix/store/3zxdc75ib758dwba0afaj63d33w6z42w-git-2.55.0-debug"
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/h1dp7wlh1saz2d77ajpdpbms1fn56ih8-git-2.55.0-doc"
+            }
+          ],
+          "store_path": "/nix/store/8wxs6573l730vxkqd6wp58kvxa19csll-git-2.55.0"
         }
       }
     },

@@ -975,6 +975,90 @@ func TestGenerationBasedUpgrade(t *testing.T) {
 	})
 }
 
+func TestRollbackTimeoutReopensProgressDeadline(t *testing.T) {
+	t.Run("stuck upgrade recovers via checkHelmProgress instead of looping on rollback", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		const (
+			stuckVersion      = "v0.92.14" // version whose rollout timed out
+			rolledBackVersion = "v0.92.7"  // previous release we roll back to
+		)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "cluster-controller")
+		testComponent.Finalizers = []string{ComponentFinalizer}
+		testComponent.Spec.Version = stuckVersion
+		testComponent.Status.CurrentVersion = stuckVersion
+		// Wedged past the 10-minute progress deadline: Progressing has been True since 11 minutes
+		// ago, so every reconcile immediately enters the timeout branch.
+		testComponent.Status.Conditions = []metav1.Condition{
+			{
+				Type:               typeProgressingComponent,
+				Status:             metav1.ConditionTrue,
+				Reason:             progressingReasonUpgrading,
+				Message:            "Upgrading component: " + rolledBackVersion + " -> " + stuckVersion,
+				LastTransitionTime: metav1.NewTime(time.Now().Add(-11 * time.Minute)),
+			},
+		}
+
+		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, testComponent)
+
+		// After a rollback the newest revision is the rolled-back content, Deployed. Return that
+		// for both the "current" and "previous" GetRelease lookups; version >= 2 so rollback is allowed.
+		testOps.mockHelm.EXPECT().GetRelease(gomock.Any()).DoAndReturn(
+			func(opts helm.GetReleaseOptions) (*release.Release, error) {
+				return &release.Release{
+					Name:    testComponent.Spec.Component,
+					Version: 2,
+					Info:    &release.Info{Status: release.StatusDeployed},
+					Chart: &chart.Chart{Metadata: &chart.Metadata{
+						Name:    testComponent.Spec.Component,
+						Version: rolledBackVersion,
+					}},
+				}, nil
+			}).AnyTimes()
+
+		rollbacks := 0
+		testOps.mockHelm.EXPECT().Rollback(gomock.Any()).DoAndReturn(
+			func(opts helm.RollbackOptions) error { rollbacks++; return nil }).AnyTimes()
+
+		testOps.mockCastAI.EXPECT().
+			RecordActionResult(gomock.Any(), testCluster.Spec.Cluster.ClusterID, gomock.Any()).
+			Return(nil).AnyTimes()
+
+		req := reconcile.Request{NamespacedName: client.ObjectKey{
+			Namespace: testComponent.Namespace, Name: testComponent.Name,
+		}}
+
+		// Reconcile #1: timeout branch -> rollback -> reopen the deadline.
+		_, err := testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+
+		var afterFirst castwarev1alpha1.Component
+		r.NoError(testOps.sut.Get(ctx, req.NamespacedName, &afterFirst))
+		cond := meta.FindStatusCondition(afterFirst.Status.Conditions, typeProgressingComponent)
+		r.NotNil(cond)
+		r.Equal(metav1.ConditionTrue, cond.Status)
+		r.WithinDuration(time.Now(), cond.LastTransitionTime.Time, time.Minute,
+			"timeout branch must refresh the Progressing deadline after rollback")
+
+		// Reconcile #2: within the fresh window -> checkHelmProgress sees Deployed -> finalizes.
+		_, err = testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+
+		var afterSecond castwarev1alpha1.Component
+		r.NoError(testOps.sut.Get(ctx, req.NamespacedName, &afterSecond))
+		cond = meta.FindStatusCondition(afterSecond.Status.Conditions, typeProgressingComponent)
+		r.NotNil(cond)
+		r.Equal(metav1.ConditionFalse, cond.Status, "component should stop progressing after recovery")
+		r.Equal(rolledBackVersion, afterSecond.Status.CurrentVersion,
+			"current version should reflect the rolled-back release")
+		r.Equal(1, rollbacks, "rollback must happen once, not loop")
+	})
+}
+
 func TestProgressingStatusSetBeforeOperation(t *testing.T) {
 	t.Run("when installing component", func(t *testing.T) {
 		t.Run("should set progressing status before calling helm install", func(t *testing.T) {
