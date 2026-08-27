@@ -350,6 +350,16 @@ var _ = Describe("Component Webhook", func() {
 			Expect(validator.ValidateCreate(ctx, obj)).To(BeNil())
 		})
 
+		It("Should deny umbrella creation when readonly tag and cluster-controller are both enabled", func() {
+			By("the chart allows tags.readonly + cluster-controller enabled; the operator must require extended perms")
+			obj.Spec.Component = components.ComponentNameUmbrella
+			obj.Spec.Cluster = clusterName
+			obj.SetNamespace("default")
+			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"readonly":true},"autoscaler":{"castai-cluster-controller":{"enabled":true}}}`)}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).Error().To(MatchError("component 'castai-umbrella' requires extended permissions, please run `helm upgrade castware-operator -n castai-agent --set extendedPermissions=\"true\" --reuse-values castai-helm/castware-operator`"))
+		})
+
 		It("Should admit creation", func() {
 			By("simulating a valid creation scenario")
 			obj.Spec.Component = componentName
