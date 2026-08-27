@@ -569,11 +569,12 @@ func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, castaiCl
 		return false, nil
 	}
 
+	log := r.Log.WithField("action", "scan-existing-components")
 	var reconcileNeeded bool
 
 	for _, component := range components.SupportedComponents {
 		// Migrate phase1 components first
-		if requiresExtendedPermissionsByName(ctx, r.Client, cluster.Namespace, component) {
+		if requiresExtendedPermissionsByName(ctx, r.Client, log, cluster.Namespace, component) {
 			continue
 		}
 		mothershipComponent, err := castaiClient.GetComponentByName(ctx, component)
@@ -599,7 +600,7 @@ func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, castaiCl
 	if extendedPermsExist {
 		for _, component := range components.SupportedComponents {
 			// Migrate phase2 components
-			if !requiresExtendedPermissionsByName(ctx, r.Client, cluster.Namespace, component) {
+			if !requiresExtendedPermissionsByName(ctx, r.Client, log, cluster.Namespace, component) {
 				continue
 			}
 
@@ -625,19 +626,31 @@ func (r *ClusterReconciler) scanExistingComponents(ctx context.Context, castaiCl
 // requiresExtendedPermissionsByName resolves whether a component requires
 // extended permissions, reading the Component CR's Spec.Values when present so
 // that a tag-aware component (e.g. an umbrella component with tags.readonly)
-// can be satisfied by minimal permissions. If the Component CR is missing or
-// its values cannot be read, it falls back to the name-only check, which
-// treats unknown umbrella state as extended-permissions-required (the safe
-// default).
-func requiresExtendedPermissionsByName(ctx context.Context, c client.Client, namespace, name string) bool {
+// can be satisfied by minimal permissions.
+//
+// If the Component CR is missing, its values are unreadable, or the lookup fails
+// transiently, the function falls back to the safe default: unknown umbrella
+// state is treated as extended-permissions-required, and other components use
+// the name-only check. Such fallbacks are logged at warning level so they are
+// visible and debuggable, since they change the permission classification.
+func requiresExtendedPermissionsByName(ctx context.Context, c client.Client, log logrus.FieldLogger, namespace, name string) bool {
 	component := &castwarev1alpha1.Component{}
-	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, component); err == nil {
-		values, err := utils.UnmarshalJSON(component.Spec.Values)
-		if err == nil {
-			return components.RequiresExtendedPermissionsForValues(name, values)
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, component); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Missing CR is an expected state (the component may not have been
+			// created yet); fall back to the safe default without noise.
+		} else {
+			log.WithError(err).Warnf("Failed to get component %s for extended-permissions check; falling back to name-only classification", name)
 		}
+		return fallbackRequiresExtendedPermissions(name)
 	}
-	return components.RequiresExtendedPermissions(name)
+
+	values, err := utils.UnmarshalJSON(component.Spec.Values)
+	if err != nil {
+		log.WithError(err).Warnf("Failed to unmarshal values for component %s; falling back to name-only classification", name)
+		return fallbackRequiresExtendedPermissions(name)
+	}
+	return components.RequiresExtendedPermissionsForValues(name, values)
 }
 
 // requiresExtendedPermissions wraps RequiresExtendedPermissionsForValues for a
@@ -645,9 +658,26 @@ func requiresExtendedPermissionsByName(ctx context.Context, c client.Client, nam
 func requiresExtendedPermissions(component *castwarev1alpha1.Component) bool {
 	values, err := utils.UnmarshalJSON(component.Spec.Values)
 	if err != nil {
+		// Unreadable values default to extended-permissions-required for the
+		// umbrella component (the safe choice); other components fall back to
+		// the name-only check.
+		if component.Spec.Component == components.ComponentNameUmbrella {
+			return true
+		}
 		return components.RequiresExtendedPermissions(component.Spec.Component)
 	}
 	return components.RequiresExtendedPermissionsForValues(component.Spec.Component, values)
+}
+
+// fallbackRequiresExtendedPermissions returns the safe default classification
+// when a component's tag-aware state cannot be determined: umbrella components
+// default to extended-permissions-required, all others delegate to the
+// name-only check.
+func fallbackRequiresExtendedPermissions(name string) bool {
+	if name == components.ComponentNameUmbrella {
+		return true
+	}
+	return components.RequiresExtendedPermissions(name)
 }
 
 // scanExistingComponent Checks if helm release or deployment exist for a given component, and if they do but
