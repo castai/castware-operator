@@ -27,6 +27,7 @@ import (
 	"github.com/castai/castware-operator/internal/castai/auth"
 	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/internal/config"
+	"github.com/castai/castware-operator/internal/utils"
 )
 
 // nolint:unused
@@ -161,7 +162,16 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 		return nil, fmt.Errorf("component '%s' is not supported", c.Spec.Component)
 	}
 
-	if components.RequiresExtendedPermissions(c.Spec.Component) {
+	// Components that require extended permissions are rejected at admission unless
+	// the operator was installed with extendedPermissions="true". The umbrella
+	// component is tag-aware: tags.readonly=true is satisfiable with minimal
+	// (base) permissions, while any other tag (or no tag) requires extended
+	// permissions.
+	values, err := utils.UnmarshalJSON(c.Spec.Values)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal component values: %w", err)
+	}
+	if components.RequiresExtendedPermissionsForValues(c.Spec.Component, values) {
 		ok, err := rolebindings.CheckExtendedPermissionsExist(ctx, v.client, c.Namespace)
 		if err != nil {
 			return nil, fmt.Errorf("failed to check extended permissions: %w", err)
@@ -175,8 +185,7 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 
 	// validate that cluster exists
 	cluster := &castwarev1alpha1.Cluster{}
-	err := v.client.Get(ctx, client.ObjectKey{Namespace: c.GetNamespace(), Name: c.Spec.Cluster}, cluster)
-	if err != nil {
+	if err := v.client.Get(ctx, client.ObjectKey{Namespace: c.GetNamespace(), Name: c.Spec.Cluster}, cluster); err != nil {
 		return nil, fmt.Errorf("cluster '%s' does not exist", c.Spec.Cluster)
 	}
 

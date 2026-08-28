@@ -534,25 +534,103 @@ func TestComponentReconciler_ValueOverrides(t *testing.T) {
 		r.Equal("value1-value", overrides["value1"])
 	})
 
-	t.Run("when component.Spec.Component is umbrella then do not add overrides", func(t *testing.T) {
+	t.Run("when component.Spec.Component is umbrella then build global.castai from cluster spec", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
 		r := require.New(t)
 
 		testCluster := newTestCluster(t, uuid.NewString(), true)
+		// The umbrella builder maps the cluster spec into global.castai.* and
+		// deep-merges the user's Spec.Values on top (user wins). Use a custom
+		// values block rather than newTestComponent's default {value1,value2}.
+		testComponent := newTestComponent(t, testCluster.Name, "castai-umbrella")
+		testComponent.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"readonly":true}}`)}
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
+
+		r.NoError(err)
+		// The flat keys used by the other components must never leak into the
+		// umbrella overrides — the builder is gated strictly on component name.
+		r.NotContains(overrides, "apiURL")
+		r.NotContains(overrides, "apiKeySecretRef")
+		r.NotContains(overrides, "provider")
+		r.NotContains(overrides, "createNamespace")
+
+		global, ok := overrides["global"].(map[string]any)
+		r.True(ok)
+		castai, ok := global["castai"].(map[string]any)
+		r.True(ok)
+		r.Equal(testCluster.Spec.API.APIURL, castai["apiURL"])
+		r.Equal(testCluster.Spec.Provider, castai["provider"])
+		r.Equal(testCluster.Spec.Cluster.ClusterID, castai["clusterID"])
+		r.Equal(testCluster.Spec.APIKeySecret, castai["apiKeySecretRef"])
+		// grpcURL is omitted when the cluster spec does not set it.
+		r.NotContains(castai, "grpcURL")
+
+		// User-supplied values are preserved through the merge.
+		tags, ok := overrides["tags"].(map[string]any)
+		r.True(ok)
+		r.Equal(true, tags["readonly"])
+	})
+
+	t.Run("when umbrella cluster has grpcURL then it is mapped into global.castai", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testCluster.Spec.API.GrpcURL = "grpc.cast.ai:443"
 		testComponent := newTestComponent(t, testCluster.Name, "castai-umbrella")
 		testOps := newComponentTestOps(t, testCluster, testComponent)
 
 		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
 
 		r.NoError(err)
-		r.Equal("value1-value", overrides["value1"])
-		r.Equal(true, overrides["value2"])
-		r.NotContains(overrides, "apiURL")
-		r.NotContains(overrides, "apiKeySecretRef")
-		r.NotContains(overrides, "provider")
-		r.NotContains(overrides, "createNamespace")
-		r.NotContains(overrides, "castai")
+		castai := overrides["global"].(map[string]any)["castai"].(map[string]any)
+		r.Equal("grpc.cast.ai:443", castai["grpcURL"])
+	})
+
+	t.Run("when umbrella user values override global.castai then user wins", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true) // provider=eks
+		testComponent := newTestComponent(t, testCluster.Name, "castai-umbrella")
+		// Override the builder-provided provider and disable a sub-component.
+		testComponent.Spec.Values = &v1.JSON{Raw: []byte(`{"global":{"castai":{"provider":"gke"}},"autoscaler":{"castai-evictor":{"enabled":false}}}`)}
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
+
+		r.NoError(err)
+		castai := overrides["global"].(map[string]any)["castai"].(map[string]any)
+		// User value wins over the builder default (eks -> gke).
+		r.Equal("gke", castai["provider"])
+		// Builder-provided defaults that the user did not touch survive.
+		r.Equal(testCluster.Spec.API.APIURL, castai["apiURL"])
+		// User-supplied sub-component tuning survives.
+		autoscaler := overrides["autoscaler"].(map[string]any)
+		evictor := autoscaler["castai-evictor"].(map[string]any)
+		r.Equal(false, evictor["enabled"])
+	})
+
+	t.Run("when umbrella cluster spec has nil cluster metadata then clusterID omitted", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testCluster.Spec.Cluster = nil
+		testComponent := newTestComponent(t, testCluster.Name, "castai-umbrella")
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
+
+		r.NoError(err)
+		castai := overrides["global"].(map[string]any)["castai"].(map[string]any)
+		r.NotContains(castai, "clusterID")
 	})
 
 	t.Run("when component.Spec.Component is unknown then add default overrides", func(t *testing.T) {
