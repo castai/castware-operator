@@ -1382,7 +1382,11 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 			Reason: reasonInstalled,
 		})
 
-		testOps := newComponentTestOps(t, testCluster, testComponent)
+		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, testComponent)
+
+		// spot-handler is an umbrella sub-component, so the reconciler probes
+		// whether the umbrella release is installed before managing it.
+		expectUmbrellaNotInstalledComponent(testOps, testComponent.Namespace)
 
 		// Expect GetRelease call for detectAndReportHelmRevisionChange
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
@@ -1448,7 +1452,11 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 			},
 		}
 
-		testOps := newComponentTestOps(t, testCluster, testComponent, roleBinding, clusterRoleBinding)
+		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, testComponent, roleBinding, clusterRoleBinding)
+
+		// spot-handler is an umbrella sub-component, so the reconciler probes
+		// whether the umbrella release is installed before managing it.
+		expectUmbrellaNotInstalledComponent(testOps, testComponent.Namespace)
 
 		// Single GetRelease call in reconcile loop (cached for both phase2 check and revision check)
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
@@ -1682,5 +1690,41 @@ func TestReconcileMutualExclusivityGate(t *testing.T) {
 		if conflict != nil {
 			r.Equal(metav1.ConditionFalse, conflict.Status, "UmbrellaConflict must not be True when migrate allowed the install")
 		}
+	})
+
+	t.Run("per-component CR fails closed when Mothership cannot resolve the umbrella release name", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, components.ComponentNameAgent)
+		testComponent.Spec.Component = components.ComponentNameAgent
+		testComponent.Spec.ReleaseName = components.ComponentNameAgent
+
+		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, testComponent)
+
+		// Mothership is unreachable for the umbrella lookup, so the gate cannot
+		// determine whether the umbrella release is installed. It must fail
+		// closed: surface an error so the reconcile requeues instead of letting
+		// the individual CR install alongside an umbrella release it could not
+		// see.
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+			Return(nil, errors.New("mothership timeout"))
+
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+		result, err := testOps.sut.Reconcile(ctx, req)
+		// The error path requeues with a backoff and returns nil (no install).
+		r.NoError(err)
+		r.NotEqual(time.Duration(0), result.RequeueAfter)
+
+		var actualComponent castwarev1alpha1.Component
+		r.NoError(testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent))
+
+		// The component was NOT forced read-only (we couldn't confirm a conflict).
+		r.False(actualComponent.Spec.Readonly, "component must not be forced read-only when the gate cannot resolve the umbrella")
+		// No install proceeded.
+		progressing := meta.FindStatusCondition(actualComponent.Status.Conditions, typeProgressingComponent)
+		r.Nil(progressing, "component must not be marked as progressing when the gate fails closed")
 	})
 }

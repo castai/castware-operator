@@ -576,21 +576,25 @@ func (r *ComponentReconciler) umbrellaValues(component *castwarev1alpha1.Compone
 // UmbrellaConflict condition is set, so it will not install alongside the
 // umbrella. Returns blocked=true when it forced read-only. When the umbrella is
 // not installed it clears any stale UmbrellaConflict condition.
+//
+// This is the only guard that detects an installed umbrella *release* against a
+// user-created individual CR (the webhook only checks for an umbrella CR, and
+// the cluster controller's scan/install gates only run for scan- and
+// Mothership-action-created CRs). It is therefore fail-safe: a Mothership outage
+// that prevents resolving the umbrella release name must surface an error so the
+// reconcile requeues rather than letting the individual CR install alongside an
+// umbrella release it could not see.
 func (r *ComponentReconciler) forceReadonlyIfUmbrellaInstalled(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (bool, error) {
 	castAiClient, err := r.getCastaiClient(ctx, cluster)
 	if err != nil {
-		// Cannot reach Mothership to resolve the umbrella release name. The
-		// readonly-forcing is a protection, not the authoritative gate (the
-		// reconciler's install refusal and the cluster controller enforce the
-		// hard block), so we fail open here rather than wedging every reconcile
-		// on a transient Mothership outage.
-		log.WithError(err).Warn("Failed to get castai client for umbrella mutual-exclusivity check; skipping")
-		return false, nil
+		// Cannot reach Mothership to resolve the umbrella release name. Fail
+		// closed: the caller requeues without installing, retrying on the next
+		// pass, rather than silently letting the individual CR install.
+		return false, fmt.Errorf("get castai client for umbrella mutual-exclusivity check: %w", err)
 	}
 	umbrellaReleaseName, err := migrationgate.ResolveUmbrellaReleaseName(ctx, castAiClient)
 	if err != nil {
-		log.WithError(err).Warn("Failed to resolve umbrella release name; skipping mutual-exclusivity check")
-		return false, nil
+		return false, fmt.Errorf("resolve umbrella release name: %w", err)
 	}
 
 	if !migrationgate.UmbrellaInstalled(r.HelmClient, component.Namespace, umbrellaReleaseName) {

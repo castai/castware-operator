@@ -151,3 +151,113 @@ func TestInstalledSubcomponents(t *testing.T) {
 		r.Empty(InstalledSubcomponents(hc, ns, releases))
 	})
 }
+
+func TestResolveNames(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// subMocks sets up GetComponentByName expectations for the umbrella (always
+	// called first) plus the given sub-component responses. A nil response error
+	// means "return this component"; a non-nil error is returned as-is.
+	subMocks := func(mc *mock_castai.MockCastAIClient, subs map[string]struct {
+		comp *castai.Component
+		err  error
+	}) {
+		mc.EXPECT().GetComponentByName(ctx, components.ComponentNameUmbrella).
+			Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil)
+		for _, sub := range Subcomponents {
+			s, ok := subs[sub]
+			if !ok {
+				continue
+			}
+			mc.EXPECT().GetComponentByName(ctx, sub).Return(s.comp, s.err)
+		}
+	}
+
+	t.Run("returns all resolved release names", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mc := mock_castai.NewMockCastAIClient(ctrl)
+		subMocks(mc, map[string]struct {
+			comp *castai.Component
+			err  error
+		}{
+			components.ComponentNameAgent:             {comp: &castai.Component{ReleaseName: "castai-agent"}},
+			components.ComponentNameSpotHandler:       {comp: &castai.Component{ReleaseName: "castai-spot-handler"}},
+			components.ComponentNameClusterController: {comp: &castai.Component{ReleaseName: "cluster-controller"}},
+		})
+
+		names, err := ResolveNames(ctx, mc)
+		r.NoError(err)
+		r.Equal(components.ComponentNameUmbrella, names.UmbrellaReleaseName)
+		r.Len(names.SubcomponentReleases, 3)
+		r.Equal("castai-agent", names.SubcomponentReleases[components.ComponentNameAgent])
+	})
+
+	t.Run("surfaces umbrella lookup error", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mc := mock_castai.NewMockCastAIClient(ctrl)
+		mc.EXPECT().GetComponentByName(ctx, components.ComponentNameUmbrella).Return(nil, errors.New("boom"))
+
+		_, err := ResolveNames(ctx, mc)
+		r.Error(err)
+	})
+
+	t.Run("skips genuinely-absent sub-components (ErrNotFound) and returns no error", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mc := mock_castai.NewMockCastAIClient(ctrl)
+		subMocks(mc, map[string]struct {
+			comp *castai.Component
+			err  error
+		}{
+			components.ComponentNameAgent:             {err: castai.ErrNotFound},
+			components.ComponentNameSpotHandler:       {err: castai.ErrNotFound},
+			components.ComponentNameClusterController: {err: castai.ErrNotFound},
+		})
+
+		names, err := ResolveNames(ctx, mc)
+		r.NoError(err, "ErrNotFound means genuinely absent, not unknown")
+		r.Empty(names.SubcomponentReleases)
+	})
+
+	t.Run("fails closed when all sub-components hit unknown errors", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mc := mock_castai.NewMockCastAIClient(ctrl)
+		subMocks(mc, map[string]struct {
+			comp *castai.Component
+			err  error
+		}{
+			components.ComponentNameAgent:             {err: errors.New("timeout")},
+			components.ComponentNameSpotHandler:       {err: errors.New("timeout")},
+			components.ComponentNameClusterController: {err: errors.New("timeout")},
+		})
+
+		_, err := ResolveNames(ctx, mc)
+		r.Error(err, "unknown Mothership failures must not let the gate pass on an empty map")
+	})
+
+	t.Run("returns partial map when at least one sub-component resolves", func(t *testing.T) {
+		// Even if other sub-components hit unknown errors, a partial map lets
+		// the helm-layer fail-safe decide (it treats present releases as
+		// blocking). Resolution must not error here.
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mc := mock_castai.NewMockCastAIClient(ctrl)
+		subMocks(mc, map[string]struct {
+			comp *castai.Component
+			err  error
+		}{
+			components.ComponentNameAgent:             {comp: &castai.Component{ReleaseName: "castai-agent"}},
+			components.ComponentNameSpotHandler:       {err: errors.New("timeout")},
+			components.ComponentNameClusterController: {err: errors.New("timeout")},
+		})
+
+		names, err := ResolveNames(ctx, mc)
+		r.NoError(err)
+		r.Len(names.SubcomponentReleases, 1)
+		r.Contains(names.SubcomponentReleases, components.ComponentNameAgent)
+	})
+}

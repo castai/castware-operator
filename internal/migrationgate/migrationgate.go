@@ -14,6 +14,7 @@ package migrationgate
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"helm.sh/helm/v3/pkg/storage/driver"
 
@@ -72,11 +73,17 @@ func ResolveUmbrellaReleaseName(ctx context.Context, c castai.CastAIClient) (str
 }
 
 // ResolveNames queries Mothership for the umbrella and sub-component release
-// names. Missing names are skipped (not stored): a transient Mothership gap
-// for one component disables the probe for that component only, rather than
-// disabling the whole gate. The umbrella release name is required and its
-// lookup failure is surfaced as an error so the umbrella-present check does
-// not silently pass.
+// names. The umbrella release name is required and its lookup failure is
+// surfaced as an error.
+//
+// Sub-component resolution is fail-safe: a sub-component Mothership does not
+// know about (castai.ErrNotFound) is genuinely absent and is skipped — there is
+// no chart to probe. Any other error (timeout, 5xx, auth, ...) means "unknown",
+// not "absent"; to keep the gate from silently passing when it cannot see the
+// sub-component releases, such errors are recorded and surfaced as an error if
+// resolution ends with no resolvable sub-components. This prevents an
+// unreachable-Mothership outage from emptying the release map and letting an
+// umbrella install proceed over individual releases that are actually present.
 func ResolveNames(ctx context.Context, c castai.CastAIClient) (*Names, error) {
 	umbrella, err := c.GetComponentByName(ctx, components.ComponentNameUmbrella)
 	if err != nil {
@@ -91,18 +98,32 @@ func ResolveNames(ctx context.Context, c castai.CastAIClient) (*Names, error) {
 		UmbrellaReleaseName:  umbrella.ReleaseName,
 		SubcomponentReleases: map[string]string{},
 	}
+	var resolveErrs []error
 	for _, sub := range Subcomponents {
 		mc, err := c.GetComponentByName(ctx, sub)
 		if err != nil {
-			// Skip a sub-component Mothership cannot resolve: the probe for it
-			// simply yields no release name, leaving the gate to block on the
-			// others.
+			if errors.Is(err, castai.ErrNotFound) {
+				// Mothership has no record of this component: there is no chart
+				// to probe, so skipping is safe and does not weaken the gate.
+				continue
+			}
+			// Unknown resolution failure: record it so resolution can fail
+			// rather than return an empty map that would let the gate pass.
+			resolveErrs = append(resolveErrs, fmt.Errorf("resolve %s: %w", sub, err))
 			continue
 		}
 		if mc.ReleaseName == "" {
 			mc.ReleaseName = sub
 		}
 		names.SubcomponentReleases[sub] = mc.ReleaseName
+	}
+
+	// If at least one sub-component resolved, the helm probe has something to
+	// inspect and the gate can block on a present release. If none resolved and
+	// we hit unknown errors, fail closed: the gate must not pass when it cannot
+	// see the individual releases it is meant to guard against.
+	if len(names.SubcomponentReleases) == 0 && len(resolveErrs) > 0 {
+		return nil, fmt.Errorf("resolve sub-component release names: %w", errors.Join(resolveErrs...))
 	}
 	return names, nil
 }
