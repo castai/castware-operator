@@ -46,6 +46,7 @@ import (
 	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/internal/config"
 	"github.com/castai/castware-operator/internal/helm"
+	"github.com/castai/castware-operator/internal/migrationgate"
 	"github.com/castai/castware-operator/internal/params"
 	"github.com/castai/castware-operator/internal/rolebindings"
 	"github.com/castai/castware-operator/internal/utils"
@@ -705,6 +706,24 @@ func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, castaiCli
 		return false, nil
 	}
 
+	// Umbrella / individual charts mutual-exclusivity gate. Before creating a
+	// Component CR from a detected release, make sure we are not introducing the
+	// conflicting installation side:
+	//   - an individual component CR must not be created over an installed
+	//     umbrella release;
+	//   - an umbrella CR must not be created over installed individual
+	//     component releases (unless spec.migrate is set, which a scan-created
+	//     CR never sets, so this always blocks by default).
+	if blocked, err := r.scanBlockedByMutualExclusivity(ctx, castaiClient, cluster, componentName); err != nil {
+		// A transient Mothership/helm lookup failure must not wedge the whole
+		// scan; log and skip creating this component so the next scan retries.
+		log.WithError(err).Warnf("Failed to evaluate mutual-exclusivity for %s; skipping", componentName)
+		return false, nil
+	} else if blocked {
+		log.Infof("Skipping creation of %s CR due to umbrella/individual mutual-exclusivity gate", componentName)
+		return false, nil
+	}
+
 	log.Info("Version found for existing component, creating new component resource")
 	values, err := json.Marshal(compVersion.ComponentConfig)
 	if err != nil {
@@ -719,6 +738,43 @@ func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, castaiCli
 	}
 	log.Info("component resource created")
 	return true, nil
+}
+
+// scanBlockedByMutualExclusivity reports whether creating a Component CR for
+// componentName would violate the umbrella / individual charts mutual-
+// exclusivity gate. It blocks when:
+//   - componentName is an individual (non-umbrella) component and the umbrella
+//     helm release is installed;
+//   - componentName is the umbrella component and any individual component
+//     release is installed (a scan-created umbrella CR never sets migrate, so
+//     the default block-on-conflict applies).
+func (r *ClusterReconciler) scanBlockedByMutualExclusivity(ctx context.Context, castaiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, componentName string) (bool, error) {
+	// The gate only applies to the umbrella and its overlapping sub-components;
+	// other components render disjoint workloads and cannot conflict.
+	if !migrationgate.IsUmbrellaOrSubcomponent(componentName) {
+		return false, nil
+	}
+
+	// Umbrella side: refuse if any individual sub-component release is present.
+	// This needs all sub-component release names.
+	if componentName == components.ComponentNameUmbrella {
+		names, err := migrationgate.ResolveNames(ctx, castaiClient)
+		if err != nil {
+			return false, fmt.Errorf("resolve release names: %w", err)
+		}
+		present := migrationgate.InstalledSubcomponents(r.HelmClient, cluster.Namespace, names.SubcomponentReleases)
+		return len(present) > 0, nil
+	}
+
+	// Sub-component side: only the umbrella release name is needed to decide
+	// whether the umbrella is installed. Resolving just the umbrella avoids
+	// re-querying Mothership for the component being scanned (which
+	// detectComponentVersion already queried).
+	umbrellaReleaseName, err := migrationgate.ResolveUmbrellaReleaseName(ctx, castaiClient)
+	if err != nil {
+		return false, fmt.Errorf("resolve umbrella release name: %w", err)
+	}
+	return migrationgate.UmbrellaInstalled(r.HelmClient, cluster.Namespace, umbrellaReleaseName), nil
 }
 
 func (r *ClusterReconciler) detectComponentVersion(ctx context.Context, log logrus.FieldLogger, castaiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, releaseName, componentName string) (*existingComponentVersion, error) {
@@ -869,7 +925,7 @@ func (r *ClusterReconciler) pollActions(ctx context.Context, castAiClient castai
 		switch a := action.Action().(type) {
 		case *castai.ActionInstall:
 			log.Infof("install action: %v", a.Component)
-			actionErr = r.handleInstall(ctx, cluster, a)
+			actionErr = r.handleInstall(ctx, castAiClient, cluster, a)
 		case *castai.ActionUpgrade:
 			log.Infof("upgrade action: %v", a.Component)
 			actionErr = r.handleUpgrade(ctx, cluster, a)
@@ -897,7 +953,7 @@ func (r *ClusterReconciler) pollActions(ctx context.Context, castAiClient castai
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 
-func (r *ClusterReconciler) handleInstall(ctx context.Context, cluster *castwarev1alpha1.Cluster, action *castai.ActionInstall) error {
+func (r *ClusterReconciler) handleInstall(ctx context.Context, castAiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, action *castai.ActionInstall) error {
 	log := r.Log
 	namespacedName := types.NamespacedName{Namespace: cluster.Namespace, Name: action.Component}
 
@@ -917,6 +973,14 @@ func (r *ClusterReconciler) handleInstall(ctx context.Context, cluster *castware
 		return errors.New("component already exists")
 	} else if !apierrors.IsNotFound(err) {
 		log.WithError(err).Error("Failed to get component")
+		return err
+	}
+
+	// Umbrella / individual charts mutual-exclusivity gate. A Mothership install
+	// action must not create the conflicting installation side. The returned
+	// error is acked back to Mothership by pollActions so the conflict is
+	// surfaced there rather than silently double-installing.
+	if err := r.installBlockedByMutualExclusivity(ctx, castAiClient, cluster, action.Component); err != nil {
 		return err
 	}
 
@@ -953,6 +1017,49 @@ func (r *ClusterReconciler) handleInstall(ctx context.Context, cluster *castware
 
 	log.Debugf("creating new component: %v", component)
 	return r.Create(ctx, component)
+}
+
+// installBlockedByMutualExclusivity returns a non-nil error when a Mothership
+// install action for componentName would violate the umbrella / individual
+// charts mutual-exclusivity gate:
+//   - installing an individual (non-umbrella) component while the umbrella
+//     release is installed;
+//   - installing the umbrella component while individual component releases
+//     are installed.
+//
+// A scan-created umbrella CR never carries spec.migrate, and Mothership
+// install actions do not either, so the umbrella side always blocks when
+// individuals are present (the user must set migrate on the CR directly).
+// The umbrella-present side always blocks individual installs.
+func (r *ClusterReconciler) installBlockedByMutualExclusivity(ctx context.Context, castAiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, componentName string) error {
+	// The gate only applies to the umbrella and its overlapping sub-components;
+	// other components render disjoint workloads and cannot conflict.
+	if !migrationgate.IsUmbrellaOrSubcomponent(componentName) {
+		return nil
+	}
+
+	// Umbrella side: refuse if any individual sub-component release is present.
+	if componentName == components.ComponentNameUmbrella {
+		names, err := migrationgate.ResolveNames(ctx, castAiClient)
+		if err != nil {
+			return fmt.Errorf("evaluate umbrella mutual-exclusivity: resolve release names: %w", err)
+		}
+		present := migrationgate.InstalledSubcomponents(r.HelmClient, cluster.Namespace, names.SubcomponentReleases)
+		if len(present) > 0 {
+			return fmt.Errorf("cannot install umbrella component: individual component releases present (%s); set spec.migrate: true on the umbrella CR to take them over", strings.Join(present, ", "))
+		}
+		return nil
+	}
+
+	// Sub-component side: only the umbrella release name is needed.
+	umbrellaReleaseName, err := migrationgate.ResolveUmbrellaReleaseName(ctx, castAiClient)
+	if err != nil {
+		return fmt.Errorf("evaluate umbrella mutual-exclusivity: resolve umbrella release name: %w", err)
+	}
+	if migrationgate.UmbrellaInstalled(r.HelmClient, cluster.Namespace, umbrellaReleaseName) {
+		return fmt.Errorf("cannot install individual component %q: umbrella release %q is installed; use the castai-umbrella chart instead", componentName, umbrellaReleaseName)
+	}
+	return nil
 }
 
 func (r *ClusterReconciler) handleUpgrade(ctx context.Context, cluster *castwarev1alpha1.Cluster, action *castai.ActionUpgrade) error {

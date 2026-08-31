@@ -53,6 +53,14 @@ spec:
                 description: Enabled is set to false if this component should be scaled
                   to zero replicas.
                 type: boolean
+              migrate:
+                default: false
+                description: |-
+                  Migrate opts into taking over from already-installed individual component
+                  releases when installing the umbrella component. Defaults to false, which
+                  blocks an umbrella install while individual component releases are present.
+                  Has no effect on non-umbrella components.
+                type: boolean
               migration:
                 default: ""
                 description: |-

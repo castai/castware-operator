@@ -393,6 +393,108 @@ var _ = Describe("Component Webhook", func() {
 			Expect(validator.ValidateCreate(ctx, obj)).To(BeNil())
 		})
 
+		// Umbrella / individual charts mutual-exclusivity gate (CR-level).
+		// Concurrent umbrella + overlapping component CRs must be rejected; the
+		// only override is spec.migrate: true on the umbrella CR.
+		Context("mutual-exclusivity gate", func() {
+			// Creating Component CRs through k8sClient triggers the real webhook
+			// server, which uses the suite-level mocks. Make them permissive so the
+			// fixture CRs can be persisted; each test's own validator uses the
+			// per-test mocks and asserts on ValidateCreate directly.
+			BeforeEach(func() {
+				webhookLoader.EXPECT().Load(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+			})
+
+			// createExistingComponent creates and persists a Component CR named
+			// after the component (the gate looks CRs up by component name) under
+			// the test cluster, so the gate can detect it. Creating through
+			// k8sClient runs the real webhook; the umbrella fixture carries
+			// tags.readonly=true so it clears the extended-permissions check.
+			createExistingComponent := func(component string) {
+				existing := &castwarev1alpha1.Component{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      component,
+						Namespace: "default",
+					},
+					Spec: castwarev1alpha1.ComponentSpec{
+						Component:   component,
+						Cluster:     clusterName,
+						Enabled:     true,
+						Version:     "0.0.1",
+						ReleaseName: component,
+					},
+				}
+				if component == components.ComponentNameUmbrella {
+					existing.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"readonly":true}}`)}
+				}
+				Expect(k8sClient.Create(ctx, existing)).To(Succeed())
+				DeferCleanup(func() {
+					_ = k8sClient.Delete(ctx, existing)
+				})
+			}
+
+			It("Should deny creating an umbrella CR when an individual component CR exists", func() {
+				By("an individual component CR is present")
+				createExistingComponent(components.ComponentNameAgent)
+
+				umbrella := newTestComponent(GinkgoT())
+				umbrella.Spec.Component = components.ComponentNameUmbrella
+				umbrella.Spec.Cluster = clusterName
+				umbrella.Spec.Migrate = false
+				umbrella.SetNamespace("default")
+				umbrella.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"readonly":true}}`)}
+
+				chartLoader.EXPECT().Load(gomock.Any(), gomock.Any())
+
+				_, err := validator.ValidateCreate(ctx, umbrella)
+				Expect(err).Error().To(MatchError(ContainSubstring("umbrella component cannot be created while individual component CR \"castai-agent\" exists")))
+			})
+
+			It("Should admit creating an umbrella CR when an individual component CR exists and migrate is true", func() {
+				By("migrate opts into the takeover")
+				createExistingComponent(components.ComponentNameSpotHandler)
+
+				umbrella := newTestComponent(GinkgoT())
+				umbrella.Spec.Component = components.ComponentNameUmbrella
+				umbrella.Spec.Cluster = clusterName
+				umbrella.Spec.Migrate = true
+				umbrella.SetNamespace("default")
+				umbrella.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"readonly":true}}`)}
+
+				chartLoader.EXPECT().Load(gomock.Any(), gomock.Any())
+
+				Expect(validator.ValidateCreate(ctx, umbrella)).To(BeNil())
+			})
+
+			It("Should admit creating an umbrella CR when no individual component CRs exist", func() {
+				By("no conflicting CRs present")
+				umbrella := newTestComponent(GinkgoT())
+				umbrella.Spec.Component = components.ComponentNameUmbrella
+				umbrella.Spec.Cluster = clusterName
+				umbrella.SetNamespace("default")
+				umbrella.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"readonly":true}}`)}
+
+				chartLoader.EXPECT().Load(gomock.Any(), gomock.Any())
+
+				Expect(validator.ValidateCreate(ctx, umbrella)).To(BeNil())
+			})
+
+			It("Should deny creating an individual component CR when an umbrella CR exists", func() {
+				By("umbrella CR is present")
+				createExistingComponent(components.ComponentNameUmbrella)
+
+				agent := newTestComponent(GinkgoT())
+				agent.Spec.Component = components.ComponentNameAgent
+				agent.Spec.Cluster = clusterName
+				agent.SetNamespace("default")
+
+				chartLoader.EXPECT().Load(gomock.Any(), gomock.Any())
+
+				_, err := validator.ValidateCreate(ctx, agent)
+				Expect(err).Error().To(MatchError(ContainSubstring("umbrella component CR exists")))
+			})
+		})
+
 		It("Should deny creation if component requires extended permissions and they are enabled", func() {
 			By("simulating a valid creation scenario")
 			obj.Spec.Component = components.ComponentNameClusterController
