@@ -1727,4 +1727,72 @@ func TestReconcileMutualExclusivityGate(t *testing.T) {
 		progressing := meta.FindStatusCondition(actualComponent.Status.Conditions, typeProgressingComponent)
 		r.Nil(progressing, "component must not be marked as progressing when the gate fails closed")
 	})
+
+	t.Run("per-component CR clears UmbrellaConflict with a NotPresent reason when the umbrella is removed", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, components.ComponentNameAgent)
+		testComponent.Spec.Component = components.ComponentNameAgent
+		testComponent.Spec.ReleaseName = components.ComponentNameAgent
+
+		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, testComponent)
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+
+		// First reconcile: the umbrella is installed, so the component is
+		// forced read-only with an UmbrellaConflict=True condition.
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+			Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil)
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: testComponent.Namespace, ReleaseName: components.ComponentNameUmbrella,
+		}).Return(&release.Release{Name: components.ComponentNameUmbrella, Info: &release.Info{Status: release.StatusDeployed}}, nil)
+		_, err := testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+
+		var afterFirst castwarev1alpha1.Component
+		r.NoError(testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &afterFirst))
+		r.True(afterFirst.Spec.Readonly)
+		conflict := meta.FindStatusCondition(afterFirst.Status.Conditions, typeUmbrellaConflict)
+		r.NotNil(conflict)
+		r.Equal(metav1.ConditionTrue, conflict.Status)
+		r.Equal(reasonUmbrellaReleasePresent, conflict.Reason)
+
+		// Revert the read-only patch so the gate re-runs on the next pass (the
+		// gate only fires when !Readonly). This mirrors an operator that was
+		// forced read-only, then the umbrella was removed and management resumed.
+		updated := afterFirst.DeepCopy()
+		updated.Spec.Readonly = false
+		r.NoError(testOps.sut.Patch(ctx, updated, client.MergeFrom(&afterFirst)))
+
+		// Second reconcile: the umbrella release is now gone. The stale conflict
+		// condition must clear to False with a reason reflecting the umbrella no
+		// longer being present (not the contradictory ...Present reason).
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+			Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil)
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: testComponent.Namespace, ReleaseName: components.ComponentNameUmbrella,
+		}).Return(nil, driver.ErrReleaseNotFound)
+		// The gate clears the condition and lets the reconcile proceed to
+		// install the agent (umbrella no longer blocks it).
+		testOps.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), testCluster.Spec.Cluster.ClusterID, gomock.Any()).Return(nil).AnyTimes()
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: testComponent.Namespace, ReleaseName: components.ComponentNameAgent,
+		}).Return(nil, driver.ErrReleaseNotFound)
+		testOps.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).Return(&release.Release{
+			Name:  components.ComponentNameAgent,
+			Info:  &release.Info{Status: release.StatusDeployed},
+			Chart: &chart.Chart{Metadata: &chart.Metadata{Version: "v0.1.1"}},
+		}, nil)
+		_, err = testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+
+		var afterSecond castwarev1alpha1.Component
+		r.NoError(testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &afterSecond))
+		cleared := meta.FindStatusCondition(afterSecond.Status.Conditions, typeUmbrellaConflict)
+		r.NotNil(cleared, "UmbrellaConflict condition must still be present (now False)")
+		r.Equal(metav1.ConditionFalse, cleared.Status)
+		r.Equal(reasonUmbrellaReleaseNotPresent, cleared.Reason, "cleared condition must use a NotPresent reason, not a Present one")
+	})
 }

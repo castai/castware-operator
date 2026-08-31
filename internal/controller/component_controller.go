@@ -69,7 +69,14 @@ const (
 	typeUmbrellaConflict = "UmbrellaConflict"
 
 	reasonUmbrellaReleasePresent    = "UmbrellaReleasePresent"
+	reasonUmbrellaReleaseNotPresent = "UmbrellaReleaseNotPresent"
 	reasonIndividualReleasesPresent = "IndividualReleasesPresent"
+	reasonIndividualReleasesAbsent  = "IndividualReleasesAbsent"
+	// reasonUmbrellaInstallRefused marks an umbrella install blocked by the
+	// mutual-exclusivity gate (individual releases present, no spec.migrate).
+	// Distinct from reasonInstallFailed, which means a Helm install attempt
+	// failed; a refused install never ran.
+	reasonUmbrellaInstallRefused = "UmbrellaInstallRefused"
 )
 
 var ErrNothingToRollback = errors.New("nothing to rollback")
@@ -605,10 +612,15 @@ func (r *ComponentReconciler) forceReadonlyIfUmbrellaInstalled(ctx context.Conte
 			meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
 				Type:    typeUmbrellaConflict,
 				Status:  metav1.ConditionFalse,
-				Reason:  reasonUmbrellaReleasePresent,
+				Reason:  reasonUmbrellaReleaseNotPresent,
 				Message: "Umbrella release no longer present; component management resumed",
 			})
 			if err := r.updateStatus(ctx, component); err != nil {
+				return false, err
+			}
+			// updateStatus bumped the server-side ResourceVersion; re-fetch so
+			// the caller's object is current for subsequent (non-retry) writes.
+			if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, component); err != nil {
 				return false, err
 			}
 		}
@@ -661,10 +673,15 @@ func (r *ComponentReconciler) refuseUmbrellaIfIndividualsPresent(ctx context.Con
 			meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
 				Type:    typeUmbrellaConflict,
 				Status:  metav1.ConditionFalse,
-				Reason:  reasonIndividualReleasesPresent,
+				Reason:  reasonIndividualReleasesAbsent,
 				Message: "No individual component releases present; umbrella install may proceed",
 			})
 			if err := r.updateStatus(ctx, component); err != nil {
+				return false, err
+			}
+			// updateStatus bumped the server-side ResourceVersion; re-fetch so
+			// the caller's object is current for subsequent (non-retry) writes.
+			if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, component); err != nil {
 				return false, err
 			}
 		}
@@ -684,6 +701,11 @@ func (r *ComponentReconciler) refuseUmbrellaIfIndividualsPresent(ctx context.Con
 			if err := r.updateStatus(ctx, component); err != nil {
 				return false, err
 			}
+			// updateStatus bumped the server-side ResourceVersion; re-fetch so
+			// the caller's object is current for subsequent (non-retry) writes.
+			if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, component); err != nil {
+				return false, err
+			}
 		}
 		return false, nil
 	}
@@ -698,7 +720,7 @@ func (r *ComponentReconciler) refuseUmbrellaIfIndividualsPresent(ctx context.Con
 	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
 		Type:    typeAvailableComponent,
 		Status:  metav1.ConditionFalse,
-		Reason:  reasonInstallFailed,
+		Reason:  reasonUmbrellaInstallRefused,
 		Message: "Umbrella install refused due to individual component releases",
 	})
 	if err := r.updateStatus(ctx, component); err != nil {
