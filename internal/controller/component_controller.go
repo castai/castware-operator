@@ -336,8 +336,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			if cond := meta.FindStatusCondition(component.Status.Conditions, typeProgressingComponent); cond != nil {
 				cond.LastTransitionTime = metav1.Now()
 				if err := r.updateStatus(ctx, component); err != nil {
-					log.WithError(err).Error("Failed to refresh progressing condition after rollback")
-					return ctrl.Result{RequeueAfter: time.Minute}, nil
+					return ctrl.Result{}, fmt.Errorf("refresh progressing condition after rollback: %w", err)
 				}
 			}
 
