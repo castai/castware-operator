@@ -1005,6 +1005,13 @@ func TestRollbackTimeoutReopensProgressDeadline(t *testing.T) {
 
 		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, testComponent)
 
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+			Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).AnyTimes()
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   testComponent.Namespace,
+			ReleaseName: components.ComponentNameUmbrella,
+		}).Return(nil, driver.ErrReleaseNotFound).AnyTimes()
+
 		// After a rollback the newest revision is the rolled-back content, Deployed. Return that
 		// for both the "current" and "previous" GetRelease lookups; version >= 2 so rollback is allowed.
 		testOps.mockHelm.EXPECT().GetRelease(gomock.Any()).DoAndReturn(
