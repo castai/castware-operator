@@ -39,11 +39,13 @@ import (
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
 var (
-	ctx       context.Context
-	cancel    context.CancelFunc
-	k8sClient client.Client
-	cfg       *rest.Config
-	testEnv   *envtest.Environment
+	ctx           context.Context
+	cancel        context.CancelFunc
+	k8sClient     client.Client
+	cfg           *rest.Config
+	testEnv       *envtest.Environment
+	webhookHelm   *mock_helm.MockClient
+	webhookLoader *mock_helm.MockChartLoader
 )
 
 func TestAPIs(t *testing.T) {
@@ -113,10 +115,10 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	ctrl := gomock.NewController(GinkgoT())
-	chartLoader := mock_helm.NewMockChartLoader(ctrl)
-	helmClient := mock_helm.NewMockClient(ctrl)
+	webhookLoader = mock_helm.NewMockChartLoader(ctrl)
+	webhookHelm = mock_helm.NewMockClient(ctrl)
 
-	err = SetupComponentWebhookWithManager(mgr, logrus.New(), chartLoader, helmClient)
+	err = SetupComponentWebhookWithManager(mgr, logrus.New(), webhookLoader, webhookHelm)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:webhook

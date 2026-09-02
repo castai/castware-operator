@@ -56,6 +56,13 @@ type ComponentSpec struct {
 	//+kubebuilder:default:=false
 	Readonly bool `json:"readonly,omitempty"`
 
+	// Migrate opts into taking over from already-installed individual component
+	// releases when installing the umbrella component. Defaults to false, which
+	// blocks an umbrella install while individual component releases are present.
+	// Has no effect on non-umbrella components.
+	//+kubebuilder:default:=false
+	Migrate bool `json:"migrate,omitempty"`
+
 	// ReleaseName is the helm release name. If empty, defaults to Component name.
 	ReleaseName string `json:"releaseName,omitempty"`
 }

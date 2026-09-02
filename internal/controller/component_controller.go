@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -31,6 +32,7 @@ import (
 	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/internal/config"
 	"github.com/castai/castware-operator/internal/helm"
+	"github.com/castai/castware-operator/internal/migrationgate"
 	"github.com/castai/castware-operator/internal/params"
 	"github.com/castai/castware-operator/internal/rolebindings"
 	"github.com/castai/castware-operator/internal/utils"
@@ -58,6 +60,23 @@ const (
 	reasonUpgradeFailed   = "UpgradeFailed"
 	reasonUpgradeStarted  = "UpgradeStarted"
 	reasonMigrationFailed = "MigrationFailed"
+
+	// typeUmbrellaConflict is set when an umbrella / individual components
+	// mutual-exclusivity conflict is detected. It is set in both directions:
+	// a per-component CR forced read-only because the umbrella release is
+	// installed, and an umbrella CR whose install was refused because
+	// individual component releases are present.
+	typeUmbrellaConflict = "UmbrellaConflict"
+
+	reasonUmbrellaReleasePresent    = "UmbrellaReleasePresent"
+	reasonUmbrellaReleaseNotPresent = "UmbrellaReleaseNotPresent"
+	reasonIndividualReleasesPresent = "IndividualReleasesPresent"
+	reasonIndividualReleasesAbsent  = "IndividualReleasesAbsent"
+	// reasonUmbrellaInstallRefused marks an umbrella install blocked by the
+	// mutual-exclusivity gate (individual releases present, no spec.migrate).
+	// Distinct from reasonInstallFailed, which means a Helm install attempt
+	// failed; a refused install never ran.
+	reasonUmbrellaInstallRefused = "UmbrellaInstallRefused"
 )
 
 var ErrNothingToRollback = errors.New("nothing to rollback")
@@ -176,6 +195,26 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		cluster.Spec.Cluster == nil || cluster.Spec.Cluster.ClusterID == "" {
 		log.Info("Waiting for cluster to be available")
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+	}
+
+	// Umbrella / individual charts mutual-exclusivity gate (per-component side):
+	// if the umbrella release is installed, an individual component CR must not
+	// install alongside it. The CR is forced read-only (reusing the existing
+	// readonly path below) and an UmbrellaConflict condition is set so the
+	// conflict is visible. Only applies to overlapping sub-components that are
+	// not already read-only or being managed as a helm migration.
+	if migrationgate.IsUmbrellaOrSubcomponent(component.Spec.Component) &&
+		component.Spec.Component != components.ComponentNameUmbrella &&
+		!component.Spec.Readonly &&
+		component.Spec.Migration != castwarev1alpha1.ComponentMigrationHelm {
+		blocked, err := r.forceReadonlyIfUmbrellaInstalled(ctx, log, component, cluster)
+		if err != nil {
+			log.WithError(err).Error("Failed to check umbrella mutual-exclusivity")
+			return ctrl.Result{RequeueAfter: time.Minute}, nil
+		}
+		if blocked {
+			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+		}
 	}
 
 	if !controllerutil.ContainsFinalizer(component, ComponentFinalizer) {
@@ -311,6 +350,24 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 		// TODO: (after mvp) if component is already installed scale it to 0
 		log.Info("Component is disabled, not installing it")
+	}
+
+	// Umbrella / individual charts mutual-exclusivity gate (umbrella side):
+	// refuse to install the umbrella component while individual component
+	// releases are present, unless spec.migrate is set to opt into the
+	// takeover. Applies only to a fresh umbrella install (no current version,
+	// not already progressing).
+	if component.Spec.Component == components.ComponentNameUmbrella &&
+		component.Status.CurrentVersion == "" &&
+		!meta.IsStatusConditionTrue(component.Status.Conditions, typeProgressingComponent) {
+		blocked, err := r.refuseUmbrellaIfIndividualsPresent(ctx, log, component, cluster)
+		if err != nil {
+			log.WithError(err).Error("Failed to check umbrella mutual-exclusivity")
+			return ctrl.Result{RequeueAfter: time.Minute}, nil
+		}
+		if blocked {
+			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+		}
 	}
 
 	// If CurrentVersion is empty the component has to be installed for the first time.
@@ -518,6 +575,159 @@ func (r *ComponentReconciler) umbrellaValues(component *castwarev1alpha1.Compone
 	}
 
 	return values, nil
+}
+
+// forceReadonlyIfUmbrellaInstalled enforces the umbrella / individual charts
+// mutual-exclusivity gate for a per-component (non-umbrella) CR: if the
+// umbrella helm release is installed, the CR is patched to read-only and an
+// UmbrellaConflict condition is set, so it will not install alongside the
+// umbrella. Returns blocked=true when it forced read-only. When the umbrella is
+// not installed it clears any stale UmbrellaConflict condition.
+//
+// This is the only guard that detects an installed umbrella *release* against a
+// user-created individual CR (the webhook only checks for an umbrella CR, and
+// the cluster controller's scan/install gates only run for scan- and
+// Mothership-action-created CRs). It is therefore fail-safe: a Mothership outage
+// that prevents resolving the umbrella release name must surface an error so the
+// reconcile requeues rather than letting the individual CR install alongside an
+// umbrella release it could not see.
+func (r *ComponentReconciler) forceReadonlyIfUmbrellaInstalled(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (bool, error) {
+	castAiClient, err := r.getCastaiClient(ctx, cluster)
+	if err != nil {
+		// Cannot reach Mothership to resolve the umbrella release name. Fail
+		// closed: the caller requeues without installing, retrying on the next
+		// pass, rather than silently letting the individual CR install.
+		return false, fmt.Errorf("get castai client for umbrella mutual-exclusivity check: %w", err)
+	}
+	umbrellaReleaseName, err := migrationgate.ResolveUmbrellaReleaseName(ctx, castAiClient)
+	if err != nil {
+		return false, fmt.Errorf("resolve umbrella release name: %w", err)
+	}
+
+	if !migrationgate.UmbrellaInstalled(r.HelmClient, component.Namespace, umbrellaReleaseName) {
+		// Umbrella is not installed: clear any stale conflict condition left
+		// from a previous detection so the CR is not stuck reporting a
+		// conflict that no longer holds.
+		if meta.FindStatusCondition(component.Status.Conditions, typeUmbrellaConflict) != nil {
+			meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+				Type:    typeUmbrellaConflict,
+				Status:  metav1.ConditionFalse,
+				Reason:  reasonUmbrellaReleaseNotPresent,
+				Message: "Umbrella release no longer present; component management resumed",
+			})
+			if err := r.updateStatus(ctx, component); err != nil {
+				return false, err
+			}
+			// updateStatus bumped the server-side ResourceVersion; re-fetch so
+			// the caller's object is current for subsequent (non-retry) writes.
+			if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, component); err != nil {
+				return false, err
+			}
+		}
+		return false, nil
+	}
+
+	log.Warn("Umbrella release is installed; forcing component read-only to avoid duplicate workloads")
+	updatedComponent := component.DeepCopy()
+	updatedComponent.Spec.Readonly = true
+	if err := r.Patch(ctx, updatedComponent, client.MergeFrom(component)); err != nil {
+		log.WithError(err).Error("Failed to patch component read-only")
+		return false, err
+	}
+
+	// Re-fetch on the updated object so the status reflects the patched spec.
+	component.Spec.Readonly = true
+	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+		Type:    typeUmbrellaConflict,
+		Status:  metav1.ConditionTrue,
+		Reason:  reasonUmbrellaReleasePresent,
+		Message: fmt.Sprintf("Umbrella release %q is installed; component set read-only. Remove the umbrella chart to manage this component individually", umbrellaReleaseName),
+	})
+	if err := r.updateStatus(ctx, component); err != nil {
+		log.WithError(err).Error("Failed to set UmbrellaConflict status")
+		return false, err
+	}
+	return true, nil
+}
+
+// refuseUmbrellaIfIndividualsPresent enforces the umbrella side of the gate: it
+// refuses to install the umbrella component while individual component releases
+// are present, unless spec.migrate is set to opt into the takeover. Returns
+// blocked=true when the install was refused (an UmbrellaConflict condition is
+// set and installComponent must not run). When no individuals are present it
+// clears any stale UmbrellaConflict condition.
+func (r *ComponentReconciler) refuseUmbrellaIfIndividualsPresent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (bool, error) {
+	castAiClient, err := r.getCastaiClient(ctx, cluster)
+	if err != nil {
+		return false, err
+	}
+	names, err := migrationgate.ResolveNames(ctx, castAiClient)
+	if err != nil {
+		return false, fmt.Errorf("resolve sub-component release names: %w", err)
+	}
+
+	present := migrationgate.InstalledSubcomponents(r.HelmClient, component.Namespace, names.SubcomponentReleases)
+	if len(present) == 0 {
+		// No individual releases present: clear any stale conflict condition.
+		if meta.FindStatusCondition(component.Status.Conditions, typeUmbrellaConflict) != nil {
+			meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+				Type:    typeUmbrellaConflict,
+				Status:  metav1.ConditionFalse,
+				Reason:  reasonIndividualReleasesAbsent,
+				Message: "No individual component releases present; umbrella install may proceed",
+			})
+			if err := r.updateStatus(ctx, component); err != nil {
+				return false, err
+			}
+			// updateStatus bumped the server-side ResourceVersion; re-fetch so
+			// the caller's object is current for subsequent (non-retry) writes.
+			if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, component); err != nil {
+				return false, err
+			}
+		}
+		return false, nil
+	}
+
+	if component.Spec.Migrate {
+		log.Warnf("Individual component releases present (%s) but spec.migrate is true; proceeding with umbrella takeover", strings.Join(present, ", "))
+		// Clear any stale refusal condition since the install is now allowed.
+		if meta.FindStatusCondition(component.Status.Conditions, typeUmbrellaConflict) != nil {
+			meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+				Type:    typeUmbrellaConflict,
+				Status:  metav1.ConditionFalse,
+				Reason:  reasonIndividualReleasesPresent,
+				Message: "spec.migrate is true; umbrella takeover may proceed",
+			})
+			if err := r.updateStatus(ctx, component); err != nil {
+				return false, err
+			}
+			// updateStatus bumped the server-side ResourceVersion; re-fetch so
+			// the caller's object is current for subsequent (non-retry) writes.
+			if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, component); err != nil {
+				return false, err
+			}
+		}
+		return false, nil
+	}
+
+	log.Warnf("Refusing umbrella install: individual component releases present (%s) and spec.migrate is not set", strings.Join(present, ", "))
+	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+		Type:    typeUmbrellaConflict,
+		Status:  metav1.ConditionTrue,
+		Reason:  reasonIndividualReleasesPresent,
+		Message: fmt.Sprintf("Individual component releases present (%s); set spec.migrate: true to take them over with the umbrella chart", strings.Join(present, ", ")),
+	})
+	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+		Type:    typeAvailableComponent,
+		Status:  metav1.ConditionFalse,
+		Reason:  reasonUmbrellaInstallRefused,
+		Message: "Umbrella install refused due to individual component releases",
+	})
+	if err := r.updateStatus(ctx, component); err != nil {
+		log.WithError(err).Error("Failed to set UmbrellaConflict status")
+		return false, err
+	}
+	return true, nil
 }
 
 func (r *ComponentReconciler) shouldCreateNamespace(ctx context.Context, component *castwarev1alpha1.Component) (bool, error) {

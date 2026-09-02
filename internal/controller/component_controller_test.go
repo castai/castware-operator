@@ -29,6 +29,7 @@ import (
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
 	"github.com/castai/castware-operator/internal/castai"
 	mock_castai "github.com/castai/castware-operator/internal/castai/mock"
+	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/internal/config"
 	"github.com/castai/castware-operator/internal/helm"
 	mock_helm "github.com/castai/castware-operator/internal/helm/mock"
@@ -758,6 +759,21 @@ func newComponentTestOpsWithCastAIClient(t *testing.T, objs ...client.Object) *c
 	return opts
 }
 
+// expectUmbrellaNotInstalledComponent wires up the mock expectations for the
+// component reconciler's umbrella mutual-exclusivity probe when a
+// sub-component CR is reconciled and the umbrella release is NOT installed:
+// the reconciler resolves the umbrella release name from Mothership, then
+// probes helm and finds no release. Tests reconciling a sub-component with a
+// castai mock must call this so the gate's extra mock calls are expected.
+func expectUmbrellaNotInstalledComponent(ops *componentTestOps, namespace string) {
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil)
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+		Namespace:   namespace,
+		ReleaseName: components.ComponentNameUmbrella,
+	}).Return(nil, driver.ErrReleaseNotFound)
+}
+
 func TestGenerationBasedUpgrade(t *testing.T) {
 	t.Run("should trigger upgrade when spec.values change but version stays the same", func(t *testing.T) {
 		t.Parallel()
@@ -1297,6 +1313,10 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 
 		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, testComponent, apiKeySecret, roleBinding, clusterRoleBinding)
 
+		// spot-handler is an umbrella sub-component, so the reconciler probes
+		// whether the umbrella release is installed before managing it.
+		expectUmbrellaNotInstalledComponent(testOps, testComponent.Namespace)
+
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 			Namespace:   testComponent.Namespace,
 			ReleaseName: testComponent.Spec.ReleaseName,
@@ -1362,7 +1382,11 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 			Reason: reasonInstalled,
 		})
 
-		testOps := newComponentTestOps(t, testCluster, testComponent)
+		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, testComponent)
+
+		// spot-handler is an umbrella sub-component, so the reconciler probes
+		// whether the umbrella release is installed before managing it.
+		expectUmbrellaNotInstalledComponent(testOps, testComponent.Namespace)
 
 		// Expect GetRelease call for detectAndReportHelmRevisionChange
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
@@ -1428,7 +1452,11 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 			},
 		}
 
-		testOps := newComponentTestOps(t, testCluster, testComponent, roleBinding, clusterRoleBinding)
+		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, testComponent, roleBinding, clusterRoleBinding)
+
+		// spot-handler is an umbrella sub-component, so the reconciler probes
+		// whether the umbrella release is installed before managing it.
+		expectUmbrellaNotInstalledComponent(testOps, testComponent.Namespace)
 
 		// Single GetRelease call in reconcile loop (cached for both phase2 check and revision check)
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
@@ -1460,5 +1488,311 @@ func TestReconcileSpotHandlerPhase2Permissions(t *testing.T) {
 		if progressingCondition != nil {
 			r.Equal(metav1.ConditionFalse, progressingCondition.Status)
 		}
+	})
+}
+
+// TestReconcileMutualExclusivityGate exercises the umbrella / individual charts
+// mutual-exclusivity guard in the ComponentReconciler. The umbrella chart
+// (castai-umbrella) renders the same workloads as the individual component
+// charts; running both produces duplicate Deployments and conflicting Helm
+// ownership, so ambiguity resolves to blocking.
+func TestReconcileMutualExclusivityGate(t *testing.T) {
+	t.Parallel()
+
+	// expectUmbrellaInstalledComponent sets up the Mothership + helm mock
+	// expectations used by forceReadonlyIfUmbrellaInstalled when the umbrella
+	// release IS installed: resolve the umbrella release name, then find a
+	// deployed umbrella release in helm.
+	expectUmbrellaInstalledComponent := func(ops *componentTestOps, namespace string) {
+		ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+			Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil)
+		ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   namespace,
+			ReleaseName: components.ComponentNameUmbrella,
+		}).Return(&release.Release{
+			Name: components.ComponentNameUmbrella,
+			Info: &release.Info{Status: release.StatusDeployed},
+		}, nil)
+	}
+
+	t.Run("per-component CR while umbrella installed is forced read-only with UmbrellaConflict and not installed", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, components.ComponentNameAgent)
+		testComponent.Spec.Component = components.ComponentNameAgent
+		testComponent.Spec.ReleaseName = components.ComponentNameAgent
+
+		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, testComponent)
+
+		// The gate resolves the umbrella release name from Mothership and finds
+		// it installed in helm, so the component is forced read-only.
+		expectUmbrellaInstalledComponent(testOps, testComponent.Namespace)
+
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+		result, err := testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+		// Blocked: requeue with a backoff, no install attempted.
+		r.NotEqual(time.Duration(0), result.RequeueAfter)
+
+		var actualComponent castwarev1alpha1.Component
+		r.NoError(testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent))
+
+		// Component was forced read-only.
+		r.True(actualComponent.Spec.Readonly, "component must be forced read-only when the umbrella is installed")
+
+		// UmbrellaConflict condition is set to True.
+		conflict := meta.FindStatusCondition(actualComponent.Status.Conditions, typeUmbrellaConflict)
+		r.NotNil(conflict, "UmbrellaConflict condition must be set")
+		r.Equal(metav1.ConditionTrue, conflict.Status)
+		r.Equal(reasonUmbrellaReleasePresent, conflict.Reason)
+
+		// No progressing/available-install state was recorded: the install path
+		// never ran.
+		progressing := meta.FindStatusCondition(actualComponent.Status.Conditions, typeProgressingComponent)
+		r.Nil(progressing, "component must not be marked as progressing when blocked by the gate")
+	})
+
+	t.Run("umbrella CR while individual releases present and migrate is not set is refused with a condition", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		umbrella := newTestComponent(t, testCluster.Name, components.ComponentNameUmbrella)
+		umbrella.Spec.Component = components.ComponentNameUmbrella
+		umbrella.Spec.ReleaseName = components.ComponentNameUmbrella
+		umbrella.Spec.Migrate = false
+		// Fresh install: no current version, not progressing.
+		umbrella.Status.CurrentVersion = ""
+		// values are not needed for the gate path (refusal happens before installComponent).
+
+		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, umbrella)
+
+		// refuseUmbrellaIfIndividualsPresent resolves the umbrella + all
+		// sub-component release names from Mothership, then probes helm. The
+		// castai-agent release is found deployed, so the install is refused.
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+			Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil)
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameAgent).
+			Return(&castai.Component{Name: components.ComponentNameAgent, ReleaseName: components.ComponentNameAgent}, nil)
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
+			Return(&castai.Component{Name: components.ComponentNameSpotHandler, ReleaseName: components.ComponentNameSpotHandler}, nil)
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameClusterController).
+			Return(&castai.Component{Name: components.ComponentNameClusterController, ReleaseName: components.ComponentNameClusterController}, nil)
+
+		// castai-agent is installed (the conflict); the other two are not.
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: umbrella.Namespace, ReleaseName: components.ComponentNameAgent,
+		}).Return(&release.Release{Name: components.ComponentNameAgent, Info: &release.Info{Status: release.StatusDeployed}}, nil)
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: umbrella.Namespace, ReleaseName: components.ComponentNameSpotHandler,
+		}).Return(nil, driver.ErrReleaseNotFound)
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: umbrella.Namespace, ReleaseName: components.ComponentNameClusterController,
+		}).Return(nil, driver.ErrReleaseNotFound)
+
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: umbrella.Name, Namespace: umbrella.Namespace}}
+		result, err := testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+		r.NotEqual(time.Duration(0), result.RequeueAfter)
+
+		var actualComponent castwarev1alpha1.Component
+		r.NoError(testOps.sut.Get(ctx, client.ObjectKey{Name: umbrella.Name, Namespace: umbrella.Namespace}, &actualComponent))
+
+		// Umbrella install was refused: UmbrellaConflict=True and Available=False.
+		conflict := meta.FindStatusCondition(actualComponent.Status.Conditions, typeUmbrellaConflict)
+		r.NotNil(conflict, "UmbrellaConflict condition must be set")
+		r.Equal(metav1.ConditionTrue, conflict.Status)
+		r.Equal(reasonIndividualReleasesPresent, conflict.Reason)
+
+		available := meta.FindStatusCondition(actualComponent.Status.Conditions, typeAvailableComponent)
+		r.NotNil(available, "Available condition must be set")
+		r.Equal(metav1.ConditionFalse, available.Status)
+
+		// The install path never ran.
+		progressing := meta.FindStatusCondition(actualComponent.Status.Conditions, typeProgressingComponent)
+		r.Nil(progressing, "umbrella must not be marked as progressing when refused by the gate")
+	})
+
+	t.Run("umbrella CR with migrate true proceeds to install despite individual releases present", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		umbrella := newTestComponent(t, testCluster.Name, components.ComponentNameUmbrella)
+		umbrella.Spec.Component = components.ComponentNameUmbrella
+		umbrella.Spec.ReleaseName = components.ComponentNameUmbrella
+		umbrella.Spec.Migrate = true
+		umbrella.Spec.Version = "0.1.0"
+		umbrella.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"readonly":true}}`)}
+		umbrella.Status.CurrentVersion = ""
+
+		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, umbrella)
+
+		// refuseUmbrellaIfIndividualsPresent resolves all release names and
+		// finds castai-agent installed, but spec.migrate is true so the install
+		// is allowed to proceed (blocked=false).
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+			Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil)
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameAgent).
+			Return(&castai.Component{Name: components.ComponentNameAgent, ReleaseName: components.ComponentNameAgent}, nil)
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
+			Return(&castai.Component{Name: components.ComponentNameSpotHandler, ReleaseName: components.ComponentNameSpotHandler}, nil)
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameClusterController).
+			Return(&castai.Component{Name: components.ComponentNameClusterController, ReleaseName: components.ComponentNameClusterController}, nil)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: umbrella.Namespace, ReleaseName: components.ComponentNameAgent,
+		}).Return(&release.Release{Name: components.ComponentNameAgent, Info: &release.Info{Status: release.StatusDeployed}}, nil)
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: umbrella.Namespace, ReleaseName: components.ComponentNameSpotHandler,
+		}).Return(nil, driver.ErrReleaseNotFound)
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: umbrella.Namespace, ReleaseName: components.ComponentNameClusterController,
+		}).Return(nil, driver.ErrReleaseNotFound)
+
+		// installComponent: record progressing, probe the umbrella release
+		// (not found -> install), then install the chart. The deferred
+		// recordActionResult on success records an OK result.
+		testOps.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), testCluster.Spec.Cluster.ClusterID, gomock.Any()).Return(nil).AnyTimes()
+
+		helmRelease := &release.Release{
+			Name:  components.ComponentNameUmbrella,
+			Info:  &release.Info{Status: release.StatusDeployed},
+			Chart: &chart.Chart{Metadata: &chart.Metadata{Version: "0.1.0"}},
+		}
+		// installComponent GetRelease for the umbrella release (not found -> install).
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: umbrella.Namespace, ReleaseName: components.ComponentNameUmbrella,
+		}).Return(nil, driver.ErrReleaseNotFound)
+		testOps.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).Return(helmRelease, nil)
+
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: umbrella.Name, Namespace: umbrella.Namespace}}
+		_, err := testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+
+		var actualComponent castwarev1alpha1.Component
+		r.NoError(testOps.sut.Get(ctx, client.ObjectKey{Name: umbrella.Name, Namespace: umbrella.Namespace}, &actualComponent))
+
+		// Install proceeded: progressing condition is set to installing.
+		progressing := meta.FindStatusCondition(actualComponent.Status.Conditions, typeProgressingComponent)
+		r.NotNil(progressing, "umbrella with migrate=true must proceed to install")
+		r.Equal(metav1.ConditionTrue, progressing.Status)
+		r.Equal(progressingReasonInstalling, progressing.Reason)
+
+		// No UmbrellaConflict condition is left blocking: with migrate=true the
+		// gate clears any stale refusal.
+		conflict := meta.FindStatusCondition(actualComponent.Status.Conditions, typeUmbrellaConflict)
+		if conflict != nil {
+			r.Equal(metav1.ConditionFalse, conflict.Status, "UmbrellaConflict must not be True when migrate allowed the install")
+		}
+	})
+
+	t.Run("per-component CR fails closed when Mothership cannot resolve the umbrella release name", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, components.ComponentNameAgent)
+		testComponent.Spec.Component = components.ComponentNameAgent
+		testComponent.Spec.ReleaseName = components.ComponentNameAgent
+
+		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, testComponent)
+
+		// Mothership is unreachable for the umbrella lookup, so the gate cannot
+		// determine whether the umbrella release is installed. It must fail
+		// closed: surface an error so the reconcile requeues instead of letting
+		// the individual CR install alongside an umbrella release it could not
+		// see.
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+			Return(nil, errors.New("mothership timeout"))
+
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+		result, err := testOps.sut.Reconcile(ctx, req)
+		// The error path requeues with a backoff and returns nil (no install).
+		r.NoError(err)
+		r.NotEqual(time.Duration(0), result.RequeueAfter)
+
+		var actualComponent castwarev1alpha1.Component
+		r.NoError(testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &actualComponent))
+
+		// The component was NOT forced read-only (we couldn't confirm a conflict).
+		r.False(actualComponent.Spec.Readonly, "component must not be forced read-only when the gate cannot resolve the umbrella")
+		// No install proceeded.
+		progressing := meta.FindStatusCondition(actualComponent.Status.Conditions, typeProgressingComponent)
+		r.Nil(progressing, "component must not be marked as progressing when the gate fails closed")
+	})
+
+	t.Run("per-component CR clears UmbrellaConflict with a NotPresent reason when the umbrella is removed", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, components.ComponentNameAgent)
+		testComponent.Spec.Component = components.ComponentNameAgent
+		testComponent.Spec.ReleaseName = components.ComponentNameAgent
+
+		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, testComponent)
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}}
+
+		// First reconcile: the umbrella is installed, so the component is
+		// forced read-only with an UmbrellaConflict=True condition.
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+			Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil)
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: testComponent.Namespace, ReleaseName: components.ComponentNameUmbrella,
+		}).Return(&release.Release{Name: components.ComponentNameUmbrella, Info: &release.Info{Status: release.StatusDeployed}}, nil)
+		_, err := testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+
+		var afterFirst castwarev1alpha1.Component
+		r.NoError(testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &afterFirst))
+		r.True(afterFirst.Spec.Readonly)
+		conflict := meta.FindStatusCondition(afterFirst.Status.Conditions, typeUmbrellaConflict)
+		r.NotNil(conflict)
+		r.Equal(metav1.ConditionTrue, conflict.Status)
+		r.Equal(reasonUmbrellaReleasePresent, conflict.Reason)
+
+		// Revert the read-only patch so the gate re-runs on the next pass (the
+		// gate only fires when !Readonly). This mirrors an operator that was
+		// forced read-only, then the umbrella was removed and management resumed.
+		updated := afterFirst.DeepCopy()
+		updated.Spec.Readonly = false
+		r.NoError(testOps.sut.Patch(ctx, updated, client.MergeFrom(&afterFirst)))
+
+		// Second reconcile: the umbrella release is now gone. The stale conflict
+		// condition must clear to False with a reason reflecting the umbrella no
+		// longer being present (not the contradictory ...Present reason).
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+			Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil)
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: testComponent.Namespace, ReleaseName: components.ComponentNameUmbrella,
+		}).Return(nil, driver.ErrReleaseNotFound)
+		// The gate clears the condition and lets the reconcile proceed to
+		// install the agent (umbrella no longer blocks it).
+		testOps.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), testCluster.Spec.Cluster.ClusterID, gomock.Any()).Return(nil).AnyTimes()
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: testComponent.Namespace, ReleaseName: components.ComponentNameAgent,
+		}).Return(nil, driver.ErrReleaseNotFound)
+		testOps.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).Return(&release.Release{
+			Name:  components.ComponentNameAgent,
+			Info:  &release.Info{Status: release.StatusDeployed},
+			Chart: &chart.Chart{Metadata: &chart.Metadata{Version: "v0.1.1"}},
+		}, nil)
+		_, err = testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+
+		var afterSecond castwarev1alpha1.Component
+		r.NoError(testOps.sut.Get(ctx, client.ObjectKey{Name: testComponent.Name, Namespace: testComponent.Namespace}, &afterSecond))
+		cleared := meta.FindStatusCondition(afterSecond.Status.Conditions, typeUmbrellaConflict)
+		r.NotNil(cleared, "UmbrellaConflict condition must still be present (now False)")
+		r.Equal(metav1.ConditionFalse, cleared.Status)
+		r.Equal(reasonUmbrellaReleaseNotPresent, cleared.Reason, "cleared condition must use a NotPresent reason, not a Present one")
 	})
 }

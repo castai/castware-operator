@@ -10,8 +10,10 @@ import (
 	"helm.sh/helm/v3/pkg/release"
 
 	"github.com/castai/castware-operator/internal/helm"
+	"github.com/castai/castware-operator/internal/migrationgate"
 	"github.com/castai/castware-operator/internal/rolebindings"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -219,7 +221,48 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 		}
 	}
 
+	// Umbrella / individual charts mutual-exclusivity gate. Reject creating an
+	// umbrella CR while individual component CRs are present (unless
+	// spec.migrate is set), and reject creating an individual component CR
+	// while an umbrella CR exists. This is the CR-level first line of defense;
+	// the reconcilers enforce the authoritative release-level gate (webhooks
+	// will be optional in the future and cannot close the race alone).
+	if err := v.validateMutualExclusivity(ctx, c); err != nil {
+		return nil, err
+	}
+
 	return nil, nil
+}
+
+// validateMutualExclusivity enforces the umbrella / individual charts mutual-
+// exclusivity gate at admission, at the Component-CR level. Creating an
+// umbrella CR is rejected when individual sub-component CRs exist and
+// spec.migrate is not set; creating an individual (non-umbrella) CR is rejected
+// when an umbrella CR exists. Release-level conflicts (e.g. a helm release
+// installed without a CR) are enforced by the reconcilers.
+func (v *ComponentCustomValidator) validateMutualExclusivity(ctx context.Context, c *castwarev1alpha1.Component) error {
+	if c.Spec.Component == components.ComponentNameUmbrella {
+		for _, sub := range migrationgate.Subcomponents {
+			existing := &castwarev1alpha1.Component{}
+			if err := v.client.Get(ctx, client.ObjectKey{Namespace: c.Namespace, Name: sub}, existing); err == nil {
+				if !c.Spec.Migrate {
+					return fmt.Errorf("umbrella component cannot be created while individual component CR %q exists; set spec.migrate: true to take it over", sub)
+				}
+			} else if !apierrors.IsNotFound(err) {
+				return fmt.Errorf("failed to check for existing component %q: %w", sub, err)
+			}
+		}
+		return nil
+	}
+
+	// Creating an individual component CR: reject if an umbrella CR exists.
+	umbrella := &castwarev1alpha1.Component{}
+	if err := v.client.Get(ctx, client.ObjectKey{Namespace: c.Namespace, Name: components.ComponentNameUmbrella}, umbrella); err == nil {
+		return fmt.Errorf("cannot create individual component CR %q: umbrella component CR exists; use the castai-umbrella chart instead", c.Spec.Component)
+	} else if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to check for existing umbrella component: %w", err)
+	}
+	return nil
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type Component.

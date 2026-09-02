@@ -1376,6 +1376,10 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 		}
 		testOps := newClusterTestOps(t, cluster)
 
+		// spot-handler is an umbrella sub-component: the scan gate probes the
+		// umbrella release (absent here) before allowing the spot-handler CR.
+		expectGateUmbrellaNotInstalled(mockClient, testOps.mockHelm, cluster.Namespace)
+
 		helmValues := map[string]interface{}{
 			"image": map[string]interface{}{
 				"repository": "castai/spot-handler",
@@ -1451,6 +1455,10 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 
 		testOps := newClusterTestOps(t, cluster, daemonSet)
 
+		// spot-handler is an umbrella sub-component: the scan gate probes the
+		// umbrella release (absent here) before allowing the spot-handler CR.
+		expectGateUmbrellaNotInstalled(mockClient, testOps.mockHelm, cluster.Namespace)
+
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 			Namespace:   cluster.Namespace,
 			ReleaseName: "castai-spot-handler",
@@ -1503,6 +1511,10 @@ func TestScanExistingComponentSpotHandler(t *testing.T) {
 		}
 
 		testOps := newClusterTestOps(t, cluster, daemonSet)
+
+		// spot-handler is an umbrella sub-component: the scan gate probes the
+		// umbrella release (absent here) before allowing the spot-handler CR.
+		expectGateUmbrellaNotInstalled(mockClient, testOps.mockHelm, cluster.Namespace)
 
 		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
 			Namespace:   cluster.Namespace,
@@ -1834,6 +1846,22 @@ func newClusterTestOps(t *testing.T, objs ...client.Object) *clusterTestOps {
 	return opts
 }
 
+// expectGateUmbrellaNotInstalled wires up the mock expectations for the cluster
+// controller's umbrella mutual-exclusivity probe when a sub-component is being
+// scanned/installed and the umbrella release is NOT installed: the gate
+// resolves only the umbrella release name from Mothership, then probes helm
+// and finds no release. Tests that scan/install a sub-component with a castai
+// mock must call this so the gate's extra mock calls are expected and the
+// umbrella is treated as absent (allowing the sub-component to proceed).
+func expectGateUmbrellaNotInstalled(mockClient *mock_castai.MockCastAIClient, mockHelm *mock_helm.MockClient, namespace string) {
+	mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil)
+	mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+		Namespace:   namespace,
+		ReleaseName: components.ComponentNameUmbrella,
+	}).Return(nil, driver.ErrReleaseNotFound)
+}
+
 func newTestCluster(t *testing.T, clusterID string, available bool) *castwarev1alpha1.Cluster {
 	t.Helper()
 	testCluster := &castwarev1alpha1.Cluster{
@@ -1917,4 +1945,184 @@ func newTestApiServer(t *testing.T) *httptest.Server {
 		}
 	}))
 	return apiServer
+}
+
+// expectGateUmbrellaInstalledCluster wires up the cluster controller's umbrella
+// mutual-exclusivity probe when a sub-component is scanned/installed and the
+// umbrella release IS installed: resolve only the umbrella release name from
+// Mothership, then probe helm and find a deployed release (blocking).
+func expectGateUmbrellaInstalledCluster(mockClient *mock_castai.MockCastAIClient, mockHelm *mock_helm.MockClient, namespace string) {
+	mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil)
+	mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+		Namespace:   namespace,
+		ReleaseName: components.ComponentNameUmbrella,
+	}).Return(&release.Release{Name: components.ComponentNameUmbrella, Info: &release.Info{Status: release.StatusDeployed}}, nil)
+}
+
+// expectGateIndividualsPresentCluster wires up the cluster controller's
+// umbrella-side mutual-exclusivity probe (used by scan + handleInstall when the
+// component is the umbrella): resolve all sub-component release names from
+// Mothership, then probe helm for each. castai-agent is found deployed (the
+// conflict); spot-handler and cluster-controller are absent.
+func expectGateIndividualsPresentCluster(mockClient *mock_castai.MockCastAIClient, mockHelm *mock_helm.MockClient, namespace string) {
+	mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil)
+	mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameAgent).
+		Return(&castai.Component{Name: components.ComponentNameAgent, ReleaseName: components.ComponentNameAgent}, nil)
+	mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
+		Return(&castai.Component{Name: components.ComponentNameSpotHandler, ReleaseName: components.ComponentNameSpotHandler}, nil)
+	mockClient.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameClusterController).
+		Return(&castai.Component{Name: components.ComponentNameClusterController, ReleaseName: components.ComponentNameClusterController}, nil)
+
+	mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+		Namespace: namespace, ReleaseName: components.ComponentNameAgent,
+	}).Return(&release.Release{Name: components.ComponentNameAgent, Info: &release.Info{Status: release.StatusDeployed}}, nil)
+	mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+		Namespace: namespace, ReleaseName: components.ComponentNameSpotHandler,
+	}).Return(nil, driver.ErrReleaseNotFound)
+	mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+		Namespace: namespace, ReleaseName: components.ComponentNameClusterController,
+	}).Return(nil, driver.ErrReleaseNotFound)
+}
+
+// TestMutualExclusivityGateCluster exercises the umbrella / individual charts
+// mutual-exclusivity guard in the ClusterReconciler: scan skips creating a
+// conflicting component CR, and handleInstall refuses a conflicting install
+// action, acking the error back to Mothership.
+func TestMutualExclusivityGateCluster(t *testing.T) {
+	t.Parallel()
+
+	t.Run("scan skips creating an individual component CR when the umbrella release is installed", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster:       &castwarev1alpha1.ClusterMetadataSpec{ClusterID: clusterID},
+				MigrationMode: castwarev1alpha1.ClusterMigrationModeRead,
+			},
+		}
+		testOps := newClusterTestOps(t, cluster)
+
+		// detectComponentVersion finds the spot-handler helm release (so the
+		// scan would otherwise create a CR)...
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace:   cluster.Namespace,
+			ReleaseName: "castai-spot-handler",
+		}).Return(&release.Release{
+			Name: "spot-handler",
+			Chart: &chart.Chart{
+				Metadata: &chart.Metadata{Version: "2.0.0"},
+			},
+			Config: map[string]interface{}{},
+		}, nil)
+
+		// ...but the gate detects the umbrella release is installed and blocks.
+		expectGateUmbrellaInstalledCluster(mockClient, testOps.mockHelm, cluster.Namespace)
+
+		reconciled, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, "castai-spot-handler", "spot-handler")
+		r.NoError(err)
+		r.False(reconciled, "scan must not create a sub-component CR when the umbrella is installed")
+
+		// No component CR was created.
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "spot-handler"}, actualComponent)
+		r.True(apierrors.IsNotFound(err), "spot-handler CR must not be created")
+	})
+
+	t.Run("handleInstall refuses an umbrella install action when individual releases are present", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+
+		cluster := newTestCluster(t, clusterID, false)
+		testOps := newClusterTestOps(t, cluster)
+
+		// The gate resolves all sub-component release names and finds
+		// castai-agent installed, so the umbrella install is refused.
+		expectGateIndividualsPresentCluster(mockClient, testOps.mockHelm, cluster.Namespace)
+
+		action := &castai.ActionInstall{
+			Component: components.ComponentNameUmbrella,
+			Version:   "0.1.0",
+		}
+
+		err := testOps.sut.handleInstall(ctx, mockClient, cluster, action)
+		r.Error(err)
+		r.Contains(err.Error(), "cannot install umbrella component")
+		r.Contains(err.Error(), "individual component releases present")
+
+		// No umbrella component CR was created.
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: components.ComponentNameUmbrella}, actualComponent)
+		r.True(apierrors.IsNotFound(err), "umbrella CR must not be created when the gate blocks the install")
+	})
+
+	t.Run("handleInstall refuses an individual install action when the umbrella release is installed", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+
+		cluster := newTestCluster(t, clusterID, false)
+		testOps := newClusterTestOps(t, cluster)
+
+		// The gate detects the umbrella release is installed and refuses the
+		// individual component install.
+		expectGateUmbrellaInstalledCluster(mockClient, testOps.mockHelm, cluster.Namespace)
+
+		action := &castai.ActionInstall{
+			Component: components.ComponentNameAgent,
+			Version:   "0.1.0",
+		}
+
+		err := testOps.sut.handleInstall(ctx, mockClient, cluster, action)
+		r.Error(err)
+		r.Contains(err.Error(), "cannot install individual component")
+		r.Contains(err.Error(), "umbrella release")
+
+		actualComponent := &castwarev1alpha1.Component{}
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: components.ComponentNameAgent}, actualComponent)
+		r.True(apierrors.IsNotFound(err), "agent CR must not be created when the gate blocks the install")
+	})
+
+	t.Run("handleInstall allows a non-overlapping component install (gate does not apply)", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx := context.Background()
+		clusterID := uuid.NewString()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+
+		cluster := newTestCluster(t, clusterID, false)
+		testOps := newClusterTestOps(t, cluster)
+
+		// A non-overlapping component skips the gate entirely: no Mothership or
+		// helm probe is expected, and the CR is created.
+		action := &castai.ActionInstall{
+			Component: "test-component",
+			Version:   "0.1.0",
+		}
+
+		err := testOps.sut.handleInstall(ctx, mockClient, cluster, action)
+		r.NoError(err)
+
+		actualComponent := &castwarev1alpha1.Component{}
+		r.NoError(testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: "test-component"}, actualComponent))
+		r.Equal("test-component", actualComponent.Spec.Component)
+	})
 }
