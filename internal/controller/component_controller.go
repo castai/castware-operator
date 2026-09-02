@@ -328,6 +328,18 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				return ctrl.Result{}, err
 			}
 
+			// The rollback has been initiated. Reopen the Progressing deadline by refreshing
+			// LastTransitionTime so the next reconciling observes the rollback result via
+			// checkHelmProgress. Without this the condition keeps its stale timestamp, every
+			// subsequent reconciling is already past the 10-minute deadline, and the component
+			// rolls back forever without ever reaching checkHelmProgress.
+			if cond := meta.FindStatusCondition(component.Status.Conditions, typeProgressingComponent); cond != nil {
+				cond.LastTransitionTime = metav1.Now()
+				if err := r.updateStatus(ctx, component); err != nil {
+					return ctrl.Result{}, fmt.Errorf("refresh progressing condition after rollback: %w", err)
+				}
+			}
+
 			return result, nil
 		}
 
