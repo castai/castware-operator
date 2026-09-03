@@ -4,7 +4,8 @@
     "kubectl@1.31",
     "kind@0.24",
     "docker@27",
-    "curl@latest"
+    "git@2",
+    "curl@8"
   ],
   "shell": {
     "init_hook": []
