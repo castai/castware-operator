@@ -408,42 +408,43 @@ func (r *MigrationReconciler) phaseFinalize(ctx context.Context, log logrus.Fiel
 	// so the patch is wrapped in RetryOnConflict to absorb that race; the delete
 	// that follows is not webhook-gated and removes the CR outright.
 	for _, sub := range migrationgate.Subcomponents {
-		ind := &castwarev1alpha1.Component{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: sub}, ind); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return ctrl.Result{}, fmt.Errorf("get individual component %s for deletion: %w", sub, err)
-		}
-		// Clear readonly and remove the finalizer in a single RetryOnConflict loop.
+		// Clear readonly and remove the finalizer, then delete the CR, all within a
+		// single RetryOnConflict loop that re-gets the latest object each attempt.
+		//
 		// The validating webhook (ValidateUpdate) rejects updates to a CR that is
 		// readonly in both old and new state, so readonly must be cleared in the
-		// same patch. Meanwhile the ComponentReconciler's
+		// same patch as the finalizer removal. Meanwhile the ComponentReconciler's
 		// forceReadonlyIfUmbrellaInstalled races to re-set readonly=true (the
 		// umbrella is installed at this point), so a plain Update on a stale object
-		// conflicts ("the object has been modified"). RetryOnConflict re-gets the
-		// latest object each attempt; a merge patch on the finalizer field does
-		// not conflict with the reconciler's readonly patch.
+		// conflicts ("the object has been modified"). Delete must also run on the
+		// freshly-patched object: deleting with a stale ResourceVersion captured
+		// before the patch would 409 once the patch bumps it, causing an
+		// unnecessary requeue of the whole Finalize phase. Running both the patch
+		// and the delete inside the retry closure on the same latest object keeps
+		// them consistent. The delete is not webhook-gated, so it is not subject
+		// to the readonly rejection the patch guards against.
 		nn := types.NamespacedName{Namespace: component.Namespace, Name: sub}
 		if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 			latest := &castwarev1alpha1.Component{}
 			if err := r.Get(ctx, nn, latest); err != nil {
 				return err
 			}
-			if !controllerutil.ContainsFinalizer(latest, ComponentFinalizer) && !latest.Spec.Readonly {
-				return nil // nothing to do
+			if controllerutil.ContainsFinalizer(latest, ComponentFinalizer) || latest.Spec.Readonly {
+				base := latest.DeepCopy()
+				latest.Spec.Readonly = false
+				controllerutil.RemoveFinalizer(latest, ComponentFinalizer)
+				if err := r.Patch(ctx, latest, client.MergeFrom(base)); err != nil {
+					return err
+				}
 			}
-			base := latest.DeepCopy()
-			latest.Spec.Readonly = false
-			controllerutil.RemoveFinalizer(latest, ComponentFinalizer)
-			return r.Patch(ctx, latest, client.MergeFrom(base))
+			// Delete on the freshly-read object (its ResourceVersion is current
+			// as of this attempt; a concurrent patch surfaces as a conflict the
+			// outer RetryOnConflict absorbs).
+			return r.Delete(ctx, latest)
 		}); err != nil {
 			if apierrors.IsNotFound(err) {
 				continue
 			}
-			return ctrl.Result{}, fmt.Errorf("clear readonly/finalizer on %s: %w", sub, err)
-		}
-		if err := r.Delete(ctx, ind); err != nil && !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("delete individual component %s: %w", sub, err)
 		}
 	}
