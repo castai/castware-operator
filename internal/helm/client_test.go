@@ -44,6 +44,7 @@ func (f *fakeConfigurationGetter) Get(_ string) (*action.Configuration, error) {
 }
 
 // newRelease is a minimal release fixture used to populate the storage driver.
+// nolint: unparam
 func newRelease(name, namespace string, version int) *release.Release {
 	return &release.Release{
 		Name:      name,

@@ -466,13 +466,26 @@ func (r *MigrationReconciler) phaseFinalize(ctx context.Context, log logrus.Fiel
 // surviving individual CRs so ComponentReconciler reinstalls them from their
 // stored spec.values, and marks the umbrella as failed. The 1-minute heartbeat
 // bound applies to the success path only; rollback may take longer to fully
-// reinstall individuals.
+// reinstall individuals, and the agent specifically incurs a pod restart (see
+// the uninstall comment below).
 func (r *MigrationReconciler) rollback(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster, cause error) (ctrl.Result, error) {
 	log.WithError(cause).Warn("Migration failed; rolling back to individual regime")
 
-	// Uninstall the umbrella if it was installed. Its resources overlap with the
-	// individuals; removing it lets the individual CRs (re-enabled below)
-	// reinstall cleanly. IgnoreNotFound: a pre-install failure has no umbrella.
+	// Uninstall the umbrella if it was installed. IgnoreNotFound: a pre-install
+	// failure has no umbrella.
+	//
+	// Helm's Uninstall deletes every resource recorded in the release manifest.
+	// Because the umbrella install used TakeOwnership, that manifest includes
+	// the agent Deployment it adopted from the individual agent release — so
+	// this uninstall deletes the agent pods, not just the umbrella's own
+	// resources. This is a deliberate trade-off: the heartbeat invariant (no pod
+	// restart) is scoped to the success path; the rollback path is permitted a
+	// restart. The agent is restored below by re-enabling its CR, which makes
+	// ComponentReconciler helm-upgrade--install the individual agent release,
+	// re-creating the Deployment. (Forgetting the umbrella instead of
+	// uninstalling would preserve the pods but orphan its non-agent resources
+	// — cluster-controller/spot-handler — leaving a hybrid state, which is
+	// worse.)
 	umbrellaReleaseName, nameErr := r.releaseNameFor(ctx, cluster, components.ComponentNameUmbrella)
 	if nameErr == nil {
 		if _, err := r.HelmClient.Uninstall(helm.UninstallOptions{
@@ -489,10 +502,13 @@ func (r *MigrationReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 	}
 
 	// Re-enable the individual CRs so ComponentReconciler reinstalls them. The
-	// agent was never uninstalled (adopted by the umbrella, then released by the
-	// umbrella uninstall) — but its CR is re-enabled so the reconciler observes
-	// the surviving release and reconciles status. The non-agent individuals
-	// were uninstalled; their CRs now reinstall from spec.values.
+	// agent's individual helm release was never uninstalled (only adopted by the
+	// umbrella), so its release record still exists in storage; but the umbrella
+	// uninstall above deleted the agent Deployment it had adopted, so the agent
+	// CR's upgrade path re-creates the Deployment — a pod restart and a
+	// heartbeat gap within the rollback path's documented allowance. The
+	// non-agent individuals were uninstalled outright; their CRs reinstall from
+	// spec.values.
 	for _, sub := range migrationgate.Subcomponents {
 		ind := &castwarev1alpha1.Component{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: sub}, ind); err != nil {
