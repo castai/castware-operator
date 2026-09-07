@@ -2,6 +2,7 @@ package helm
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -130,6 +131,23 @@ func TestClient_ForgetRelease_ListReleasesError(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "listing helm releases for forget")
 	require.Contains(t, err.Error(), "storage backend unavailable")
+}
+
+func TestClient_ForgetRelease_ListReleasesNotFound(t *testing.T) {
+	// A storage driver whose List returns the typed driver.ErrReleaseNotFound
+	// sentinel (a hypothetical driver signaling "no records" via the sentinel
+	// rather than an empty slice). ForgetRelease treats this as success.
+	// Validates the errors.Is path and guards against a regression to string
+	// matching: a wrapped sentinel must still be recognized.
+	c := &client{
+		log: logrus.New(),
+		configurationGetter: &fakeConfigurationGetter{cfg: &action.Configuration{
+			Releases: storage.Init(&errorDriver{listErr: fmt.Errorf("wrapped: %w", driver.ErrReleaseNotFound)}),
+		}},
+	}
+
+	err := c.ForgetRelease(ForgetReleaseOptions{Namespace: "castai-agent", ReleaseName: "castai-agent"})
+	require.NoError(t, err, "driver.ErrReleaseNotFound from ListReleases is a no-op forget")
 }
 
 // errorDriver is a storage.Driver stub whose List returns a configurable

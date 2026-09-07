@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/castai/castware-operator/internal/utils"
@@ -262,7 +261,7 @@ func (c *client) ForgetRelease(opts ForgetReleaseOptions) error {
 	// treat that as success (idempotent forget). Other errors surface.
 	rels, err := cfg.Releases.ListReleases()
 	if err != nil {
-		if errors.Is(err, driver.ErrReleaseNotFound) || strings.Contains(err.Error(), driver.ErrReleaseNotFound.Error()) {
+		if errors.Is(err, driver.ErrReleaseNotFound) {
 			return nil
 		}
 		return fmt.Errorf("listing helm releases for forget, namespace=%s: %w", opts.Namespace, err)
