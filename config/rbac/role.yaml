@@ -111,7 +111,6 @@ rules:
   - castware.cast.ai
   resources:
   - clusters
-  - components
   verbs:
   - create
   - delete
@@ -132,6 +131,18 @@ rules:
   verbs:
   - patch
   - update
+- apiGroups:
+  - castware.cast.ai
+  resources:
+  - components
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - datadoghq.com
   resources:

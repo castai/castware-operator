@@ -149,8 +149,11 @@ func (r *ClusterReconciler) handleInstall(ctx context.Context, castAiClient cast
 	// Umbrella / individual charts mutual-exclusivity gate. A Mothership install
 	// action must not create the conflicting installation side. The returned
 	// error is acked back to Mothership by pollActions so the conflict is
-	// surfaced there rather than silently double-installing.
-	if err := r.installBlockedByMutualExclusivity(ctx, castAiClient, cluster, action.Component); err != nil {
+	// surfaced there rather than silently double-installing. A migrate=true
+	// install action on the umbrella is the sanctioned bypass: the gate passes
+	// and the umbrella CR is created with spec.migrate=true, which drives the
+	// migration controller's takeover of the individual releases.
+	if err := r.installBlockedByMutualExclusivity(ctx, castAiClient, cluster, action.Component, action.Migrate); err != nil {
 		return err
 	}
 
@@ -170,6 +173,11 @@ func (r *ClusterReconciler) handleInstall(ctx context.Context, castAiClient cast
 			Enabled:     true,
 			Version:     action.Version,
 			ReleaseName: releaseName,
+			// A Mothership migrate=true install action opts the umbrella into
+			// the migration controller's takeover of individual releases. Both
+			// triggers (Mothership action and cluster-side spec) converge on
+			// spec.migrate so the CR is the single source of truth.
+			Migrate: action.Migrate,
 		},
 	}
 
@@ -197,26 +205,31 @@ func (r *ClusterReconciler) handleInstall(ctx context.Context, castAiClient cast
 //   - installing the umbrella component while individual component releases
 //     are installed.
 //
-// A scan-created umbrella CR never carries spec.migrate, and Mothership
-// install actions do not either, so the umbrella side always blocks when
-// individuals are present (the user must set migrate on the CR directly).
-// The umbrella-present side always blocks individual installs.
-func (r *ClusterReconciler) installBlockedByMutualExclusivity(ctx context.Context, castAiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, componentName string) error {
+// A scan-created umbrella CR never carries spec.migrate. A Mothership install
+// action carries migrate=true to opt into the migration controller's takeover
+// of the individual releases; in that case the umbrella side of the gate is
+// bypassed so the umbrella CR can be created (with spec.migrate=true), which
+// then drives the migration state machine. Otherwise the umbrella side always
+// blocks when individuals are present. The umbrella-present side always blocks
+// individual installs.
+func (r *ClusterReconciler) installBlockedByMutualExclusivity(ctx context.Context, castAiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, componentName string, migrate bool) error {
 	// The gate only applies to the umbrella and its overlapping sub-components;
 	// other components render disjoint workloads and cannot conflict.
 	if !migrationgate.IsUmbrellaOrSubcomponent(componentName) {
 		return nil
 	}
 
-	// Umbrella side: refuse if any individual sub-component release is present.
+	// Umbrella side: refuse if any individual sub-component release is present,
+	// unless the install action opts into migration (migrate=true). The migration
+	// controller runs the sanctioned takeover once the umbrella CR exists.
 	if componentName == components.ComponentNameUmbrella {
 		names, err := migrationgate.ResolveNames(ctx, castAiClient)
 		if err != nil {
 			return fmt.Errorf("evaluate umbrella mutual-exclusivity: resolve release names: %w", err)
 		}
 		present := migrationgate.InstalledSubcomponents(r.HelmClient, cluster.Namespace, names.SubcomponentReleases)
-		if len(present) > 0 {
-			return fmt.Errorf("cannot install umbrella component: individual component releases present (%s); set spec.migrate: true on the umbrella CR to take them over", strings.Join(present, ", "))
+		if len(present) > 0 && !migrate {
+			return fmt.Errorf("cannot install umbrella component: individual component releases present (%s); set migrate: true on the install action or spec.migrate: true on the umbrella CR to take them over", strings.Join(present, ", "))
 		}
 		return nil
 	}

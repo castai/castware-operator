@@ -14,6 +14,32 @@ const (
 	ComponentMigrationTerraform = "terraform"
 
 	LabelHelmChart = "castware.cast.ai/helm-chart"
+
+	// MigrationPhase values, recorded in ComponentStatus.MigrationPhase by the
+	// migration controller to make the standalone → umbrella migration durable
+	// and resumable across operator restarts.
+	//
+	// Phases proceed: MarkReadonly → UninstallIndividuals → InstallUmbrella →
+	// Verify → Finalize. On verification failure the controller transitions to
+	// RolledBack (a terminal failure state) after restoring the individual
+	// regime.
+	MigrationPhaseMarkReadonly         = "MarkReadonly"
+	MigrationPhaseUninstallIndividuals = "UninstallIndividuals"
+	MigrationPhaseInstallUmbrella      = "InstallUmbrella"
+	MigrationPhaseVerify               = "Verify"
+	MigrationPhaseFinalize             = "Finalize"
+	MigrationPhaseRolledBack           = "RolledBack"
+
+	// TypeMigrating is the status condition set on the umbrella Component CR while
+	// the migration state machine is running. Its reason is the current phase.
+	TypeMigrating = "Migrating"
+
+	// ReasonMigrationSucceeded is the TypeMigrating condition reason set when the
+	// migration has finalized successfully.
+	ReasonMigrationSucceeded = "MigrationSucceeded"
+	// ReasonMigrationFailed is the TypeMigrating condition reason set when the
+	// migration has failed and rolled back to the individual regime.
+	ReasonMigrationFailed = "MigrationFailed"
 )
 
 // ComponentSpec defines the desired state of Component
@@ -84,6 +110,14 @@ type ComponentStatus struct {
 	// Used to detect helm upgrades (including parameter-only changes without version changes) and report updated parameters.
 	// +optional
 	LastReportedHelmRevision int `json:"lastReportedHelmRevision,omitempty"`
+
+	// MigrationPhase is the durable progress marker of the standalone → umbrella
+	// migration state machine. It is set by the migration controller when
+	// spec.migrate is true on an umbrella Component CR, and survives operator
+	// restart so an interrupted migration resumes from the recorded phase. Each
+	// phase is idempotent. Cleared (empty) once migration finalizes or rolls back.
+	// +optional
+	MigrationPhase string `json:"migrationPhase,omitempty"`
 }
 
 //+kubebuilder:object:root=true

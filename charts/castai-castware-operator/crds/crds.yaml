@@ -367,6 +367,14 @@ spec:
                   LastReportedHelmRevision is the helm release revision number that was last reported to Mothership.
                   Used to detect helm upgrades (including parameter-only changes without version changes) and report updated parameters.
                 type: integer
+              migrationPhase:
+                description: |-
+                  MigrationPhase is the durable progress marker of the standalone → umbrella
+                  migration state machine. It is set by the migration controller when
+                  spec.migrate is true on an umbrella Component CR, and survives operator
+                  restart so an interrupted migration resumes from the recorded phase. Each
+                  phase is idempotent. Cleared (empty) once migration finalizes or rolls back.
+                type: string
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed by the controller.
