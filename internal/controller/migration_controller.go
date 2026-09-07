@@ -35,6 +35,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/release"
+	"helm.sh/helm/v3/pkg/storage/driver"
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -828,12 +829,18 @@ func patchReadonly(ctx context.Context, c client.Client, component *castwarev1al
 }
 
 // isReleaseNotFound reports whether err is Helm's release-not-found error.
+// It checks the typed sentinel first (driver.ErrReleaseNotFound, which
+// GetRelease preserves through its %w wrapping) and falls back to a substring
+// match for older Helm error shapes that don't wrap the sentinel.
 func isReleaseNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(err.Error(), "no release found") ||
-		strings.Contains(err.Error(), "release: not found")
+	if errors.Is(err, driver.ErrReleaseNotFound) {
+		return true
+	}
+	return strings.Contains(err.Error(), driver.ErrReleaseNotFound.Error()) ||
+		strings.Contains(err.Error(), "no release found")
 }
 
 // contains reports whether s is in list.
