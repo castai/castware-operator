@@ -212,6 +212,7 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - endpoints
   - events
   - limitranges
   - nodes
@@ -241,6 +242,12 @@ rules:
   - namespaces
   verbs:
   - patch
+- apiGroups:
+  - ""
+  resources:
+  - nodes/proxy
+  verbs:
+  - get
 - apiGroups:
   - admissionregistration.k8s.io
   resources:
