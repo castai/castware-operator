@@ -18,6 +18,12 @@ package controller
 // durable in status.migrationPhase; each phase is idempotent; failure rolls back
 // to the individual-component regime).
 //
+// Deletion guard: the umbrella CR carries MigrationFinalizer while the migration
+// is in flight (armed in phaseMarkReadonly, before readonly is set). A deletion
+// arriving mid-flight is converted into a rollback that restores the individual
+// regime before the CR — and its status.migrationPhase — is removed, instead of
+// leaving a half-migrated cluster with no controller to drive recovery.
+//
 // Heartbeat continuity: the agent is the cluster's liveness signal to Mothership
 // (snapshots every ~15s). It is NEVER helm-uninstalled during migration — that
 // would delete the agent pods. Instead the umbrella installs with TakeOwnership
@@ -85,6 +91,21 @@ type MigrationReconciler struct {
 // the same timescale a stuck install would.
 const verifyTimeout = 10 * time.Minute
 
+// MigrationFinalizer blocks deletion of the umbrella CR while a migration is in
+// flight. It is armed in phaseMarkReadonly (before readonly is set — the
+// validating webhook rejects updates to a CR that is readonly in both old and
+// new state, so the finalizer can only be added while the CR is writable) and
+// removed in finalizeUmbrellaSuccess/finalizeUmbrellaFailure, atomically with
+// clearing spec.migrate. If the CR is deleted mid-flight anyway, Reconcile
+// converts the deletion into a rollback that restores the individual regime
+// before the CR (and its status.migrationPhase) disappears.
+//
+// Distinct from the component reconciler's ComponentFinalizer
+// ("castware.cast.ai/cleanup-helm"), which uninstalls the helm release on CR
+// deletion: the migration owns cleanup here because it knows the migration
+// phase and can roll back.
+const MigrationFinalizer = "castware.cast.ai/umbrella-migration"
+
 // Reconcile dispatches on the umbrella CR's migration phase. It is a no-op for
 // non-umbrella CRs or umbrella CRs without spec.migrate. Each phase is
 // idempotent and resumable from status.migrationPhase.
@@ -100,11 +121,26 @@ func (r *MigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
 
-	// Only the umbrella component with spec.migrate drives the state machine.
-	// Every other CR (including an umbrella without migrate) is left to the
+	// Only umbrella CRs are of interest here. Every other CR is left to the
 	// component reconciler — including the UmbrellaConflict path that implements
 	// acceptance criterion 4 (migrate not set → no migration + conflict status).
-	if component.Spec.Component != components.ComponentNameUmbrella || !component.Spec.Migrate {
+	if component.Spec.Component != components.ComponentNameUmbrella {
+		return ctrl.Result{}, nil
+	}
+
+	// Deletion guard: a deletion arriving mid-migration must not let the CR (and
+	// its status.migrationPhase) vanish while the cluster is half-migrated.
+	// While MigrationFinalizer is present the object stays in a deleting state
+	// and every reconcile lands here, driving an abort-rollback instead of the
+	// normal phase machine. Runs before the migrate gate and the cluster
+	// availability gate so neither a cleared migrate (crash window between the
+	// terminal spec write and a hypothetical later finalizer release) nor
+	// cluster state can strand a deleting CR holding the finalizer.
+	if !component.DeletionTimestamp.IsZero() {
+		return r.handleUmbrellaDeletion(ctx, log, component)
+	}
+
+	if !component.Spec.Migrate {
 		return ctrl.Result{}, nil
 	}
 
@@ -145,11 +181,33 @@ func (r *MigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 }
 
-// phaseMarkReadonly sets spec.readonly=true on the umbrella CR (sidelining the
-// component reconciler for the whole migration) and on each present individual
-// sub-component CR, then advances to UninstallIndividuals. Idempotent: patching
-// an already-readonly CR is a no-op.
+// phaseMarkReadonly arms the migration finalizer on the umbrella CR, sets
+// spec.readonly=true on it (sidelining the component reconciler for the whole
+// migration) and on each present individual sub-component CR, then advances to
+// UninstallIndividuals. Idempotent: patching an already-readonly CR is a no-op.
 func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (ctrl.Result, error) {
+	// Arm the deletion guard before anything else. Order is load-bearing: the
+	// validating webhook (ValidateUpdate) rejects updates to a CR that is
+	// readonly in both old and new state, so the finalizer can only be added
+	// while the CR is still writable — i.e. before the readonly patch below.
+	// On resume the finalizer is already present and this is a no-op.
+	if !controllerutil.ContainsFinalizer(component, MigrationFinalizer) {
+		if component.Spec.Readonly {
+			// Legacy resume: readonly was set by an operator version without the
+			// finalizer (interrupted mid-phase). The webhook rejects updates to a
+			// readonly CR, so it cannot be armed now — attempting it would wedge
+			// the migration on a permanent rejection. Continue without the guard,
+			// as this migration ran before.
+			log.Warn("Umbrella CR is readonly without the migration finalizer (legacy mid-phase resume); continuing without the deletion guard")
+		} else {
+			base := component.DeepCopy()
+			controllerutil.AddFinalizer(component, MigrationFinalizer)
+			if err := r.Patch(ctx, component, client.MergeFrom(base)); err != nil {
+				return ctrl.Result{}, fmt.Errorf("arm migration finalizer: %w", err)
+			}
+		}
+	}
+
 	// Sideline the component reconciler on the umbrella CR so it does not race
 	// the migration for helm writes. Cleared on Finalize / Rollback.
 	if !component.Spec.Readonly {
@@ -538,10 +596,87 @@ func (r *MigrationReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 	return ctrl.Result{}, nil
 }
 
-// finalizeUmbrellaSuccess clears migrate/readonly and sets Available=True on the
-// umbrella, and records the migration phase as empty (terminal success). Spec and
-// status are separate subresources, so they are updated in two fresh-read steps:
-// spec via Update, then status via Status().Update on a re-read object (matching
+// handleUmbrellaDeletion handles a deletion of the umbrella CR while
+// spec.migrate is still set (MigrationReconciler is only here for such CRs, and
+// the deletion pre-check in Reconcile routes every reconcile of a deleting CR
+// here while the finalizer is present). With the finalizer armed, apiserver has
+// set deletionTimestamp but holds the object; the migration drives an
+// abort-rollback restoring the individual regime, and the finalizer removal in
+// finalizeUmbrellaFailure then completes the deletion.
+func (r *MigrationReconciler) handleUmbrellaDeletion(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
+	// Without the finalizer the object is not held by us: nothing is in flight
+	// from the migration's perspective — either the migration never armed it
+	// (a legacy mid-phase resume of a readonly CR cannot be armed; see
+	// phaseMarkReadonly) — and the component reconciler's own deletion path owns
+	// the CR.
+	if !controllerutil.ContainsFinalizer(component, MigrationFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	// The finalizer is armed but migrate is already cleared. Normally
+	// unreachable — the finalizer is removed atomically with the migrate clear
+	// in finalizeUmbrellaSuccess/Failure — but a crash between those two writes
+	// could leave this state. There is nothing to roll back (no migration in
+	// flight), so just release the CR.
+	if !component.Spec.Migrate {
+		log.Info("Umbrella CR deleting with migration finalizer but no migration in flight; releasing finalizer")
+		return ctrl.Result{}, r.removeMigrationFinalizer(ctx, component)
+	}
+
+	// Migration in flight + CR deleted: abort. Cluster lookup first — an absent
+	// cluster means Mothership connectivity and helm release-name resolution are
+	// gone, so rollback is not drivable; release the finalizer rather than block
+	// the user's deletion forever (the cluster is being decommissioned).
+	cluster := &castwarev1alpha1.Cluster{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Spec.Cluster}, cluster); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Warn("Umbrella CR deleted mid-migration and cluster CR is gone; releasing finalizer without rollback")
+			return ctrl.Result{}, r.removeMigrationFinalizer(ctx, component)
+		}
+		log.WithError(err).Error("Failed to get cluster for mid-migration deletion")
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+	if !meta.IsStatusConditionTrue(cluster.Status.Conditions, typeAvailableCluster) ||
+		cluster.Spec.Cluster == nil || cluster.Spec.Cluster.ClusterID == "" {
+		// Same availability gate as the main path; requeue until it lifts.
+		log.Info("Waiting for cluster to be available before aborting migration")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	log.Warn("Umbrella CR deleted mid-migration; aborting and rolling back to individual regime")
+	return r.rollback(ctx, log, component, cluster, errors.New("umbrella component CR deleted mid-migration"))
+}
+
+// removeMigrationFinalizer releases the deletion guard via a merge patch,
+// tolerating the CR having already gone. Used when the migration is not in
+// flight (see handleUmbrellaDeletion) — the terminal paths remove it inside
+// finalizeUmbrellaSuccess/Failure instead.
+func (r *MigrationReconciler) removeMigrationFinalizer(ctx context.Context, component *castwarev1alpha1.Component) error {
+	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		latest := &castwarev1alpha1.Component{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, latest); err != nil {
+			return err
+		}
+		if !controllerutil.ContainsFinalizer(latest, MigrationFinalizer) {
+			return nil
+		}
+		base := latest.DeepCopy()
+		controllerutil.RemoveFinalizer(latest, MigrationFinalizer)
+		return r.Patch(ctx, latest, client.MergeFrom(base))
+	}); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("remove migration finalizer: %w", err)
+	}
+	return nil
+}
+
+// finalizeUmbrellaSuccess clears migrate/readonly, removes the migration
+// finalizer, and sets Available=True on the umbrella, and records the migration
+// phase as empty (terminal success). Spec and status are separate subresources,
+// so they are updated in two fresh-read steps: spec via Update, then status via
+// Status().Update on a re-read object (matching
 // ComponentReconciler.updateStatus), so the status write does not depend on the
 // in-memory object surviving the spec write.
 func (r *MigrationReconciler) finalizeUmbrellaSuccess(ctx context.Context, component *castwarev1alpha1.Component) error {
@@ -552,13 +687,29 @@ func (r *MigrationReconciler) finalizeUmbrellaSuccess(ctx context.Context, compo
 		}
 		latest.Spec.Migrate = false
 		latest.Spec.Readonly = false
+		// Release the deletion guard atomically with the migrate clear, so there
+		// is no window where the migration is terminal but a deletion would
+		// still be blocked.
+		controllerutil.RemoveFinalizer(latest, MigrationFinalizer)
 		return r.Update(ctx, latest)
 	}); err != nil {
+		// On the abort path (handleUmbrellaDeletion) this Update completes the
+		// CR's deletion: the CR is in a deleting state and this may be its last
+		// finalizer — apiserver removes it once no finalizers remain. The
+		// status write below then 404s, which is expected, not a failure.
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
 		return fmt.Errorf("clear umbrella migrate/readonly: %w", err)
 	}
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		latest := &castwarev1alpha1.Component{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, latest); err != nil {
+			if apierrors.IsNotFound(err) {
+				// The spec write above completed the deletion (abort path: last
+				// finalizer removed on a deleting object). Nothing left to report.
+				return nil
+			}
 			return err
 		}
 		latest.Status.MigrationPhase = ""
@@ -578,9 +729,11 @@ func (r *MigrationReconciler) finalizeUmbrellaSuccess(ctx context.Context, compo
 	})
 }
 
-// finalizeUmbrellaFailure clears migrate/readonly, sets the umbrella Available=False
-// with a MigrationFailed reason, and records the RolledBack phase (terminal failure).
-// Same two-step spec/status update as finalizeUmbrellaSuccess.
+// finalizeUmbrellaFailure clears migrate/readonly, removes the migration
+// finalizer, sets the umbrella Available=False with a MigrationFailed reason,
+// and records the RolledBack phase (terminal failure). Same two-step
+// spec/status update as finalizeUmbrellaSuccess; the same IsNotFound tolerance
+// applies on the abort path where the spec write completes the deletion.
 func (r *MigrationReconciler) finalizeUmbrellaFailure(ctx context.Context, component *castwarev1alpha1.Component, cause error) error {
 	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		latest := &castwarev1alpha1.Component{}
@@ -589,13 +742,23 @@ func (r *MigrationReconciler) finalizeUmbrellaFailure(ctx context.Context, compo
 		}
 		latest.Spec.Migrate = false
 		latest.Spec.Readonly = false
+		// Release the deletion guard atomically with the migrate clear (see
+		// finalizeUmbrellaSuccess).
+		controllerutil.RemoveFinalizer(latest, MigrationFinalizer)
 		return r.Update(ctx, latest)
 	}); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
 		return fmt.Errorf("clear umbrella migrate/readonly on failure: %w", err)
 	}
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		latest := &castwarev1alpha1.Component{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, latest); err != nil {
+			if apierrors.IsNotFound(err) {
+				// The spec write above completed the deletion (abort path).
+				return nil
+			}
 			return err
 		}
 		latest.Status.MigrationPhase = castwarev1alpha1.MigrationPhaseRolledBack

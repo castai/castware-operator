@@ -221,6 +221,8 @@ func TestMigrationReconciler_MarkReadonly(t *testing.T) {
 	u := getUmbrella(t, ops)
 	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase, "should advance to UninstallIndividuals")
 	r.True(u.Spec.Readonly, "umbrella should be readonly")
+	// The deletion guard is armed before readonly is set (webhook ordering).
+	r.True(controllerutil.ContainsFinalizer(u, MigrationFinalizer), "migration finalizer armed in MarkReadonly")
 }
 
 // TestMigrationReconciler_UninstallIndividuals_AgentExcluded asserts the agent
@@ -393,6 +395,7 @@ func TestMigrationReconciler_VerifySuccess_Finalize(t *testing.T) {
 	r.Equal("", u.Status.MigrationPhase, "phase cleared on success")
 	r.False(u.Spec.Migrate, "migrate cleared on success")
 	r.False(u.Spec.Readonly, "readonly cleared on success")
+	r.False(controllerutil.ContainsFinalizer(u, MigrationFinalizer), "migration finalizer released on success")
 
 	// Individual CRs deleted.
 	for _, sub := range []string{components.ComponentNameAgent, components.ComponentNameSpotHandler, components.ComponentNameClusterController} {
@@ -521,6 +524,7 @@ func TestMigrationReconciler_VerifyFailure_Rollback(t *testing.T) {
 	r.Equal(castwarev1alpha1.MigrationPhaseRolledBack, u.Status.MigrationPhase)
 	r.False(u.Spec.Migrate, "migrate cleared on rollback")
 	r.False(u.Spec.Readonly, "readonly cleared on rollback")
+	r.False(controllerutil.ContainsFinalizer(u, MigrationFinalizer), "migration finalizer released on rollback")
 
 	// Individuals re-enabled (readonly=false) so the component reconciler can
 	// reinstall them from their stored spec.values.
@@ -578,6 +582,172 @@ func TestMigrationReconciler_BothTriggersConverge(t *testing.T) {
 	u := getUmbrella(t, ops)
 	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase,
 		"controller engaged for spec.migrate=true umbrella regardless of trigger origin")
+}
+
+// TestMigrationReconciler_UmbrellaDeletedMidMigration_RollsBack asserts the
+// deletion guard: deleting the umbrella CR mid-migration (with the migration
+// finalizer armed) drives an abort-rollback — umbrella uninstalled, individuals
+// re-enabled — and only then releases the finalizer, completing the deletion.
+// Without the guard, the CR (and its status.migrationPhase) would vanish leaving
+// a half-migrated cluster with no controller driving recovery.
+func TestMigrationReconciler_UmbrellaDeletedMidMigration_RollsBack(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseVerify)
+	umbrella.Spec.Readonly = true
+	controllerutil.AddFinalizer(umbrella, MigrationFinalizer)
+	agent := migIndividual(components.ComponentNameAgent)
+	agent.Spec.Readonly = true
+	spot := migIndividual(components.ComponentNameSpotHandler)
+	spot.Spec.Readonly = true
+
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		umbrella,
+		agent,
+		spot,
+	)
+	// Rollback resolves the umbrella release name + uninstalls it.
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).AnyTimes()
+	ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+		Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella, Wait: true, IgnoreNotFound: true,
+	}).Return(nil, nil)
+	// Resolve names for the rollback individual re-enable loop.
+	for _, sub := range []string{components.ComponentNameAgent, components.ComponentNameSpotHandler, components.ComponentNameClusterController} {
+		ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), sub).
+			Return(&castai.Component{Name: sub, ReleaseName: sub}, nil).AnyTimes()
+	}
+	ops.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), migClusterID, gomock.Any()).
+		Return(nil).AnyTimes()
+
+	// User deletes the umbrella CR mid-flight. The migration finalizer holds it
+	// in a deleting state (fake client sets deletionTimestamp, keeps the object).
+	r.NoError(ops.client.Delete(context.Background(), umbrella))
+
+	reconcileOnce(t, ops)
+
+	// The abort-rollback ran: umbrella release uninstalled (mock asserts the call)
+	// and individuals re-enabled so the component reconciler reinstalls them.
+	for _, sub := range []string{components.ComponentNameAgent, components.ComponentNameSpotHandler} {
+		ind := &castwarev1alpha1.Component{}
+		r.NoError(ops.client.Get(context.Background(), types.NamespacedName{Namespace: migNamespace, Name: sub}, ind))
+		r.False(ind.Spec.Readonly, "individual %s re-enabled by abort-rollback", sub)
+	}
+
+	// The finalizer release completed the deletion: the CR is gone.
+	err := ops.client.Get(context.Background(),
+		types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella}, &castwarev1alpha1.Component{})
+	r.True(apierrors.IsNotFound(err), "umbrella CR should be deleted after abort-rollback (got err=%v)", err)
+}
+
+// TestMigrationReconciler_UmbrellaDeleted_NoFinalizer_NoAbort asserts that a
+// deleting umbrella CR WITHOUT the migration finalizer is not adopted by the
+// migration controller: no rollback is driven, no helm calls are made. The
+// component reconciler's own deletion path owns such CRs.
+func TestMigrationReconciler_UmbrellaDeleted_NoFinalizer_NoAbort(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseVerify)
+	umbrella.Spec.Readonly = true
+	// No MigrationFinalizer: e.g. a CR armed by an older operator version. The
+	// component reconciler's ComponentFinalizer still holds the CR in a deleting
+	// state, so the reconcile genuinely reaches handleUmbrellaDeletion (rather
+	// than early-returning on a vanished CR).
+	controllerutil.AddFinalizer(umbrella, ComponentFinalizer)
+	agent := migIndividual(components.ComponentNameAgent)
+	agent.Spec.Readonly = true
+
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		umbrella,
+		agent,
+	)
+	// No helm/castai expectations: the reconciler must return without driving
+	// anything.
+
+	r.NoError(ops.client.Delete(context.Background(), umbrella))
+
+	reconcileOnce(t, ops)
+
+	// The migration controller did not adopt the deletion: the CR is still held
+	// (deleting, kept by ComponentFinalizer) for the component reconciler, and
+	// the individual is untouched (still readonly).
+	still := &castwarev1alpha1.Component{}
+	r.NoError(ops.client.Get(context.Background(),
+		types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella}, still))
+	r.False(still.DeletionTimestamp.IsZero(), "CR held in deleting state by ComponentFinalizer")
+	r.False(controllerutil.ContainsFinalizer(still, MigrationFinalizer), "migration finalizer not added by the deletion path")
+	ind := &castwarev1alpha1.Component{}
+	r.NoError(ops.client.Get(context.Background(), types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameAgent}, ind))
+	r.True(ind.Spec.Readonly, "individual untouched when the deleting CR has no migration finalizer")
+}
+
+// TestMigrationReconciler_UmbrellaDeleted_CrashWindow_ReleasesFinalizer
+// asserts the corner where the terminal spec write (clearing migrate) landed
+// but the CR is deleted before the finalizer release completed its own write —
+// the deletion check must run before the migrate gate, or this CR would strand
+// as a tombstone holding the finalizer forever. There is no migration in flight,
+// so no rollback is driven; the finalizer is simply released so the deletion
+// completes.
+func TestMigrationReconciler_UmbrellaDeleted_CrashWindow_ReleasesFinalizer(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseVerify)
+	umbrella.Spec.Readonly = true
+	// spec.migrate already cleared (terminal spec write landed), finalizer still
+	// armed, CR deleted before the release completed.
+	umbrella.Spec.Migrate = false
+	controllerutil.AddFinalizer(umbrella, MigrationFinalizer)
+	agent := migIndividual(components.ComponentNameAgent)
+	agent.Spec.Readonly = true
+
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		umbrella,
+		agent,
+	)
+	// No helm/castai expectations: no rollback must be driven.
+
+	r.NoError(ops.client.Delete(context.Background(), umbrella))
+
+	reconcileOnce(t, ops)
+
+	// The finalizer release completed the deletion; the individual is untouched.
+	err := ops.client.Get(context.Background(),
+		types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella}, &castwarev1alpha1.Component{})
+	r.True(apierrors.IsNotFound(err), "umbrella CR should be deleted after finalizer release (got err=%v)", err)
+	ind := &castwarev1alpha1.Component{}
+	r.NoError(ops.client.Get(context.Background(), types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameAgent}, ind))
+	r.True(ind.Spec.Readonly, "individual untouched: no rollback for a not-in-flight migration")
+}
+
+// TestMigrationReconciler_LegacyReadonlyResume_ProceedsWithoutGuard asserts a
+// legacy mid-phase resume (readonly already set by an operator version without
+// the finalizer, interrupted before advancing the phase) does not wedge trying
+// to arm the finalizer — the webhook would reject the update to a readonly CR —
+// and instead proceeds unguarded, as that migration ran before.
+func TestMigrationReconciler_LegacyReadonlyResume_ProceedsWithoutGuard(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	umbrella := migUmbrella("")
+	umbrella.Spec.Readonly = true // set by an older operator; no finalizer
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		umbrella,
+		migIndividual(components.ComponentNameAgent),
+		migIndividual(components.ComponentNameSpotHandler),
+		migIndividual(components.ComponentNameClusterController),
+	)
+	expectResolveNamesPresent(ops)
+
+	reconcileOnce(t, ops)
+
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase,
+		"legacy readonly resume proceeds past MarkReadonly")
+	r.False(controllerutil.ContainsFinalizer(u, MigrationFinalizer),
+		"finalizer not armed on a readonly CR (webhook would reject it)")
 }
 
 // TestHandleInstall_PropagatesMigrate asserts that a Mothership install action
