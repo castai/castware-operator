@@ -1,15 +1,16 @@
 package controller
 
 import (
-	"castai-agent/pkg/services/providers/aks"
-	"castai-agent/pkg/services/providers/eks"
-	"castai-agent/pkg/services/providers/gke"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"castai-agent/pkg/services/providers/aks"
+	"castai-agent/pkg/services/providers/eks"
+	"castai-agent/pkg/services/providers/gke"
 
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/release"
@@ -112,6 +113,8 @@ var ErrNothingToRollback = errors.New("nothing to rollback")
 // +kubebuilder:rbac:groups=resource.k8s.io,resources=deviceclasses;devicetaintrules;resourceclaims;resourceclaimtemplates;resourceslices,verbs=get;list;watch
 // +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects;scaledjobs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=storageoptimization.cast.ai,resources=nodediskrecommendations,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=endpoints,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=nodes/proxy,verbs=get
 
 // ComponentReconciler reconciles a Component object
 type ComponentReconciler struct {
@@ -467,7 +470,7 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.Fie
 	// component name so the flat value-override path used by the other components
 	// never runs against the umbrella CR.
 	if component.Spec.Component == components.ComponentNameUmbrella {
-		return r.umbrellaValues(component, cluster)
+		return r.umbrellaValues(ctx, component, cluster)
 	}
 
 	overrides := map[string]any{}
@@ -554,12 +557,27 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.Fie
 // Component.Spec.Values on top, so users can disable or tune individual
 // sub-components (e.g. autoscaler.castai-evictor.enabled=false) and override
 // any builder-provided value.
-func (r *ComponentReconciler) umbrellaValues(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]any, error) {
+//
+// The umbrella chart natively understands tags (readonly, node-autoscaler,
+// workload-autoscaler, full) to select which sub-components to enable — the
+// operator does not translate tags, it passes them through as-is.
+func (r *ComponentReconciler) umbrellaValues(ctx context.Context, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]any, error) {
 	globalCastai := map[string]any{
 		"apiURL":          cluster.Spec.API.APIURL,
 		"provider":        cluster.Spec.Provider,
 		"apiKeySecretRef": cluster.Spec.APIKeySecret,
 	}
+
+	// The umbrella chart requires global.castai.apiKey when the autoscaler or
+	// kent profile is enabled (validate-values.yaml). Fetch the actual key
+	// from the cluster's API key secret, mirroring what the individual
+	// component paths do.
+	authHelper := auth.NewAuth(cluster.Namespace, cluster.Name)
+	apiKey, err := authHelper.GetApiKey(ctx, r.Client)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get api key for umbrella values: %w", err)
+	}
+	globalCastai["apiKey"] = apiKey
 	if cluster.Spec.API.GrpcURL != "" {
 		globalCastai["grpcURL"] = cluster.Spec.API.GrpcURL
 	}
