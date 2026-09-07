@@ -221,8 +221,10 @@ func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.
 	// releases. The CRs are retained (with their spec.values) for rollback.
 	present, err := r.presentIndividuals(ctx, cluster)
 	if err != nil {
-		log.WithError(err).Warn("Failed to resolve present individuals; requeue")
-		return ctrl.Result{RequeueAfter: time.Minute}, nil
+		// Returning the error (not Warn + fixed requeue) records a reconcile
+		// error and applies exponential backoff, and degradeMigration surfaces
+		// the stall on the CR's Migrating condition.
+		return ctrl.Result{}, r.degradeMigration(ctx, log, component, fmt.Errorf("resolve present individuals: %w", err))
 	}
 	for _, sub := range present {
 		ind := &castwarev1alpha1.Component{}
@@ -251,8 +253,9 @@ func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.
 func (r *MigrationReconciler) phaseUninstallIndividuals(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (ctrl.Result, error) {
 	present, err := r.presentIndividuals(ctx, cluster)
 	if err != nil {
-		log.WithError(err).Warn("Failed to resolve present individuals; requeue")
-		return ctrl.Result{RequeueAfter: time.Minute}, nil
+		// See phaseMarkReadonly: the error is returned so controller-runtime
+		// records it and backs off, and the stall is surfaced on the CR.
+		return ctrl.Result{}, r.degradeMigration(ctx, log, component, fmt.Errorf("resolve present individuals: %w", err))
 	}
 
 	// Reverse of the scan phase order: phase2 (cluster-controller) before phase1
@@ -322,8 +325,9 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 
 	present, err := r.presentIndividuals(ctx, cluster)
 	if err != nil {
-		log.WithError(err).Warn("Failed to resolve present individuals for tag derivation; requeue")
-		return ctrl.Result{RequeueAfter: time.Minute}, nil
+		// See phaseMarkReadonly: returned (not swallowed) so the failure is
+		// observable in reconcile-error metrics and the Migrating condition.
+		return ctrl.Result{}, r.degradeMigration(ctx, log, component, fmt.Errorf("resolve present individuals for tag derivation: %w", err))
 	}
 	overrides := r.deriveUmbrellaOverrides(present)
 
@@ -810,6 +814,31 @@ func (r *MigrationReconciler) setMigratingCondition(component *castwarev1alpha1.
 		Reason:  phase,
 		Message: fmt.Sprintf("Migration in progress: %s", phase),
 	})
+}
+
+// degradeMigration sets Migrating=False (ReasonMigrationDegraded) on the
+// umbrella CR with the failure reason, then returns the error so
+// controller-runtime records a reconcile error and applies exponential backoff.
+// A status-write failure is logged, not propagated — the reconcile error must
+// surface the dependency failure, not the observability attempt. The condition
+// is cleared by the next successful setMigrationPhase.
+func (r *MigrationReconciler) degradeMigration(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, err error) error {
+	if condErr := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		latest := &castwarev1alpha1.Component{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, latest); err != nil {
+			return err
+		}
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:    castwarev1alpha1.TypeMigrating,
+			Status:  metav1.ConditionFalse,
+			Reason:  castwarev1alpha1.ReasonMigrationDegraded,
+			Message: fmt.Sprintf("Migration stalled: %s", err),
+		})
+		return r.Status().Update(ctx, latest)
+	}); condErr != nil {
+		log.WithError(condErr).Warn("Failed to record MigrationDegraded condition")
+	}
+	return err
 }
 
 // verifyDeadlineExceeded reports whether the Verify phase has been running

@@ -225,6 +225,65 @@ func TestMigrationReconciler_MarkReadonly(t *testing.T) {
 	r.True(controllerutil.ContainsFinalizer(u, MigrationFinalizer), "migration finalizer armed in MarkReadonly")
 }
 
+// TestMigrationReconciler_MothershipUnreachable_Degraded asserts a persistent
+// presentIndividuals failure (Mothership/auth unreachable) is surfaced, not
+// swallowed: the reconcile returns an error (controller-runtime records it and
+// applies exponential backoff instead of a fixed 1-minute requeue) and the CR
+// carries Migrating=False / MigrationDegraded with the failure reason. A
+// subsequent successful reconcile replaces the condition with the next phase.
+func TestMigrationReconciler_MothershipUnreachable_Degraded(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		migUmbrella(""),
+		migIndividual(components.ComponentNameAgent),
+	)
+	// Mothership lookup fails once (unknown error, not ErrNotFound — ResolveNames
+	// fails closed only when nothing resolves).
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(nil, errors.New("connection refused")).Times(1)
+	// Then recovers: umbrella + agent resolve, agent release present.
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).AnyTimes()
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameAgent).
+		Return(&castai.Component{Name: components.ComponentNameAgent, ReleaseName: components.ComponentNameAgent}, nil).AnyTimes()
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
+		Return(nil, castai.ErrNotFound).AnyTimes()
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameClusterController).
+		Return(nil, castai.ErrNotFound).AnyTimes()
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameAgent}).
+		Return(migRelease(components.ComponentNameAgent), nil).AnyTimes()
+
+	// First reconcile: failure surfaced as a reconcile error.
+	_, err := ops.sut.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
+	})
+	r.Error(err, "Mothership failure must surface as a reconcile error, not a silent requeue")
+	r.ErrorContains(err, "resolve present individuals")
+
+	u := getUmbrella(t, ops)
+	cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.NotNil(cond, "Migrating condition present")
+	r.Equal(metav1.ConditionFalse, cond.Status)
+	r.Equal(castwarev1alpha1.ReasonMigrationDegraded, cond.Reason)
+	r.Contains(cond.Message, "connection refused")
+
+	// Second reconcile after recovery: phase advances and the degraded condition
+	// is replaced by the in-progress phase reason.
+	_, err = ops.sut.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
+	})
+	r.NoError(err)
+	u = getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase)
+	cond = meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.NotNil(cond, "Migrating condition present after recovery")
+	r.Equal(metav1.ConditionTrue, cond.Status)
+	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, cond.Reason,
+		"degraded condition replaced by the phase the migration advanced to")
+}
+
 // TestMigrationReconciler_UninstallIndividuals_AgentExcluded asserts the agent
 // release is NEVER uninstalled (heartbeat preservation); only cluster-controller
 // and spot-handler are.

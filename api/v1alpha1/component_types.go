@@ -40,6 +40,11 @@ const (
 	// ReasonMigrationFailed is the TypeMigrating condition reason set when the
 	// migration has failed and rolled back to the individual regime.
 	ReasonMigrationFailed = "MigrationFailed"
+	// ReasonMigrationDegraded is the TypeMigrating condition reason set while a
+	// transient failure (typically Mothership/auth or helm connectivity) is
+	// blocking a phase from progressing. The migration is stalled, not failed;
+	// the controller retries with backoff until the dependency recovers.
+	ReasonMigrationDegraded = "MigrationDegraded"
 )
 
 // ComponentSpec defines the desired state of Component
