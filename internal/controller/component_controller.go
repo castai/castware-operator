@@ -1,15 +1,16 @@
 package controller
 
 import (
-	"castai-agent/pkg/services/providers/aks"
-	"castai-agent/pkg/services/providers/eks"
-	"castai-agent/pkg/services/providers/gke"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"castai-agent/pkg/services/providers/aks"
+	"castai-agent/pkg/services/providers/eks"
+	"castai-agent/pkg/services/providers/gke"
 
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/release"
@@ -112,6 +113,8 @@ var ErrNothingToRollback = errors.New("nothing to rollback")
 // +kubebuilder:rbac:groups=resource.k8s.io,resources=deviceclasses;devicetaintrules;resourceclaims;resourceclaimtemplates;resourceslices,verbs=get;list;watch
 // +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects;scaledjobs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=storageoptimization.cast.ai,resources=nodediskrecommendations,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=endpoints,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=nodes/proxy,verbs=get
 
 // ComponentReconciler reconciles a Component object
 type ComponentReconciler struct {
