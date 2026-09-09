@@ -323,3 +323,14 @@ rules:
       - "customresourcedefinitions"
     verbs:
       - "watch"
+  # For leader election leases of castware components installed with tags.full=true.
+  - apiGroups:
+      - "coordination.k8s.io"
+    resources:
+      - "leases"
+    verbs:
+      - "create"
+      - "get"
+      - "list"
+      - "update"
+      - "watch"
