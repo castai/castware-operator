@@ -62,11 +62,13 @@ rules:
   - nodes/status
   verbs:
   - patch
+  - update
 - apiGroups:
   - ""
   resources:
   - nodes
   verbs:
+  - create
   - patch
   - update
 - apiGroups:
@@ -74,7 +76,10 @@ rules:
   resources:
   - pods
   verbs:
+  - create
   - delete
+  - patch
+  - update
 - apiGroups:
   - ""
   resources:
@@ -119,7 +124,9 @@ rules:
   - events
   verbs:
   - create
+  - delete
   - patch
+  - update
 - apiGroups:
   - live.cast.ai
   resources:
@@ -213,9 +220,101 @@ rules:
   resources:
   - volumeattachments
   verbs:
+  - create
   - get
   - list
   - delete
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - nodes/metrics
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - pods/binding
+  verbs:
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - pods/resize
+  verbs:
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  - persistentvolumes
+  verbs:
+  - patch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  - replicasets
+  - statefulsets
+  verbs:
+  - patch
+  - update
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - patch
+- apiGroups:
+  - batch
+  resources:
+  - cronjobs
+  verbs:
+  - patch
+  - update
+- apiGroups:
+  - argoproj.io
+  resources:
+  - rollouts
+  verbs:
+  - patch
+  - update
+- apiGroups:
+  - autoscaling
+  resources:
+  - horizontalpodautoscalers
+  verbs:
+  - create
+  - delete
+  - patch
+  - update
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - storage.k8s.io
+  resources:
+  - csidrivers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - karpenter.sh
+  resources:
+  - nodeclaims
+  verbs:
+  - delete
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
   - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
