@@ -49,7 +49,9 @@ rules:
     verbs:
       - "patch"
       - "update"
-  # For node draining and patching.
+  # For node draining and patching. Node creation is required by the
+  # pod-pinner and pod-pinner-ext (tags.full), which create Node objects
+  # to pin pods to.
   - apiGroups:
       - ""
     resources:
@@ -211,6 +213,9 @@ rules:
       - "create"
       - "delete"
       - "update"
+  # For volume attach/detach during live migration (live-controller,
+  # tags.full): it creates VolumeAttachments on the target node before
+  # cutover and deletes them from the source node afterwards.
   - apiGroups:
       - "storage.k8s.io"
     resources:
