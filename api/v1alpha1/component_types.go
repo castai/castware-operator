@@ -123,6 +123,15 @@ type ComponentStatus struct {
 	// phase is idempotent. Cleared (empty) once migration finalizes or rolls back.
 	// +optional
 	MigrationPhase string `json:"migrationPhase,omitempty"`
+
+	// MigrationPhaseStartedAt is the time the current migration phase was
+	// entered. It is stamped by the migration controller on every phase
+	// transition and is used to enforce per-phase timeouts (e.g. the Verify
+	// deadline) — the Migrating condition's LastTransitionTime cannot serve
+	// that purpose because it only moves on a condition status change, not on
+	// a reason (phase) change. Cleared when the migration finalizes.
+	// +optional
+	MigrationPhaseStartedAt metav1.Time `json:"migrationPhaseStartedAt,omitempty"`
 }
 
 //+kubebuilder:object:root=true

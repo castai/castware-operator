@@ -241,7 +241,6 @@ func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.
 		}
 	}
 
-	r.setMigratingCondition(component, castwarev1alpha1.MigrationPhaseMarkReadonly)
 	return r.setMigrationPhase(ctx, component, castwarev1alpha1.MigrationPhaseUninstallIndividuals)
 }
 
@@ -292,7 +291,6 @@ func (r *MigrationReconciler) phaseUninstallIndividuals(ctx context.Context, log
 		}
 	}
 
-	r.setMigratingCondition(component, castwarev1alpha1.MigrationPhaseUninstallIndividuals)
 	return r.setMigrationPhase(ctx, component, castwarev1alpha1.MigrationPhaseInstallUmbrella)
 }
 
@@ -315,7 +313,6 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 		ReleaseName: umbrellaReleaseName,
 	}); getErr == nil {
 		log.Info("Umbrella release already present; advancing to verify")
-		r.setMigratingCondition(component, castwarev1alpha1.MigrationPhaseInstallUmbrella)
 		return r.setMigrationPhase(ctx, component, castwarev1alpha1.MigrationPhaseVerify)
 	} else if !isReleaseNotFound(getErr) {
 		// A non-not-found error means helm is unreachable; requeue rather than
@@ -380,7 +377,6 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 		return r.rollback(ctx, log, component, cluster, fmt.Errorf("install umbrella: %w", err))
 	}
 
-	r.setMigratingCondition(component, castwarev1alpha1.MigrationPhaseInstallUmbrella)
 	return r.setMigrationPhase(ctx, component, castwarev1alpha1.MigrationPhaseVerify)
 }
 
@@ -406,9 +402,9 @@ func (r *MigrationReconciler) phaseVerify(ctx context.Context, log logrus.FieldL
 	}
 
 	if rel.Info.Status != release.StatusDeployed {
-		// Check the verify deadline. The phase's start time is the
-		// Migrating condition's LastTransitionTime; if it predates the timeout,
-		// roll back rather than wait forever.
+		// Check the verify deadline. The phase's start time is
+		// status.migrationPhaseStartedAt (stamped when the phase was entered);
+		// if it predates the timeout, roll back rather than wait forever.
 		if r.verifyDeadlineExceeded(component) {
 			return r.rollback(ctx, log, component, cluster, fmt.Errorf("umbrella verify timeout: release status %s", rel.Info.Status))
 		}
@@ -427,7 +423,6 @@ func (r *MigrationReconciler) phaseVerify(ctx context.Context, log logrus.FieldL
 		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	}
 
-	r.setMigratingCondition(component, castwarev1alpha1.MigrationPhaseVerify)
 	return r.setMigrationPhase(ctx, component, castwarev1alpha1.MigrationPhaseFinalize)
 }
 
@@ -717,6 +712,7 @@ func (r *MigrationReconciler) finalizeUmbrellaSuccess(ctx context.Context, compo
 			return err
 		}
 		latest.Status.MigrationPhase = ""
+		latest.Status.MigrationPhaseStartedAt = metav1.Time{}
 		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 			Type:    castwarev1alpha1.TypeMigrating,
 			Status:  metav1.ConditionFalse,
@@ -782,8 +778,12 @@ func (r *MigrationReconciler) finalizeUmbrellaFailure(ctx context.Context, compo
 	})
 }
 
-// setMigrationPhase records the phase in status and sets the Migrating condition,
-// then returns nil so the next reconcile enters the new phase.
+// setMigrationPhase records the phase in status, stamps the per-phase start
+// time used by the Verify deadline, and sets the Migrating condition, then
+// returns nil so the next reconcile enters the new phase. This is the single
+// durable write of the Migrating condition: it re-reads the latest object and
+// persists it via the status subresource, so callers must not rely on
+// in-memory mutations of their local component copy being persisted.
 func (r *MigrationReconciler) setMigrationPhase(ctx context.Context, component *castwarev1alpha1.Component, phase string) (ctrl.Result, error) {
 	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		latest := &castwarev1alpha1.Component{}
@@ -791,6 +791,7 @@ func (r *MigrationReconciler) setMigrationPhase(ctx context.Context, component *
 			return err
 		}
 		latest.Status.MigrationPhase = phase
+		latest.Status.MigrationPhaseStartedAt = metav1.Now()
 		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 			Type:    castwarev1alpha1.TypeMigrating,
 			Status:  metav1.ConditionTrue,
@@ -802,18 +803,6 @@ func (r *MigrationReconciler) setMigrationPhase(ctx context.Context, component *
 		return ctrl.Result{}, fmt.Errorf("set migration phase %s: %w", phase, err)
 	}
 	return ctrl.Result{}, nil
-}
-
-// setMigratingCondition sets the in-memory Migrating condition on the component
-// object so subsequent phase logic in the same reconcile reads a consistent
-// LastTransitionTime. The durable write happens in setMigrationPhase.
-func (r *MigrationReconciler) setMigratingCondition(component *castwarev1alpha1.Component, phase string) {
-	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
-		Type:    castwarev1alpha1.TypeMigrating,
-		Status:  metav1.ConditionTrue,
-		Reason:  phase,
-		Message: fmt.Sprintf("Migration in progress: %s", phase),
-	})
 }
 
 // degradeMigration sets Migrating=False (ReasonMigrationDegraded) on the
@@ -842,17 +831,22 @@ func (r *MigrationReconciler) degradeMigration(ctx context.Context, log logrus.F
 }
 
 // verifyDeadlineExceeded reports whether the Verify phase has been running
-// longer than verifyTimeout, using the Migrating condition's LastTransitionTime
-// as the phase start. When the condition is absent (e.g. first entry), it starts
-// fresh (not exceeded).
+// longer than verifyTimeout, using status.migrationPhaseStartedAt as the phase
+// start. The Migrating condition's LastTransitionTime cannot serve this
+// purpose: meta.SetStatusCondition only moves it on a condition status change,
+// and the condition stays True across the whole state machine, so it marks
+// the migration start, not the Verify start. For migrations already in flight
+// under an operator version that predates the field (it is empty), the
+// condition's LastTransitionTime is used as a best-effort fallback; when both
+// are absent the deadline starts fresh (not exceeded).
 func (r *MigrationReconciler) verifyDeadlineExceeded(component *castwarev1alpha1.Component) bool {
+	if !component.Status.MigrationPhaseStartedAt.IsZero() {
+		return time.Since(component.Status.MigrationPhaseStartedAt.Time) > verifyTimeout
+	}
 	cond := meta.FindStatusCondition(component.Status.Conditions, castwarev1alpha1.TypeMigrating)
 	if cond == nil {
 		return false
 	}
-	// The condition's LastTransitionTime is refreshed each time the reason
-	// (phase) changes. Within the Verify phase it stays stable, so it marks the
-	// phase start. A re-entry after a prior phase sets a new timestamp.
 	return time.Since(cond.LastTransitionTime.Time) > verifyTimeout
 }
 

@@ -277,6 +277,7 @@ func TestMigrationReconciler_MothershipUnreachable_Degraded(t *testing.T) {
 	r.NoError(err)
 	u = getUmbrella(t, ops)
 	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase)
+	r.False(u.Status.MigrationPhaseStartedAt.IsZero(), "phase-start timestamp stamped on phase transition")
 	cond = meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
 	r.NotNil(cond, "Migrating condition present after recovery")
 	r.Equal(metav1.ConditionTrue, cond.Status)
@@ -516,6 +517,7 @@ func TestMigrationReconciler_Finalize_ClearsReadonlyBeforeFinalizerRemoval(t *te
 
 	u := getUmbrella(t, ops)
 	r.Equal("", u.Status.MigrationPhase, "phase cleared on success")
+	r.True(u.Status.MigrationPhaseStartedAt.IsZero(), "phase-start timestamp cleared on success")
 
 	// Both readonly+finalizer individuals are deleted outright (readonly cleared
 	// first, finalizer removed, then delete — no tombstones left behind).
@@ -523,6 +525,44 @@ func TestMigrationReconciler_Finalize_ClearsReadonlyBeforeFinalizerRemoval(t *te
 		err := ops.client.Get(context.Background(), types.NamespacedName{Namespace: migNamespace, Name: sub}, &castwarev1alpha1.Component{})
 		r.True(apierrors.IsNotFound(err), "individual CR %s should be deleted after Finalize (got err=%v)", sub, err)
 	}
+}
+
+// TestMigrationReconciler_VerifyDeadlineExceeded unit-tests the Verify-phase
+// deadline: the primary signal is status.migrationPhaseStartedAt (stamped on
+// every phase transition); the Migrating condition's LastTransitionTime is
+// only a legacy fallback for migrations already in flight when the field was
+// introduced, and a fresh start (neither present) is not exceeded.
+func TestMigrationReconciler_VerifyDeadlineExceeded(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	sut := &MigrationReconciler{}
+
+	withPhaseStart := func(ts metav1.Time) *castwarev1alpha1.Component {
+		c := migUmbrella(castwarev1alpha1.MigrationPhaseVerify)
+		c.Status.MigrationPhaseStartedAt = ts
+		return c
+	}
+	withLegacyCondition := func(ts metav1.Time) *castwarev1alpha1.Component {
+		c := migUmbrella(castwarev1alpha1.MigrationPhaseVerify)
+		meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+			Type:               castwarev1alpha1.TypeMigrating,
+			Status:             metav1.ConditionTrue,
+			Reason:             castwarev1alpha1.MigrationPhaseVerify,
+			LastTransitionTime: ts,
+		})
+		return c
+	}
+
+	r.True(sut.verifyDeadlineExceeded(withPhaseStart(metav1.NewTime(time.Now().Add(-2*verifyTimeout)))),
+		"phase-start timestamp past the deadline is exceeded")
+	r.False(sut.verifyDeadlineExceeded(withPhaseStart(metav1.NewTime(time.Now().Add(-verifyTimeout/2)))),
+		"phase-start timestamp inside the deadline is not exceeded")
+	r.True(sut.verifyDeadlineExceeded(withLegacyCondition(metav1.NewTime(time.Now().Add(-2*verifyTimeout)))),
+		"legacy fallback: old condition LastTransitionTime with no phase-start field is exceeded")
+	r.False(sut.verifyDeadlineExceeded(withLegacyCondition(metav1.NewTime(time.Now().Add(-verifyTimeout/2)))),
+		"legacy fallback: fresh condition LastTransitionTime with no phase-start field is not exceeded")
+	r.False(sut.verifyDeadlineExceeded(migUmbrella(castwarev1alpha1.MigrationPhaseVerify)),
+		"fresh start (neither field nor condition) is not exceeded")
 }
 
 // TestMigrationReconciler_VerifyFailure_Rollback asserts an induced verify
@@ -533,14 +573,9 @@ func TestMigrationReconciler_VerifyFailure_Rollback(t *testing.T) {
 	t.Parallel()
 	r := require.New(t)
 	umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseVerify)
-	// Seed a Migrating condition whose LastTransitionTime predates verifyTimeout
-	// so the not-deployed release triggers immediate rollback rather than requeue.
-	meta.SetStatusCondition(&umbrella.Status.Conditions, metav1.Condition{
-		Type:               castwarev1alpha1.TypeMigrating,
-		Status:             metav1.ConditionTrue,
-		Reason:             castwarev1alpha1.MigrationPhaseVerify,
-		LastTransitionTime: metav1.NewTime(time.Now().Add(-2 * verifyTimeout)),
-	})
+	// Seed a phase-start timestamp that predates verifyTimeout so the
+	// not-deployed release triggers immediate rollback rather than requeue.
+	umbrella.Status.MigrationPhaseStartedAt = metav1.NewTime(time.Now().Add(-2 * verifyTimeout))
 	ops := newMigrationTestOps(t,
 		migCluster(),
 		umbrella,
