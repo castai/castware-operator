@@ -24,6 +24,16 @@ package controller
 // regime before the CR — and its status.migrationPhase — is removed, instead of
 // leaving a half-migrated cluster with no controller to drive recovery.
 //
+// Permission gate: the umbrella chart renders a broader RBAC surface than the
+// phase1/phase2 individual charts, so an under-permissioned operator service
+// account would only fail mid-swap — after the non-agent individuals are already
+// uninstalled — leaving the cluster half-migrated. Before any release is touched
+// (top of phaseMarkReadonly, before the finalizer is armed), the controller asks
+// Mothership (components:validateInstall) whether the umbrella install is
+// permitted. A refusal sets Migrating=False / MigrationBlocked with the Mothership
+// block reason and leaves the CR and the cluster untouched; a Mothership failure
+// degrades the migration like any other dependency outage.
+//
 // Heartbeat continuity: the agent is the cluster's liveness signal to Mothership
 // (snapshots every ~15s). It is NEVER helm-uninstalled during migration — that
 // would delete the agent pods. Instead the umbrella installs with TakeOwnership
@@ -185,7 +195,26 @@ func (r *MigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // spec.readonly=true on it (sidelining the component reconciler for the whole
 // migration) and on each present individual sub-component CR, then advances to
 // UninstallIndividuals. Idempotent: patching an already-readonly CR is a no-op.
+//
+// The Mothership permission gate runs first, before the finalizer is armed and
+// before any spec is modified, so a refused migration leaves the CR and the
+// cluster byte-for-byte unchanged (only a status condition is written).
 func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (ctrl.Result, error) {
+	// Permission gate: the umbrella chart renders a broader RBAC surface than the
+	// individual charts. An under-permissioned service account must fail here —
+	// before any release is touched — rather than mid-swap after the non-agent
+	// individuals were uninstalled.
+	blocked, err := r.validateMigrationPermissions(ctx, log, component, cluster)
+	if err != nil {
+		// Mothership/auth unreachable: transient. Degrade (retry with backoff)
+		// rather than treat it as a refusal — the gate must not block a migration
+		// only because it cannot ask the question.
+		return ctrl.Result{}, r.degradeMigration(ctx, log, component, err)
+	}
+	if blocked {
+		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+	}
+
 	// Arm the deletion guard before anything else. Order is load-bearing: the
 	// validating webhook (ValidateUpdate) rejects updates to a CR that is
 	// readonly in both old and new state, so the finalizer can only be added
@@ -243,6 +272,74 @@ func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.
 
 	r.setMigratingCondition(component, castwarev1alpha1.MigrationPhaseMarkReadonly)
 	return r.setMigrationPhase(ctx, component, castwarev1alpha1.MigrationPhaseUninstallIndividuals)
+}
+
+// validateMigrationPermissions asks Mothership whether the umbrella install is
+// permitted for this cluster (components:validateInstall). The umbrella renders a
+// broader RBAC surface than the individual charts, so an under-permissioned
+// operator service account is refused here — before any release is touched —
+// instead of failing mid-swap and leaving the cluster half-migrated.
+//
+// A refused migration is recorded via blockMigration; a transport/API error is
+// returned so the caller degrades and retries (the gate must not block only
+// because it cannot ask the question). A migration resuming past MarkReadonly
+// never re-runs the gate: it is already beyond the point the gate protects.
+func (r *MigrationReconciler) validateMigrationPermissions(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (bool, error) {
+	castAiClient, err := r.getCastaiClient(ctx, cluster)
+	if err != nil {
+		return false, fmt.Errorf("get castai client for permission gate: %w", err)
+	}
+
+	// The server compares the component's required RBAC surface (selected from
+	// component_params) against the operator's installed conditions, so send
+	// the umbrella's user-supplied install values.
+	componentParams, err := utils.UnmarshalJSON(component.Spec.Values)
+	if err != nil {
+		return false, fmt.Errorf("unmarshal umbrella values for permission gate: %w", err)
+	}
+
+	validation, err := migrationgate.ValidateInstallPermissions(ctx, castAiClient, cluster.Spec.Cluster.ClusterID, component.Spec.Component, component.Spec.Version, componentParams)
+	if err != nil {
+		return false, fmt.Errorf("validate umbrella install permissions: %w", err)
+	}
+
+	if !validation.Allowed {
+		blockReason := "umbrella install not permitted by CAST.AI"
+		if validation.BlockReason != "" {
+			blockReason = validation.BlockReason
+		}
+		log.Warnf("Migration blocked by Mothership permission validation: %s", blockReason)
+		return true, r.blockMigration(ctx, log, component, blockReason)
+	}
+	log.Info("Permission gate passed; proceeding with migration")
+	return false, nil
+}
+
+// blockMigration sets Migrating=False (ReasonMigrationBlocked) on the umbrella CR
+// with the Mothership block reason, so the refusal is visible on the CR. The
+// migration is not failed — no rollback is driven — because nothing has been
+// touched yet; the caller requeues and the gate re-checks periodically, so the
+// migration proceeds automatically once the block reason is lifted (e.g. the
+// operator is reinstalled with extendedPermissions="true"). A status-write
+// failure is returned so the caller surfaces it.
+func (r *MigrationReconciler) blockMigration(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, blockReason string) error {
+	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		latest := &castwarev1alpha1.Component{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, latest); err != nil {
+			return err
+		}
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:    castwarev1alpha1.TypeMigrating,
+			Status:  metav1.ConditionFalse,
+			Reason:  castwarev1alpha1.ReasonMigrationBlocked,
+			Message: fmt.Sprintf("Migration blocked: %s", blockReason),
+		})
+		return r.Status().Update(ctx, latest)
+	}); err != nil {
+		log.WithError(err).Warn("Failed to record MigrationBlocked condition")
+		return fmt.Errorf("record MigrationBlocked condition: %w", err)
+	}
+	return nil
 }
 
 // phaseUninstallIndividuals uninstalls the non-agent individual releases in

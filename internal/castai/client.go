@@ -38,6 +38,7 @@ type CastAIClient interface {
 	PollActions(ctx context.Context, clusterID string) (*PollActionsResponse, error)
 	AckAction(ctx context.Context, clusterID, actionID string, error error) error
 	ValidateComponentUpgrade(ctx context.Context, req *ValidateComponentUpgradeRequest) (*ValidateComponentUpgradeResponse, error)
+	ValidateComponentInstall(ctx context.Context, req *ValidateComponentInstallRequest) (*ValidateComponentInstallResponse, error)
 }
 type Client struct {
 	log    logrus.FieldLogger
@@ -290,6 +291,29 @@ func (c *Client) ValidateComponentUpgrade(ctx context.Context, req *ValidateComp
 		SetPathParam("clusterId", req.ClusterID).
 		SetBody(req).
 		Post("cluster-management/v1/clusters/{clusterId}/components:validateUpgrade")
+	if err != nil {
+		return nil, err
+	}
+	err = c.toValidationError(resp)
+	if err != nil {
+		result.Allowed = false
+		result.BlockReason = err.Error()
+	}
+
+	return result, nil
+}
+
+func (c *Client) ValidateComponentInstall(ctx context.Context, req *ValidateComponentInstallRequest) (*ValidateComponentInstallResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.config.RequestTimeout)
+	defer cancel()
+
+	result := &ValidateComponentInstallResponse{}
+	resp, err := c.rest.R().
+		SetContext(ctx).
+		SetResult(result).
+		SetPathParam("clusterId", req.ClusterID).
+		SetBody(req).
+		Post("cluster-management/v1/clusters/{clusterId}/components:validateInstallation")
 	if err != nil {
 		return nil, err
 	}

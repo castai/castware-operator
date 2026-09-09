@@ -45,6 +45,14 @@ const (
 	// blocking a phase from progressing. The migration is stalled, not failed;
 	// the controller retries with backoff until the dependency recovers.
 	ReasonMigrationDegraded = "MigrationDegraded"
+	// ReasonMigrationBlocked is the TypeMigrating condition reason set when the
+	// pre-migration permission gate (Mothership validateInstall) refused the
+	// migration, e.g. because the operator's service account permissions are
+	// insufficient for the umbrella chart's broader RBAC surface. No release has
+	// been touched; the controller re-checks periodically and proceeds once the
+	// block reason is lifted (e.g. the operator was reinstalled with
+	// extendedPermissions="true").
+	ReasonMigrationBlocked = "MigrationBlocked"
 )
 
 // ComponentSpec defines the desired state of Component

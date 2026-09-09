@@ -134,6 +134,14 @@ func migIndividualWithValues(name, rawValues string) *castwarev1alpha1.Component
 	return ind
 }
 
+// expectPermissionGatePass wires the Mothership validateInstall expectation for
+// the pre-migration permission gate (phaseMarkReadonly runs it before anything
+// else). allowed=true lets the migration proceed.
+func expectPermissionGatePass(ops *migrationTestOps) {
+	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+		Return(&castai.ValidateComponentInstallResponse{Allowed: true}, nil).AnyTimes()
+}
+
 // expectResolveNames wires Mothership + helm expectations for
 // migrationgate.ResolveNames returning the three sub-components as present.
 func expectResolveNamesPresent(ops *migrationTestOps) {
@@ -203,17 +211,29 @@ func TestMigrationReconciler_NoOpForNonUmbrella(t *testing.T) {
 }
 
 // TestMigrationReconciler_MarkReadonly verifies the first phase sets readonly on
-// the umbrella and present individual CRs, then advances.
+// the umbrella and present individual CRs, then advances. The permission gate
+// must carry the umbrella's spec.values as component_params so the server
+// validates the RBAC surface the install will actually render.
 func TestMigrationReconciler_MarkReadonly(t *testing.T) {
 	t.Parallel()
 	r := require.New(t)
+	umbrella := migUmbrella("")
+	umbrella.Spec.Values = &apiextensionsv1.JSON{Raw: []byte(`{"tags":{"readonly":true}}`)}
 	ops := newMigrationTestOps(t,
 		migCluster(),
-		migUmbrella(""),
+		umbrella,
 		migIndividual(components.ComponentNameAgent),
 		migIndividual(components.ComponentNameSpotHandler),
 		migIndividual(components.ComponentNameClusterController),
 	)
+	// The gate request must carry the umbrella's effective values.
+	gateReq := func() *castai.ValidateComponentInstallRequest { return nil }
+	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, req *castai.ValidateComponentInstallRequest) (*castai.ValidateComponentInstallResponse, error) {
+			gateReqPtr := req
+			gateReq = func() *castai.ValidateComponentInstallRequest { return gateReqPtr }
+			return &castai.ValidateComponentInstallResponse{Allowed: true}, nil
+		}).AnyTimes()
 	expectResolveNamesPresent(ops)
 
 	reconcileOnce(t, ops)
@@ -223,6 +243,110 @@ func TestMigrationReconciler_MarkReadonly(t *testing.T) {
 	r.True(u.Spec.Readonly, "umbrella should be readonly")
 	// The deletion guard is armed before readonly is set (webhook ordering).
 	r.True(controllerutil.ContainsFinalizer(u, MigrationFinalizer), "migration finalizer armed in MarkReadonly")
+
+	// The permission gate ran with the umbrella's spec.values as component_params.
+	got := gateReq()
+	r.NotNil(got, "permission gate was called")
+	r.Equal(components.ComponentNameUmbrella, got.ComponentName)
+	r.Equal("1.0.0", got.TargetVersion)
+	tags, ok := got.ComponentParams["tags"].(map[string]any)
+	r.True(ok, "component_params.tags should be an object, got %T", got.ComponentParams["tags"])
+	r.Equal(true, tags["readonly"])
+}
+
+// TestMigrationReconciler_PermissionGate_Blocked asserts the pre-migration
+// permission gate: when Mothership's validateInstall refuses the umbrella
+// install (e.g. an under-permissioned operator service account for the
+// umbrella's broader RBAC surface), the migration is refused before ANY
+// release is touched — no helm interactions (no mock expectations are wired, so
+// any call fails the test), no finalizer armed, no readonly set, phase not
+// advanced — and the CR carries Migrating=False / MigrationBlocked with the
+// Mothership block reason. A later allowed validation lets the migration
+// proceed, so fixing the permissions auto-recovers.
+func TestMigrationReconciler_PermissionGate_Blocked(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	agent := migIndividual(components.ComponentNameAgent)
+	agent.Spec.Readonly = false
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		migUmbrella(""),
+		agent,
+		migIndividual(components.ComponentNameSpotHandler),
+	)
+	// Gate refuses with a block reason. No other Mothership/helm expectations:
+	// a blocked migration must not touch anything else.
+	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+		Return(&castai.ValidateComponentInstallResponse{
+			Allowed:     false,
+			BlockReason: "service account lacks permissions for the umbrella chart",
+		}, nil).Times(1)
+
+	// First reconcile: refused, nothing modified.
+	reconcileOnce(t, ops)
+
+	u := getUmbrella(t, ops)
+	r.Equal("", u.Status.MigrationPhase, "phase must not advance while blocked")
+	r.False(u.Spec.Readonly, "umbrella must not be set readonly while blocked")
+	r.False(controllerutil.ContainsFinalizer(u, MigrationFinalizer), "finalizer must not be armed while blocked")
+	cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.NotNil(cond, "Migrating condition present")
+	r.Equal(metav1.ConditionFalse, cond.Status)
+	r.Equal(castwarev1alpha1.ReasonMigrationBlocked, cond.Reason)
+	r.Contains(cond.Message, "service account lacks permissions for the umbrella chart")
+
+	// The individuals are untouched (no readonly, releases not probed).
+	for _, sub := range []string{components.ComponentNameAgent, components.ComponentNameSpotHandler} {
+		ind := &castwarev1alpha1.Component{}
+		r.NoError(ops.client.Get(context.Background(), types.NamespacedName{Namespace: migNamespace, Name: sub}, ind))
+		r.False(ind.Spec.Readonly, "individual %s must not be set readonly while blocked", sub)
+	}
+
+	// Permissions fixed: the gate passes and the migration proceeds.
+	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+		Return(&castai.ValidateComponentInstallResponse{Allowed: true}, nil).AnyTimes()
+	expectResolveNamesPresent(ops)
+
+	reconcileOnce(t, ops)
+
+	u = getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase,
+		"migration proceeds once the permission gate passes")
+	cond = meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.Equal(metav1.ConditionTrue, cond.Status, "blocked condition replaced by the in-progress phase")
+}
+
+// TestMigrationReconciler_PermissionGate_TransientError asserts the gate does
+// not treat a Mothership outage as a refusal: a validateInstall transport error
+// degrades the migration (reconcile error + MigrationDegraded condition) and
+// nothing is modified. Blocking on an unreachable Mothership would wedge every
+// migration behind a connectivity blip.
+func TestMigrationReconciler_PermissionGate_TransientError(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		migUmbrella(""),
+		migIndividual(components.ComponentNameAgent),
+	)
+	// No other Mothership/helm expectations: the reconcile must stop at the gate.
+	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+		Return(nil, errors.New("connection refused")).Times(1)
+
+	_, err := ops.sut.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
+	})
+	r.Error(err, "gate transport failure must surface as a reconcile error")
+	r.ErrorContains(err, "validate umbrella install permissions")
+
+	u := getUmbrella(t, ops)
+	r.Equal("", u.Status.MigrationPhase, "phase must not advance on a degraded gate")
+	r.False(u.Spec.Readonly, "umbrella untouched while degraded")
+	cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.NotNil(cond, "Migrating condition present")
+	r.Equal(metav1.ConditionFalse, cond.Status)
+	r.Equal(castwarev1alpha1.ReasonMigrationDegraded, cond.Reason)
+	r.Contains(cond.Message, "connection refused")
 }
 
 // TestMigrationReconciler_MothershipUnreachable_Degraded asserts a persistent
@@ -239,6 +363,10 @@ func TestMigrationReconciler_MothershipUnreachable_Degraded(t *testing.T) {
 		migUmbrella(""),
 		migIndividual(components.ComponentNameAgent),
 	)
+	// The permission gate passes; the failure happens downstream in
+	// presentIndividuals (see PermissionGate_TransientError for the gate itself
+	// degrading on an unreachable Mothership).
+	expectPermissionGatePass(ops)
 	// Mothership lookup fails once (unknown error, not ErrNotFound — ResolveNames
 	// fails closed only when nothing resolves).
 	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
@@ -635,6 +763,7 @@ func TestMigrationReconciler_BothTriggersConverge(t *testing.T) {
 	// migration target.
 	r := require.New(t)
 	ops := newMigrationTestOps(t, migCluster(), migUmbrella(""), migIndividual(components.ComponentNameAgent))
+	expectPermissionGatePass(ops)
 	expectResolveNamesPresent(ops)
 
 	reconcileOnce(t, ops)
@@ -798,6 +927,7 @@ func TestMigrationReconciler_LegacyReadonlyResume_ProceedsWithoutGuard(t *testin
 		migIndividual(components.ComponentNameSpotHandler),
 		migIndividual(components.ComponentNameClusterController),
 	)
+	expectPermissionGatePass(ops)
 	expectResolveNamesPresent(ops)
 
 	reconcileOnce(t, ops)
