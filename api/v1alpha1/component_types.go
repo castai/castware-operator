@@ -14,6 +14,44 @@ const (
 	ComponentMigrationTerraform = "terraform"
 
 	LabelHelmChart = "castware.cast.ai/helm-chart"
+
+	// MigrationPhase values, recorded in ComponentStatus.MigrationPhase by the
+	// migration controller to make the standalone → umbrella migration durable
+	// and resumable across operator restarts.
+	//
+	// Phases proceed: MarkReadonly → UninstallIndividuals → InstallUmbrella →
+	// Verify → Finalize. On verification failure the controller transitions to
+	// RolledBack (a terminal failure state) after restoring the individual
+	// regime.
+	MigrationPhaseMarkReadonly         = "MarkReadonly"
+	MigrationPhaseUninstallIndividuals = "UninstallIndividuals"
+	MigrationPhaseInstallUmbrella      = "InstallUmbrella"
+	MigrationPhaseVerify               = "Verify"
+	MigrationPhaseFinalize             = "Finalize"
+	MigrationPhaseRolledBack           = "RolledBack"
+
+	// TypeMigrating is the status condition set on the umbrella Component CR while
+	// the migration state machine is running. Its reason is the current phase.
+	TypeMigrating = "Migrating"
+
+	// ReasonMigrationSucceeded is the TypeMigrating condition reason set when the
+	// migration has finalized successfully.
+	ReasonMigrationSucceeded = "MigrationSucceeded"
+	// ReasonMigrationFailed is the TypeMigrating condition reason set when the
+	// migration has failed and rolled back to the individual regime.
+	ReasonMigrationFailed = "MigrationFailed"
+	// ReasonMigrationDegraded is the TypeMigrating condition reason set while a
+	// transient failure (typically Mothership/auth or helm connectivity) is
+	// blocking a phase from progressing. The migration is stalled, not failed;
+	// the controller retries with backoff until the dependency recovers.
+	ReasonMigrationDegraded = "MigrationDegraded"
+	// ReasonMigrationBlocked is the TypeMigrating condition reason set while a
+	// standalone release of an umbrella-managed chart the operator does not
+	// support (e.g. castai-kvisor, castai-evictor) is present in the cluster.
+	// The migration is halted before the umbrella install — which would
+	// silently absorb or duplicate such a release — until it is removed; it
+	// then proceeds from the recorded phase without operator intervention.
+	ReasonMigrationBlocked = "MigrationBlocked"
 )
 
 // ComponentSpec defines the desired state of Component
@@ -84,6 +122,23 @@ type ComponentStatus struct {
 	// Used to detect helm upgrades (including parameter-only changes without version changes) and report updated parameters.
 	// +optional
 	LastReportedHelmRevision int `json:"lastReportedHelmRevision,omitempty"`
+
+	// MigrationPhase is the durable progress marker of the standalone → umbrella
+	// migration state machine. It is set by the migration controller when
+	// spec.migrate is true on an umbrella Component CR, and survives operator
+	// restart so an interrupted migration resumes from the recorded phase. Each
+	// phase is idempotent. Cleared (empty) once migration finalizes or rolls back.
+	// +optional
+	MigrationPhase string `json:"migrationPhase,omitempty"`
+
+	// MigrationPhaseStartedAt is the time the current migration phase was
+	// entered. It is stamped by the migration controller on every phase
+	// transition and is used to enforce per-phase timeouts (e.g. the Verify
+	// deadline) — the Migrating condition's LastTransitionTime cannot serve
+	// that purpose because it only moves on a condition status change, not on
+	// a reason (phase) change. Cleared when the migration finalizes.
+	// +optional
+	MigrationPhaseStartedAt metav1.Time `json:"migrationPhaseStartedAt,omitempty"`
 }
 
 //+kubebuilder:object:root=true

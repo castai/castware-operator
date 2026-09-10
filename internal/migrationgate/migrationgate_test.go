@@ -7,6 +7,7 @@ import (
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
+	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/storage/driver"
 
@@ -259,5 +260,68 @@ func TestResolveNames(t *testing.T) {
 		r.NoError(err)
 		r.Len(names.SubcomponentReleases, 1)
 		r.Contains(names.SubcomponentReleases, components.ComponentNameAgent)
+	})
+}
+
+// relWithChart builds a release record identified by the given chart name,
+// with an arbitrary release name — InstalledUmbrellaOnlyCharts must match on
+// chart identity, not release name.
+func relWithChart(chartName string) *release.Release {
+	return &release.Release{
+		Name:  "arbitrary-release-name",
+		Chart: &chart.Chart{Metadata: &chart.Metadata{Name: chartName, Version: "1.0.0"}},
+	}
+}
+
+func TestInstalledUmbrellaOnlyCharts(t *testing.T) {
+	t.Parallel()
+	ns := "castai-agent"
+
+	t.Run("returns matching charts in list order", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		hc := mock_helm.NewMockClient(ctrl)
+
+		// A kvisor and an evictor standalone under arbitrary release names,
+		// plus unrelated releases that must not match (including the
+		// operator-supported castai-agent, whose standalone release is the
+		// migration's normal starting point, not a conflict).
+		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return([]*release.Release{
+			relWithChart("castai-agent"),
+			relWithChart("castai-kvisor"),
+			relWithChart("metrics-server"),
+			relWithChart("castai-evictor"),
+		}, nil)
+
+		present, err := InstalledUmbrellaOnlyCharts(hc, ns)
+		r.NoError(err)
+		r.Equal([]string{"castai-kvisor", "castai-evictor"}, present)
+	})
+
+	t.Run("no standalone umbrella-managed releases present", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		hc := mock_helm.NewMockClient(ctrl)
+
+		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return([]*release.Release{
+			relWithChart("castai-agent"),
+			relWithChart("castai-spot-handler"),
+		}, nil)
+
+		present, err := InstalledUmbrellaOnlyCharts(hc, ns)
+		r.NoError(err)
+		r.Empty(present)
+	})
+
+	t.Run("helm listing error is returned so callers block (fail-safe)", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		hc := mock_helm.NewMockClient(ctrl)
+
+		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return(nil, errors.New("helm unreachable"))
+
+		present, err := InstalledUmbrellaOnlyCharts(hc, ns)
+		r.Error(err)
+		r.Nil(present)
 	})
 }

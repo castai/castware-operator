@@ -36,7 +36,7 @@ import (
 	"github.com/castai/castware-operator/internal/migrationgate"
 	"github.com/castai/castware-operator/internal/params"
 	"github.com/castai/castware-operator/internal/rolebindings"
-	"github.com/castai/castware-operator/internal/utils"
+	"github.com/castai/castware-operator/internal/values"
 )
 
 // Definitions to manage status conditions
@@ -552,44 +552,11 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.Fie
 }
 
 // umbrellaValues builds the Helm values for the castai-umbrella component from
-// the Cluster spec. It populates global.castai.{apiURL,grpcURL,provider,
-// clusterID,apiKeySecretRef} and then deep-merges the user-supplied
-// Component.Spec.Values on top, so users can disable or tune individual
-// sub-components (e.g. autoscaler.castai-evictor.enabled=false) and override
-// any builder-provided value.
+// the Cluster spec. Delegates to the shared values.UmbrellaValues builder so the
+// component reconciler and the migration controller derive umbrella values from
+// one source of truth. See values.UmbrellaValues for the merge semantics.
 func (r *ComponentReconciler) umbrellaValues(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]any, error) {
-	globalCastai := map[string]any{
-		"apiURL":          cluster.Spec.API.APIURL,
-		"provider":        cluster.Spec.Provider,
-		"apiKeySecretRef": cluster.Spec.APIKeySecret,
-	}
-	if cluster.Spec.API.GrpcURL != "" {
-		globalCastai["grpcURL"] = cluster.Spec.API.GrpcURL
-	}
-	if cluster.Spec.Cluster != nil && cluster.Spec.Cluster.ClusterID != "" {
-		globalCastai["clusterID"] = cluster.Spec.Cluster.ClusterID
-	}
-
-	values := map[string]any{
-		"global": map[string]any{
-			"castai": globalCastai,
-		},
-	}
-
-	// Merge the user-supplied values on top of the builder output so that
-	// operator-managed global.castai.* fields act as defaults and the user can
-	// override them or tune individual sub-components.
-	if component.Spec.Values != nil {
-		userValues, err := utils.UnmarshalJSON(component.Spec.Values)
-		if err != nil {
-			return nil, fmt.Errorf("failed to unmarshal umbrella values: %w", err)
-		}
-		if err := utils.MergeMaps(values, userValues); err != nil {
-			return nil, fmt.Errorf("failed to merge umbrella values: %w", err)
-		}
-	}
-
-	return values, nil
+	return values.UmbrellaValues(component, cluster, nil)
 }
 
 // forceReadonlyIfUmbrellaInstalled enforces the umbrella / individual charts
