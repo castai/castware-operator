@@ -160,7 +160,12 @@ func (r *MigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	if !component.Spec.Migrate {
-		return ctrl.Result{}, nil
+		// Terminal repair hook: a migration whose finalize cleared spec.migrate
+		// but whose status write failed would otherwise be invisible forever —
+		// this gate returns early and nothing re-runs the finalize. The stale
+		// phase identifies the outcome (see repairStaleMigrationStatus); clean
+		// states (phase "" after success, RolledBack after failure) no-op.
+		return r.repairStaleMigrationStatus(ctx, log, component)
 	}
 
 	log = log.WithField("cluster", component.Spec.Cluster)
@@ -821,6 +826,15 @@ func (r *MigrationReconciler) finalizeUmbrellaSuccess(ctx context.Context, compo
 		}
 		return fmt.Errorf("clear umbrella migrate/readonly: %w", err)
 	}
+	return r.writeUmbrellaSuccessStatus(ctx, component)
+}
+
+// writeUmbrellaSuccessStatus records the terminal success status: empty
+// migration phase, Migrating=False (ReasonMigrationSucceeded), Available=True.
+// Split out of finalizeUmbrellaSuccess so repairStaleMigrationStatus can
+// re-record it when the original write failed after spec.migrate was cleared.
+// The CR having already been deleted (abort path) is tolerated.
+func (r *MigrationReconciler) writeUmbrellaSuccessStatus(ctx context.Context, component *castwarev1alpha1.Component) error {
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		latest := &castwarev1alpha1.Component{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, latest); err != nil {
@@ -872,6 +886,16 @@ func (r *MigrationReconciler) finalizeUmbrellaFailure(ctx context.Context, compo
 		}
 		return fmt.Errorf("clear umbrella migrate/readonly on failure: %w", err)
 	}
+	return r.writeUmbrellaFailureStatus(ctx, component, cause)
+}
+
+// writeUmbrellaFailureStatus records the terminal failure status: RolledBack
+// phase, Migrating=False (ReasonMigrationFailed), Available=False. Split out of
+// finalizeUmbrellaFailure so repairStaleMigrationStatus can re-record it when
+// the original write failed after spec.migrate was cleared; the original cause
+// is lost in that case, so the repair passes a synthetic one. The CR having
+// already been deleted (abort path) is tolerated.
+func (r *MigrationReconciler) writeUmbrellaFailureStatus(ctx context.Context, component *castwarev1alpha1.Component, cause error) error {
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		latest := &castwarev1alpha1.Component{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, latest); err != nil {
@@ -896,6 +920,44 @@ func (r *MigrationReconciler) finalizeUmbrellaFailure(ctx context.Context, compo
 		})
 		return r.Status().Update(ctx, latest)
 	})
+}
+
+// repairStaleMigrationStatus re-records the terminal migration status on an
+// umbrella CR whose finalize status write failed. The finalize paths clear
+// spec.migrate (and readonly/finalizer) in one write and record the terminal
+// status in a second; if that second write fails, the requeue hits the
+// spec.migrate gate in Reconcile and nothing ever corrects the status — the CR
+// would keep reporting an in-flight migration forever. The stale phase
+// identifies the terminal outcome, because the only writers of spec.migrate=false
+// are the finalize paths and the phase each leaves behind is deterministic:
+//
+//   - phase Finalize: the migration reached and completed phaseFinalize (no
+//     rollback is reachable from Finalize — its error paths requeue instead),
+//     so the success status write failed. Re-record the success status.
+//   - any other non-empty phase: the rollback path ran (its setMigrationPhase
+//     recorded the phase it was triggered from), so the failure status write
+//     failed. Re-record the failure status with a synthetic cause (the original
+//     cause was lost with the failed write).
+//   - phase "" (clean success) and RolledBack (the failure path's own terminal
+//     record) are the normal terminal states and are left alone.
+func (r *MigrationReconciler) repairStaleMigrationStatus(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
+	switch phase := component.Status.MigrationPhase; phase {
+	case "", castwarev1alpha1.MigrationPhaseRolledBack:
+		return ctrl.Result{}, nil
+	case castwarev1alpha1.MigrationPhaseFinalize:
+		log.Info("Repairing stale migration status: finalize succeeded but its status write failed")
+		if err := r.writeUmbrellaSuccessStatus(ctx, component); err != nil {
+			return ctrl.Result{}, fmt.Errorf("repair stale success status: %w", err)
+		}
+		return ctrl.Result{}, nil
+	default:
+		log.Warnf("Repairing stale migration status: rollback from phase %q completed but its status write failed", phase)
+		err := r.writeUmbrellaFailureStatus(ctx, component, errors.New("original failure cause unavailable (terminal status re-recorded after a failed status write)"))
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("repair stale failure status: %w", err)
+		}
+		return ctrl.Result{}, nil
+	}
 }
 
 // setMigrationPhase records the phase in status, stamps the per-phase start

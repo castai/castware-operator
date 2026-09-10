@@ -862,6 +862,102 @@ func TestMigrationReconciler_VerifyFailure_Rollback(t *testing.T) {
 	}
 }
 
+// TestMigrationReconciler_RepairStaleMigrationStatus asserts the terminal
+// repair: when a finalize cleared spec.migrate but its status write failed,
+// the next reconcile (which stops at the spec.migrate gate) re-records the
+// terminal status instead of leaving the CR reporting an in-flight migration
+// forever. The stale phase identifies the outcome: Finalize means the success
+// status write failed; any other non-terminal phase means the failure status
+// write failed. Clean terminal states ("" and RolledBack) are left alone.
+func TestMigrationReconciler_RepairStaleMigrationStatus(t *testing.T) {
+	t.Parallel()
+
+	// migTerminal builds an umbrella CR in the stuck state a failed finalize
+	// status write leaves behind: spec.migrate already cleared (the spec write
+	// succeeded), stale phase, stale in-flight Migrating condition.
+	migTerminal := func(phase string) *castwarev1alpha1.Component {
+		u := migUmbrella(phase)
+		u.Spec.Migrate = false
+		u.Status.MigrationPhaseStartedAt = metav1.NewTime(time.Now().Add(-time.Hour))
+		meta.SetStatusCondition(&u.Status.Conditions, metav1.Condition{
+			Type:    castwarev1alpha1.TypeMigrating,
+			Status:  metav1.ConditionTrue,
+			Reason:  phase,
+			Message: "Migration in progress: " + phase,
+		})
+		return u
+	}
+
+	t.Run("stale success (phase Finalize) is repaired", func(t *testing.T) {
+		r := require.New(t)
+		ops := newMigrationTestOps(t, migCluster(), migTerminal(castwarev1alpha1.MigrationPhaseFinalize))
+		reconcileOnce(t, ops)
+
+		u := getUmbrella(t, ops)
+		r.Equal("", u.Status.MigrationPhase, "phase cleared by the repair")
+		r.True(u.Status.MigrationPhaseStartedAt.IsZero(), "phase-start timestamp cleared by the repair")
+		cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+		r.NotNil(cond)
+		r.Equal(metav1.ConditionFalse, cond.Status)
+		r.Equal(castwarev1alpha1.ReasonMigrationSucceeded, cond.Reason)
+		avail := meta.FindStatusCondition(u.Status.Conditions, typeAvailableComponent)
+		r.NotNil(avail, "Available condition recorded by the repair")
+		r.Equal(metav1.ConditionTrue, avail.Status)
+	})
+
+	t.Run("stale failure (non-terminal phase) is repaired", func(t *testing.T) {
+		r := require.New(t)
+		ops := newMigrationTestOps(t, migCluster(), migTerminal(castwarev1alpha1.MigrationPhaseVerify))
+		reconcileOnce(t, ops)
+
+		u := getUmbrella(t, ops)
+		r.Equal(castwarev1alpha1.MigrationPhaseRolledBack, u.Status.MigrationPhase, "RolledBack recorded by the repair")
+		cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+		r.NotNil(cond)
+		r.Equal(metav1.ConditionFalse, cond.Status)
+		r.Equal(castwarev1alpha1.ReasonMigrationFailed, cond.Reason)
+		r.Contains(cond.Message, "original failure cause unavailable")
+		avail := meta.FindStatusCondition(u.Status.Conditions, typeAvailableComponent)
+		r.NotNil(avail, "Available condition recorded by the repair")
+		r.Equal(metav1.ConditionFalse, avail.Status)
+	})
+
+	t.Run("clean states are left alone", func(t *testing.T) {
+		t.Run("empty phase", func(t *testing.T) {
+			r := require.New(t)
+			clean := migUmbrella("")
+			clean.Spec.Migrate = false
+			ops := newMigrationTestOps(t, migCluster(), clean)
+			reconcileOnce(t, ops)
+
+			u := getUmbrella(t, ops)
+			r.Equal("", u.Status.MigrationPhase)
+			r.Nil(meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating),
+				"no conditions written for a clean terminal state")
+		})
+
+		t.Run("RolledBack phase", func(t *testing.T) {
+			r := require.New(t)
+			// Terminal failure already fully recorded (phase + Migrating
+			// condition, but no Available yet — if the repair rewrote the
+			// status, Available would appear).
+			rolledBack := migTerminal(castwarev1alpha1.MigrationPhaseRolledBack)
+			rolledBack.Status.Conditions = []metav1.Condition{{
+				Type:   castwarev1alpha1.TypeMigrating,
+				Status: metav1.ConditionFalse,
+				Reason: castwarev1alpha1.ReasonMigrationFailed,
+			}}
+			ops := newMigrationTestOps(t, migCluster(), rolledBack)
+			reconcileOnce(t, ops)
+
+			u := getUmbrella(t, ops)
+			r.Equal(castwarev1alpha1.MigrationPhaseRolledBack, u.Status.MigrationPhase)
+			r.Nil(meta.FindStatusCondition(u.Status.Conditions, typeAvailableComponent),
+				"RolledBack is already terminal; no status rewrite")
+		})
+	})
+}
+
 // TestMigrationReconciler_Rollback_NameResolutionFallback asserts the rollback
 // umbrella uninstall does not depend on Mothership being reachable: when the
 // umbrella release name cannot be resolved, the uninstall falls back to the
