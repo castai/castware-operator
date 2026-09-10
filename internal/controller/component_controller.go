@@ -370,8 +370,10 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Umbrella / individual charts mutual-exclusivity gate (umbrella side):
 	// refuse to install the umbrella component while individual component
-	// releases are present, unless spec.migrate is set to opt into the
-	// takeover. Applies only to a fresh umbrella install (no current version,
+	// releases are present. With spec.migrate set, the install is deferred to
+	// the migration controller (which derives the umbrella's values from the
+	// present individuals); only the permission gate runs here.
+	// Applies only to a fresh umbrella install (no current version,
 	// not already progressing).
 	if component.Spec.Component == components.ComponentNameUmbrella &&
 		component.Status.CurrentVersion == "" &&
@@ -635,10 +637,12 @@ func (r *ComponentReconciler) forceReadonlyIfUmbrellaInstalled(ctx context.Conte
 
 // refuseUmbrellaIfIndividualsPresent enforces the umbrella side of the gate: it
 // refuses to install the umbrella component while individual component releases
-// are present, unless spec.migrate is set to opt into the takeover — in which
-// case the Mothership permission gate must allow the install first (see
-// validateUmbrellaMigrationPermissions). Returns
-// blocked=true when the install was refused (an UmbrellaConflict condition is
+// are present. When spec.migrate is set, the install is not done from here —
+// the migration controller owns it (it derives the umbrella's install values
+// from the present individuals: tag mode and value carry-over); the Mothership
+// permission gate still runs first so a refusal (MigrationBlocked) surfaces on
+// the CR whichever reconciler runs first. Returns
+// blocked=true when the install must not run (an UmbrellaConflict condition is
 // set and installComponent must not run). When no individuals are present it
 // clears any stale UmbrellaConflict condition.
 func (r *ComponentReconciler) refuseUmbrellaIfIndividualsPresent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (bool, error) {
@@ -674,15 +678,13 @@ func (r *ComponentReconciler) refuseUmbrellaIfIndividualsPresent(ctx context.Con
 	}
 
 	if component.Spec.Migrate {
-		log.Warnf("Individual component releases present (%s) but spec.migrate is true; proceeding with umbrella takeover", strings.Join(present, ", "))
+		log.Warnf("Individual component releases present (%s) and spec.migrate is true; leaving the umbrella install to the migration controller", strings.Join(present, ", "))
 		// Permission gate (same Mothership validateInstall call the migration
-		// controller's phaseMarkReadonly runs): the umbrella renders a broader
-		// RBAC surface than the individual charts, so an under-permissioned
-		// service account must be refused before this reconciler installs the
-		// umbrella — otherwise it would win the race with the migration
-		// controller (which sidelines it by setting readonly) and install
-		// without the gate. Blocked installs retry on the next reconcile;
-		// a Mothership failure degrades like any other dependency outage.
+		// controller's phaseMarkReadonly runs): running it here too means a
+		// refusal surfaces on the CR (Migrating=False / MigrationBlocked)
+		// whichever reconciler runs first, and the caller's 5-minute requeue
+		// re-checks until it lifts. A Mothership failure degrades like any
+		// other dependency outage.
 		blocked, err := r.validateUmbrellaMigrationPermissions(ctx, log, castAiClient, component, cluster)
 		if err != nil {
 			return false, fmt.Errorf("validate umbrella migration permissions: %w", err)
@@ -690,24 +692,24 @@ func (r *ComponentReconciler) refuseUmbrellaIfIndividualsPresent(ctx context.Con
 		if blocked {
 			return true, nil
 		}
-		// Clear any stale refusal condition since the install is now allowed.
-		if meta.FindStatusCondition(component.Status.Conditions, typeUmbrellaConflict) != nil {
-			meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
-				Type:    typeUmbrellaConflict,
-				Status:  metav1.ConditionFalse,
-				Reason:  reasonIndividualReleasesPresent,
-				Message: "spec.migrate is true; umbrella takeover may proceed",
-			})
-			if err := r.updateStatus(ctx, component); err != nil {
-				return false, err
-			}
-			// updateStatus bumped the server-side ResourceVersion; re-fetch so
-			// the caller's object is current for subsequent (non-retry) writes.
-			if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, component); err != nil {
-				return false, err
-			}
+		// Gate passed — still do not install from here. The migration controller
+		// derives the umbrella's install values from the present individuals
+		// (deriveUmbrellaOverrides: tag mode; value carry-over); installing here
+		// with plain UmbrellaValues would race it with the wrong configuration,
+		// and the migration's InstallUmbrella phase would then fast-path over
+		// the already-present release without correcting it. Block until the
+		// migration sidelines this reconciler (spec.readonly) or completes and
+		// the individuals are gone (the present==[] path clears the condition).
+		meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
+			Type:    typeUmbrellaConflict,
+			Status:  metav1.ConditionTrue,
+			Reason:  reasonIndividualReleasesPresent,
+			Message: "spec.migrate is true; the migration controller owns the umbrella install (derived tag mode and value carry-over)",
+		})
+		if err := r.updateStatus(ctx, component); err != nil {
+			return false, err
 		}
-		return false, nil
+		return true, nil
 	}
 
 	log.Warnf("Refusing umbrella install: individual component releases present (%s) and spec.migrate is not set", strings.Join(present, ", "))
@@ -732,18 +734,15 @@ func (r *ComponentReconciler) refuseUmbrellaIfIndividualsPresent(ctx context.Con
 
 // validateUmbrellaMigrationPermissions runs the Mothership permission gate for
 // a spec.migrate=true umbrella install on the component reconciler's path. The
-// migration controller runs the same gate in phaseMarkReadonly, but until it
-// sets spec.readonly (sidelining this reconciler) both race for the install;
-// without the gate here, a component-reconciler reconcile that wins the race
-// would install the umbrella without checking permissions, and an
-// under-permissioned service account would fail mid-swap with the cluster
-// half-migrated.
+// migration controller runs the same gate in phaseMarkReadonly; this copy
+// exists so a refusal surfaces on the CR (Migrating=False / MigrationBlocked)
+// whichever reconciler runs first — this reconciler never installs the umbrella
+// during a migration (see refuseUmbrellaIfIndividualsPresent), so the gate is
+// purely early surfacing, not install authorization.
 //
-// A denial sets Migrating=False / MigrationBlocked (the condition the migration
-// controller's gate sets, so the refusal reads identically regardless of which
-// reconciler blocked it) and returns blocked=true. A Mothership failure is
-// returned as an error so the caller requeues rather than treating an outage as
-// a refusal.
+// A denial sets Migrating=False / MigrationBlocked and returns blocked=true. A
+// Mothership failure is returned as an error so the caller requeues rather
+// than treating an outage as a refusal.
 func (r *ComponentReconciler) validateUmbrellaMigrationPermissions(ctx context.Context, log logrus.FieldLogger, castAiClient castai.CastAIClient, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (bool, error) {
 	// The server compares the component's required RBAC surface (selected from
 	// component_params) against the operator's installed conditions, so send
