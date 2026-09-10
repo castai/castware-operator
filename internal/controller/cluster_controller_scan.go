@@ -361,9 +361,6 @@ func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, castaiCli
 	if err != nil {
 		return false, err
 	}
-	// Correct stale values copied from a long-running helm release before the
-	// migrated Component CR adopts them.
-	values = r.correctMigratedComponentValues(ctx, log, cluster.Namespace, componentName, values)
 	component = newComponent(componentName, compVersion.Version, cluster)
 	component.Spec.Values = &v1.JSON{Raw: values}
 	component.Spec.Migration = compVersion.MigrationMode
@@ -514,83 +511,4 @@ func newComponent(componentName, version string, cluster *castwarev1alpha1.Clust
 		component.Spec.Version = version
 	}
 	return component
-}
-
-// correctMigratedComponentValues rewrites stored helm values that would
-// otherwise be copied verbatim from a long-running helm release into a new
-// migrated Component CR's spec.values, when a more authoritative in-cluster
-// signal disagrees with the stored value.
-func (r *ClusterReconciler) correctMigratedComponentValues(
-	ctx context.Context,
-	log logrus.FieldLogger,
-	namespace, componentName string,
-	valuesJSON []byte,
-) []byte {
-	if componentName != components.ComponentNameClusterController {
-		return valuesJSON
-	}
-
-	var values map[string]interface{}
-	if err := json.Unmarshal(valuesJSON, &values); err != nil {
-		return valuesJSON
-	}
-	autoscaling, ok := values["autoscaling"].(map[string]interface{})
-	if !ok {
-		return valuesJSON
-	}
-	storedEnabled, ok := autoscaling["enabled"].(bool)
-	if !ok || storedEnabled {
-		// Either the flag is unset, or it is already true. No override needed;
-		// leaving a stored true in place is critical (never auto-flip true->false).
-		return valuesJSON
-	}
-
-	// Stored autoscaling.enabled == false. Cross-check against the cluster's
-	// actual capability set: if castai-workload-autoscaler is deployed, the
-	// stored value is stale and we override it to true.
-	deployed, err := workloadAutoscalerDeployed(ctx, r.Client, namespace)
-	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"component":   componentName,
-			"namespace":   namespace,
-			"stored_flag": "autoscaling.enabled=false",
-		}).Warn("Failed to probe workload-autoscaler deployment during migration value correction; stored value preserved")
-		return valuesJSON
-	}
-	if !deployed {
-		return valuesJSON
-	}
-
-	autoscaling["enabled"] = true
-
-	corrected, err := json.Marshal(values)
-	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"component": componentName,
-			"namespace": namespace,
-		}).Warn("Failed to re-marshal corrected migration values; falling back to stored values")
-		return valuesJSON
-	}
-
-	log.WithFields(logrus.Fields{
-		"component":     componentName,
-		"namespace":     namespace,
-		"stored_flag":   "autoscaling.enabled=false",
-		"corrected_to":  "autoscaling.enabled=true",
-		"reason":        "castai-workload-autoscaler Deployment present in namespace; stored helm value was stale",
-		"issue-related": "CSU-5996",
-	}).Warn("Corrected stale migration value for cluster-controller; autoscaling RBAC will be rendered with full verb set")
-
-	return corrected
-}
-
-func workloadAutoscalerDeployed(ctx context.Context, c client.Client, namespace string) (bool, error) {
-	var list appsv1.DeploymentList
-	if err := c.List(ctx, &list, &client.ListOptions{
-		Namespace:     namespace,
-		LabelSelector: labels.SelectorFromSet(labels.Set{nameLabelKey: "castai-workload-autoscaler"}),
-	}); err != nil {
-		return false, err
-	}
-	return len(list.Items) > 0, nil
 }
