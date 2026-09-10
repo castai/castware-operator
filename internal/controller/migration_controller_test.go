@@ -230,7 +230,6 @@ func TestMigrationReconciler_MarkReadonly(t *testing.T) {
 	ops := newMigrationTestOps(t,
 		migCluster(),
 		umbrella,
-		migUmbrella(""),
 		migIndividual(components.ComponentNameAgent),
 		migIndividual(components.ComponentNameSpotHandler),
 		migIndividual(components.ComponentNameClusterController),
