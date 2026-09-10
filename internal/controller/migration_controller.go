@@ -1147,7 +1147,7 @@ func (r *MigrationReconciler) getCastaiClient(ctx context.Context, cluster *cast
 		return nil, err
 	}
 	rest := castai.NewRestyClient(r.Config, cluster.Spec.API.APIURL, auth)
-	return castai.NewClient(nil, r.Config, rest), nil
+	return castai.NewClient(r.Log, r.Config, rest), nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	"castai-agent/pkg/castai"
@@ -55,7 +56,15 @@ func GetVersion() config.CastwareOperatorVersion {
 }
 
 // NewClient returns new Client for communicating with Cast AI.
+// NewClient returns a CAST AI API client. A nil logger is defended against
+// — replaced with a discarding logger — so a caller passing nil cannot store
+// a FieldLogger that panics the first time a client method logs.
 func NewClient(log logrus.FieldLogger, config *config.Config, rest *resty.Client) CastAIClient {
+	if log == nil {
+		discard := logrus.New()
+		discard.SetOutput(io.Discard)
+		log = discard
+	}
 	return &Client{
 		log:    log,
 		config: config,
