@@ -24,6 +24,15 @@ package controller
 // regime before the CR — and its status.migrationPhase — is removed, instead of
 // leaving a half-migrated cluster with no controller to drive recovery.
 //
+// Standalone conflict guard: the umbrella chart also renders charts the
+// operator does not manage as individual components (castai-kvisor,
+// castai-evictor, ...). A standalone release of one of those in the namespace
+// is invisible to the mutual-exclusivity gate yet collides with the umbrella
+// install (TakeOwnership silently absorbs it, or a duplicate workload is
+// rendered). phaseMarkReadonly and phaseInstallUmbrella block on such releases
+// (Migrating=False / MigrationBlocked) until they are removed; the migration
+// then proceeds from the recorded phase.
+//
 // Heartbeat continuity: the agent is the cluster's liveness signal to Mothership
 // (snapshots every ~15s). It is NEVER helm-uninstalled during migration — that
 // would delete the agent pods. Instead the umbrella installs with TakeOwnership
@@ -186,6 +195,16 @@ func (r *MigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // migration) and on each present individual sub-component CR, then advances to
 // UninstallIndividuals. Idempotent: patching an already-readonly CR is a no-op.
 func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (ctrl.Result, error) {
+	// Pre-flight guard, before any CR/release mutation: block while a
+	// standalone release of an umbrella-managed chart the operator does not
+	// support is present — the umbrella install would silently absorb or
+	// duplicate it (see checkUmbrellaOnlyConflicts). Runs first so a blocked
+	// migration leaves the cluster untouched and resumes once the conflict is
+	// removed.
+	if err := r.checkUmbrellaOnlyConflicts(ctx, log, component); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// Arm the deletion guard before anything else. Order is load-bearing: the
 	// validating webhook (ValidateUpdate) rejects updates to a CR that is
 	// readonly in both old and new state, so the finalizer can only be added
@@ -318,6 +337,16 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 		// A non-not-found error means helm is unreachable; requeue rather than
 		// risk a partial install.
 		return ctrl.Result{}, fmt.Errorf("check umbrella release presence: %w", getErr)
+	}
+
+	// Pre-install guard: same block as phaseMarkReadonly's pre-flight, re-run
+	// here so a migration resumed at this phase (or a standalone release that
+	// appeared mid-migration) is caught before the umbrella install absorbs
+	// or duplicates it. The already-present fast path above is skipped on
+	// purpose: once the umbrella is installed the adoption (if any) already
+	// happened, and blocking Finalize would not undo it.
+	if err := r.checkUmbrellaOnlyConflicts(ctx, log, component); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	present, err := r.presentIndividuals(ctx, cluster)
@@ -812,6 +841,27 @@ func (r *MigrationReconciler) setMigrationPhase(ctx context.Context, component *
 // surface the dependency failure, not the observability attempt. The condition
 // is cleared by the next successful setMigrationPhase.
 func (r *MigrationReconciler) degradeMigration(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, err error) error {
+	r.setMigratingFalse(ctx, log, component, castwarev1alpha1.ReasonMigrationDegraded, fmt.Sprintf("Migration stalled: %s", err))
+	return err
+}
+
+// blockMigration sets Migrating=False (ReasonMigrationBlocked) on the
+// umbrella CR with the blocking reason, then returns the error so
+// controller-runtime records a reconcile error and applies exponential
+// backoff. Unlike a degradation, a block requires human action (remove the
+// standalone release); the migration proceeds from the recorded phase on the
+// next reconcile once the blocking condition is gone, and the condition is
+// replaced by the next successful setMigrationPhase.
+func (r *MigrationReconciler) blockMigration(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, err error) error {
+	r.setMigratingFalse(ctx, log, component, castwarev1alpha1.ReasonMigrationBlocked, fmt.Sprintf("Migration blocked: %s", err))
+	return err
+}
+
+// setMigratingFalse writes Migrating=False with the given reason on the
+// umbrella CR. A status-write failure is logged, not propagated — the
+// returned reconcile error must surface the blocking/stalling cause, not the
+// observability attempt.
+func (r *MigrationReconciler) setMigratingFalse(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, reason, message string) {
 	if condErr := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		latest := &castwarev1alpha1.Component{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, latest); err != nil {
@@ -820,14 +870,36 @@ func (r *MigrationReconciler) degradeMigration(ctx context.Context, log logrus.F
 		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 			Type:    castwarev1alpha1.TypeMigrating,
 			Status:  metav1.ConditionFalse,
-			Reason:  castwarev1alpha1.ReasonMigrationDegraded,
-			Message: fmt.Sprintf("Migration stalled: %s", err),
+			Reason:  reason,
+			Message: message,
 		})
 		return r.Status().Update(ctx, latest)
 	}); condErr != nil {
-		log.WithError(condErr).Warn("Failed to record MigrationDegraded condition")
+		log.WithError(condErr).Warnf("Failed to record %s condition", reason)
 	}
-	return err
+}
+
+// checkUmbrellaOnlyConflicts blocks the migration while a standalone release
+// of an umbrella-managed chart the operator does not individually support
+// (e.g. castai-kvisor, castai-evictor) is present in the component's
+// namespace. The umbrella install takes ownership of name-matching
+// resources — silently absorbing the standalone release and leaving a ghost
+// that the migration rollback would then delete — and renders duplicates
+// when names differ. Blocking forces the standalone release to be removed
+// first; the migration then proceeds from the recorded phase. Fail-safe: if
+// helm cannot be queried, the migration is degraded rather than allowed to
+// proceed on unknown state.
+func (r *MigrationReconciler) checkUmbrellaOnlyConflicts(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) error {
+	present, err := migrationgate.InstalledUmbrellaOnlyCharts(r.HelmClient, component.Namespace)
+	if err != nil {
+		return r.degradeMigration(ctx, log, component, fmt.Errorf("check standalone umbrella-managed releases: %w", err))
+	}
+	if len(present) == 0 {
+		return nil
+	}
+	return r.blockMigration(ctx, log, component, fmt.Errorf(
+		"standalone release(s) of umbrella-managed chart(s) present: %s; the umbrella chart installs them and the operator cannot migrate a standalone install — remove the release(s) and the migration will proceed",
+		strings.Join(present, ", ")))
 }
 
 // verifyDeadlineExceeded reports whether the Verify phase has been running

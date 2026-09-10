@@ -73,6 +73,10 @@ type ForgetReleaseOptions struct {
 	ReleaseName string
 }
 
+type ListReleasesOptions struct {
+	Namespace string
+}
+
 func NewClient(log logrus.FieldLogger, loader ChartLoader, restConfig *rest.Config) Client {
 	return &client{
 		log: log,
@@ -101,6 +105,13 @@ type Client interface {
 	// so deleting them (which Uninstall would do) is avoided. Returns nil if
 	// the release is not found in storage.
 	ForgetRelease(opts ForgetReleaseOptions) error
+	// ListReleases returns every release record in Helm storage for the
+	// namespace, in any state (deployed, failed, pending, superseded, and
+	// uninstalled records retained via --keep-history). The state breadth
+	// matches GetRelease, which returns the latest revision regardless of
+	// status, so a retained uninstalled record reads as "present" here too —
+	// the fail-safe choice for conflict probing.
+	ListReleases(opts ListReleasesOptions) ([]*release.Release, error)
 }
 
 type client struct {
@@ -244,6 +255,21 @@ func (c *client) GetRelease(opts GetReleaseOptions) (*release.Release, error) {
 // TakeOwnership — uninstalling the agent release would delete the agent pods
 // (the cluster's Mothership liveness signal), so the release is "forgotten"
 // instead. Idempotent: a missing release is not an error.
+func (c *client) ListReleases(opts ListReleasesOptions) ([]*release.Release, error) {
+	cfg, err := c.configurationGetter.Get(opts.Namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	list := action.NewList(cfg)
+	list.All = true
+	rels, err := list.Run()
+	if err != nil {
+		return nil, fmt.Errorf("listing helm releases, namespace=%s: %w", opts.Namespace, err)
+	}
+	return rels, nil
+}
+
 func (c *client) ForgetRelease(opts ForgetReleaseOptions) error {
 	cfg, err := c.configurationGetter.Get(opts.Namespace)
 	if err != nil {

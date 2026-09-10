@@ -45,6 +45,13 @@ const (
 	// blocking a phase from progressing. The migration is stalled, not failed;
 	// the controller retries with backoff until the dependency recovers.
 	ReasonMigrationDegraded = "MigrationDegraded"
+	// ReasonMigrationBlocked is the TypeMigrating condition reason set while a
+	// standalone release of an umbrella-managed chart the operator does not
+	// support (e.g. castai-kvisor, castai-evictor) is present in the cluster.
+	// The migration is halted before the umbrella install — which would
+	// silently absorb or duplicate such a release — until it is removed; it
+	// then proceeds from the recorded phase without operator intervention.
+	ReasonMigrationBlocked = "MigrationBlocked"
 )
 
 // ComponentSpec defines the desired state of Component

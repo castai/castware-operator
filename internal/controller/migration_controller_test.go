@@ -151,6 +151,14 @@ func expectResolveNamesPresent(ops *migrationTestOps) {
 	}
 }
 
+// expectNoUmbrellaOnlyCharts wires the helm listing expectation for the
+// pre-flight (phaseMarkReadonly) and pre-install (phaseInstallUmbrella) guard:
+// no standalone umbrella-managed releases present, so the migration proceeds.
+func expectNoUmbrellaOnlyCharts(ops *migrationTestOps) {
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return(nil, nil).AnyTimes()
+}
+
 func migRelease(name string) *release.Release {
 	return &release.Release{
 		Name:  name,
@@ -215,6 +223,7 @@ func TestMigrationReconciler_MarkReadonly(t *testing.T) {
 		migIndividual(components.ComponentNameClusterController),
 	)
 	expectResolveNamesPresent(ops)
+	expectNoUmbrellaOnlyCharts(ops)
 
 	reconcileOnce(t, ops)
 
@@ -239,6 +248,7 @@ func TestMigrationReconciler_MothershipUnreachable_Degraded(t *testing.T) {
 		migUmbrella(""),
 		migIndividual(components.ComponentNameAgent),
 	)
+	expectNoUmbrellaOnlyCharts(ops)
 	// Mothership lookup fails once (unknown error, not ErrNotFound — ResolveNames
 	// fails closed only when nothing resolves).
 	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
@@ -328,6 +338,7 @@ func TestMigrationReconciler_InstallUmbrella_AgentOnly_ReadonlyTag(t *testing.T)
 		migUmbrella(castwarev1alpha1.MigrationPhaseInstallUmbrella),
 		migIndividual(components.ComponentNameAgent),
 	)
+	expectNoUmbrellaOnlyCharts(ops)
 	// ResolveNames probes all sub-components: agent is present, spot-handler and
 	// cluster-controller are absent on Mothership (ErrNotFound) so they are skipped.
 	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
@@ -366,6 +377,7 @@ func TestMigrationReconciler_InstallUmbrella_CarriesOverIndividualValues(t *test
 		migIndividualWithValues(components.ComponentNameAgent, agentValues),
 		migIndividualWithValues(components.ComponentNameSpotHandler, spotHandlerValues),
 	)
+	expectNoUmbrellaOnlyCharts(ops)
 	// Agent + spot-handler present; cluster-controller absent on Mothership.
 	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
 		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).AnyTimes()
@@ -565,6 +577,96 @@ func TestMigrationReconciler_VerifyDeadlineExceeded(t *testing.T) {
 		"fresh start (neither field nor condition) is not exceeded")
 }
 
+// TestMigrationReconciler_UmbrellaOnlyStandalone_BlocksMigration asserts a
+// standalone release of an umbrella-managed chart the operator does not
+// support (castai-kvisor) blocks the migration before any mutation: no
+// finalizer, no readonly, phase unchanged, Migrating=False with
+// ReasonMigrationBlocked. Once the standalone release is removed, the next
+// reconcile proceeds — the block is self-healing and needs no operator
+// intervention.
+func TestMigrationReconciler_UmbrellaOnlyStandalone_BlocksMigration(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		migUmbrella(""),
+		migIndividual(components.ComponentNameAgent),
+	)
+	expectResolveNamesPresent(ops)
+	// A standalone castai-kvisor release is present; after the user removes
+	// it, subsequent reconciles see an empty list.
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return([]*release.Release{migRelease("castai-kvisor")}, nil).Times(1)
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return(nil, nil).AnyTimes()
+
+	// First reconcile: blocked, surfaced as a reconcile error (backoff +
+	// metrics) with the offending chart named.
+	_, err := ops.sut.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
+	})
+	r.Error(err)
+	r.ErrorContains(err, "castai-kvisor")
+
+	u := getUmbrella(t, ops)
+	r.Equal("", u.Status.MigrationPhase, "phase unchanged while blocked")
+	r.False(u.Spec.Readonly, "umbrella untouched while blocked")
+	r.False(controllerutil.ContainsFinalizer(u, MigrationFinalizer), "finalizer not armed while blocked")
+	cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.NotNil(cond, "Migrating condition present while blocked")
+	r.Equal(metav1.ConditionFalse, cond.Status)
+	r.Equal(castwarev1alpha1.ReasonMigrationBlocked, cond.Reason)
+	r.Contains(cond.Message, "castai-kvisor")
+
+	// Standalone removed: the migration proceeds on the next reconcile and the
+	// blocked condition is replaced by the next phase.
+	_, err = ops.sut.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
+	})
+	r.NoError(err)
+	u = getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase,
+		"migration proceeds after the block clears")
+	cond = meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.NotNil(cond)
+	r.Equal(metav1.ConditionTrue, cond.Status, "blocked condition replaced by the in-progress phase")
+}
+
+// TestMigrationReconciler_UmbrellaOnlyStandalone_BlocksBeforeInstall asserts
+// the same guard re-runs before the umbrella install for a migration already
+// at the InstallUmbrella phase (resumed migration, or a standalone release
+// that appeared mid-flight): the install is not attempted while the conflict
+// exists. No Install mock is wired — an attempted install fails the test.
+func TestMigrationReconciler_UmbrellaOnlyStandalone_BlocksBeforeInstall(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		migUmbrella(castwarev1alpha1.MigrationPhaseInstallUmbrella),
+	)
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).AnyTimes()
+	// Umbrella release not yet installed (fresh/resumed pre-install path).
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(nil, errors.New("no release found"))
+	// Standalone kvisor present.
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return([]*release.Release{migRelease("castai-kvisor")}, nil)
+
+	_, err := ops.sut.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
+	})
+	r.Error(err)
+	r.ErrorContains(err, "castai-kvisor")
+
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseInstallUmbrella, u.Status.MigrationPhase,
+		"phase unchanged while blocked")
+	cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.NotNil(cond, "Migrating condition present while blocked")
+	r.Equal(castwarev1alpha1.ReasonMigrationBlocked, cond.Reason)
+}
+
 // TestMigrationReconciler_VerifyFailure_Rollback asserts an induced verify
 // failure (umbrella release Failed) rolls back: umbrella uninstalled,
 // individuals re-enabled (readonly cleared) so ComponentReconciler reinstalls
@@ -671,6 +773,7 @@ func TestMigrationReconciler_BothTriggersConverge(t *testing.T) {
 	r := require.New(t)
 	ops := newMigrationTestOps(t, migCluster(), migUmbrella(""), migIndividual(components.ComponentNameAgent))
 	expectResolveNamesPresent(ops)
+	expectNoUmbrellaOnlyCharts(ops)
 
 	reconcileOnce(t, ops)
 	u := getUmbrella(t, ops)
@@ -834,6 +937,7 @@ func TestMigrationReconciler_LegacyReadonlyResume_ProceedsWithoutGuard(t *testin
 		migIndividual(components.ComponentNameClusterController),
 	)
 	expectResolveNamesPresent(ops)
+	expectNoUmbrellaOnlyCharts(ops)
 
 	reconcileOnce(t, ops)
 
