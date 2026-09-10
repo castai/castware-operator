@@ -562,7 +562,6 @@ func (r *ClusterReconciler) correctMigratedComponentValues(
 	}
 
 	autoscaling["enabled"] = true
-	values["autoscaling"] = autoscaling
 
 	corrected, err := json.Marshal(values)
 	if err != nil {
