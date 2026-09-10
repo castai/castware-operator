@@ -655,18 +655,29 @@ func (r *MigrationReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 	// — cluster-controller/spot-handler — leaving a hybrid state, which is
 	// worse.)
 	umbrellaReleaseName, nameErr := r.releaseNameFor(ctx, cluster, components.ComponentNameUmbrella)
-	if nameErr == nil {
-		if _, err := r.HelmClient.Uninstall(helm.UninstallOptions{
-			Namespace:      component.Namespace,
-			ReleaseName:    umbrellaReleaseName,
-			IgnoreNotFound: true,
-			Wait:           true,
-		}); err != nil {
-			// A failed umbrella uninstall leaves the cluster in a hybrid state.
-			// Surface it; the next reconcile of the scan path will warn
-			// Mothership about the hybrid config.
-			log.WithError(err).Error("Failed to uninstall umbrella during rollback; cluster may be in hybrid state")
-		}
+	if nameErr != nil {
+		// Fall back to the default umbrella release name rather than skip the
+		// uninstall: skipping re-enables the individuals below while the
+		// umbrella stays installed — the hybrid state this rollback exists to
+		// prevent. The default matches the common case (the release name is the
+		// component name unless Mothership overrides it), and Uninstall's
+		// IgnoreNotFound makes a wrong guess harmless. Mirrors the fallback in
+		// recordMigrationResult.
+		log.WithError(nameErr).Warn("Failed to resolve umbrella release name for rollback; falling back to the default release name")
+		umbrellaReleaseName = components.ComponentNameUmbrella
+	}
+	if _, err := r.HelmClient.Uninstall(helm.UninstallOptions{
+		Namespace:      component.Namespace,
+		ReleaseName:    umbrellaReleaseName,
+		IgnoreNotFound: true,
+		Wait:           true,
+	}); err != nil {
+		// A failed umbrella uninstall leaves the cluster in a hybrid state.
+		// Surface it on the CR's failure condition (via the wrapped cause below)
+		// as well as the operator log; the next reconcile of the scan path will
+		// also warn Mothership about the hybrid config.
+		log.WithError(err).Error("Failed to uninstall umbrella during rollback; cluster may be in hybrid state")
+		cause = fmt.Errorf("%w; additionally, the umbrella uninstall failed: %v — cluster may be in a hybrid state until it is removed", cause, err)
 	}
 
 	// Re-enable the individual CRs so ComponentReconciler reinstalls them. The

@@ -862,6 +862,74 @@ func TestMigrationReconciler_VerifyFailure_Rollback(t *testing.T) {
 	}
 }
 
+// TestMigrationReconciler_Rollback_NameResolutionFallback asserts the rollback
+// umbrella uninstall does not depend on Mothership being reachable: when the
+// umbrella release name cannot be resolved, the uninstall falls back to the
+// default release name instead of being skipped (a skipped uninstall would
+// re-enable the individuals while the umbrella stays installed — the hybrid
+// state the rollback exists to prevent). A failing uninstall additionally
+// surfaces the hybrid-state risk on the Migrating condition, not just in the
+// operator log.
+func TestMigrationReconciler_Rollback_NameResolutionFallback(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseVerify)
+	umbrella.Status.MigrationPhaseStartedAt = metav1.NewTime(time.Now().Add(-2 * verifyTimeout))
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		umbrella,
+		migIndividual(components.ComponentNameAgent),
+		migIndividual(components.ComponentNameClusterController),
+	)
+	// Umbrella release exists but is Failed — not Deployed.
+	failedRelease := migRelease(components.ComponentNameUmbrella)
+	failedRelease.Info.Status = release.StatusFailed
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(failedRelease, nil)
+	// phaseVerify resolves the umbrella release name before probing helm; the
+	// Mothership outage starts right after, so the rollback (and the result
+	// report) hit the unresolvable-name path.
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).Times(1)
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(nil, errors.New("connection refused")).AnyTimes()
+	// The uninstall is still attempted — with the DEFAULT release name (the
+	// gomock expectation's exact match enforces it) — and fails, exercising the
+	// hybrid-state surfacing.
+	ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+		Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella, Wait: true, IgnoreNotFound: true,
+	}).Return(nil, errors.New("helm unreachable"))
+	// Rollback's re-enable loop does not call Mothership; recordMigrationResult
+	// falls back to the default name like the uninstall.
+	ops.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), migClusterID, gomock.Any()).
+		Return(nil).AnyTimes()
+
+	// Mark individuals readonly first so rollback can clear it.
+	for _, sub := range []string{components.ComponentNameAgent, components.ComponentNameClusterController} {
+		ind := &castwarev1alpha1.Component{}
+		r.NoError(ops.client.Get(context.Background(), types.NamespacedName{Namespace: migNamespace, Name: sub}, ind))
+		ind.Spec.Readonly = true
+		r.NoError(ops.client.Update(context.Background(), ind))
+	}
+
+	reconcileOnce(t, ops)
+
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseRolledBack, u.Status.MigrationPhase)
+	r.False(u.Spec.Migrate, "migrate cleared on rollback")
+	// The hybrid-state risk is surfaced on the condition, not just logged.
+	cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.NotNil(cond)
+	r.Equal(castwarev1alpha1.ReasonMigrationFailed, cond.Reason)
+	r.Contains(cond.Message, "hybrid state", "uninstall failure surfaces the hybrid-state risk on the condition")
+	// Individuals still re-enabled.
+	for _, sub := range []string{components.ComponentNameAgent, components.ComponentNameClusterController} {
+		ind := &castwarev1alpha1.Component{}
+		r.NoError(ops.client.Get(context.Background(), types.NamespacedName{Namespace: migNamespace, Name: sub}, ind))
+		r.False(ind.Spec.Readonly, "individual %s re-enabled for rollback", sub)
+	}
+}
+
 // TestMigrationReconciler_RestartResume asserts the controller resumes from the
 // recorded phase across a "restart" (a fresh reconcile reading status.phase).
 func TestMigrationReconciler_RestartResume(t *testing.T) {
