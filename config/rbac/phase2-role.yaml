@@ -7,7 +7,8 @@ metadata:
     castware.cast.ai/extended-permissions: "true"
 rules:
   # Readonly.
-  - apiGroups: [ "" ]
+  - apiGroups:
+      - ""
     resources:
       - "pods"
       - "nodes"
@@ -15,12 +16,14 @@ rules:
       - "get"
       - "list"
       - "watch"
-  - apiGroups: [ "" ]
+  - apiGroups:
+      - ""
     resources:
       - "namespaces"
     verbs:
       - "get"
-  - apiGroups: [ "" ]
+  - apiGroups:
+      - ""
     resources:
       - "events"
     verbs:
@@ -39,30 +42,44 @@ rules:
       - "delete"
       - "update"
   # For advertising extended resources
-  - apiGroups: [ "" ]
+  - apiGroups:
+      - ""
     resources:
       - "nodes/status"
     verbs:
       - "patch"
-  # For node draining and patching.
-  - apiGroups: [ "" ]
+      - "update"
+  # For node draining and patching. Node creation is required by the
+  # pod-pinner and pod-pinner-ext (tags.full), which create Node objects
+  # to pin pods to.
+  - apiGroups:
+      - ""
     resources:
       - "nodes"
     verbs:
+      - "create"
       - "patch"
       - "update"
-  - apiGroups: [ "" ]
+  # For pod lifecycle management (live-controller, pod-mutator, pod-pinner,
+  # workload-autoscaler).
+  - apiGroups:
+      - ""
     resources:
       - "pods"
     verbs:
+      - "create"
       - "delete"
-  - apiGroups: [ "" ]
+      - "patch"
+      - "update"
+  - apiGroups:
+      - ""
     resources:
       - "pods/eviction"
     verbs:
       - "create"
   # For node deletion.
-  - apiGroups: [ "" ]
+  - apiGroups:
+      - ""
     resources:
       - "nodes"
     verbs:
@@ -94,10 +111,16 @@ rules:
       - "kubernetes.io/kube-apiserver-client-kubelet"
     verbs:
       - "approve"
-  # For creating events.
-  - apiGroups: [ "" ]
-    resources: [ "events" ]
-    verbs: [ "create", "patch" ]
+  # For creating, updating and deleting events.
+  - apiGroups:
+      - ""
+    resources:
+      - "events"
+    verbs:
+      - "create"
+      - "delete"
+      - "patch"
+      - "update"
   # For live migration
   - apiGroups:
       - "live.cast.ai"
@@ -151,14 +174,16 @@ rules:
     verbs:
       - "get"
       - "delete"
-  - apiGroups: [ "" ]
+  - apiGroups:
+      - ""
     resources:
       - "namespaces"
     resourceNames:
       - "castai-agent"
     verbs:
       - "delete"
-  - apiGroups: [ "" ]
+  - apiGroups:
+      - ""
     resources:
       - "namespaces"
     resourceNames:
@@ -178,7 +203,8 @@ rules:
   # For creating pod mutations-related custom resources
   - apiGroups:
       - "pod-mutations.cast.ai"
-    resources: [ "*" ]
+    resources:
+      - "*"
     verbs:
       - "get"
       - "list"
@@ -187,12 +213,124 @@ rules:
       - "create"
       - "delete"
       - "update"
+  # For volume attach/detach during live migration (live-controller,
+  # tags.full): it creates VolumeAttachments on the target node before
+  # cutover and deletes them from the source node afterwards.
   - apiGroups:
       - "storage.k8s.io"
     resources:
-      - volumeattachments
+      - "volumeattachments"
     verbs:
-      - get
-      - list
-      - delete
-      - watch
+      - "create"
+      - "get"
+      - "list"
+      - "delete"
+      - "watch"
+  # tags.full component permissions (workload-autoscaler, live-controller,
+  # pod-mutator, pod-pinner, evictor) not covered by the base manager-role.
+  - apiGroups:
+      - ""
+    resources:
+      - "nodes/metrics"
+    verbs:
+      - "get"
+  - apiGroups:
+      - ""
+    resources:
+      - "pods/binding"
+    verbs:
+      - "create"
+  - apiGroups:
+      - ""
+    resources:
+      - "pods/resize"
+    verbs:
+      - "patch"
+  - apiGroups:
+      - ""
+    resources:
+      - "persistentvolumeclaims"
+      - "persistentvolumes"
+    verbs:
+      - "patch"
+  # For workload modifications (workload-autoscaler, live-controller).
+  - apiGroups:
+      - "apps"
+    resources:
+      - "deployments"
+      - "replicasets"
+      - "statefulsets"
+    verbs:
+      - "patch"
+      - "update"
+  - apiGroups:
+      - "batch"
+    resources:
+      - "jobs"
+    verbs:
+      - "patch"
+  - apiGroups:
+      - "batch"
+    resources:
+      - "cronjobs"
+    verbs:
+      - "patch"
+      - "update"
+  - apiGroups:
+      - "argoproj.io"
+    resources:
+      - "rollouts"
+    verbs:
+      - "patch"
+      - "update"
+  - apiGroups:
+      - "autoscaling"
+    resources:
+      - "horizontalpodautoscalers"
+    verbs:
+      - "create"
+      - "delete"
+      - "patch"
+      - "update"
+  # For endpoint and storage discovery (live-controller).
+  - apiGroups:
+      - "discovery.k8s.io"
+    resources:
+      - "endpointslices"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
+  - apiGroups:
+      - "storage.k8s.io"
+    resources:
+      - "csidrivers"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
+  # For karpenter nodeclaims deletion (evictor).
+  - apiGroups:
+      - "karpenter.sh"
+    resources:
+      - "nodeclaims"
+    verbs:
+      - "delete"
+  # For waiting on CRDs to be established (workload-autoscaler).
+  - apiGroups:
+      - "apiextensions.k8s.io"
+    resources:
+      - "customresourcedefinitions"
+    verbs:
+      - "watch"
+  # For leader election leases of castware components installed with tags.full=true.
+  - apiGroups:
+      - "coordination.k8s.io"
+    resources:
+      - "leases"
+    verbs:
+      - "create"
+      - "get"
+      - "list"
+      - "update"
+      - "watch"

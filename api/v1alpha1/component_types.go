@@ -45,13 +45,18 @@ const (
 	// blocking a phase from progressing. The migration is stalled, not failed;
 	// the controller retries with backoff until the dependency recovers.
 	ReasonMigrationDegraded = "MigrationDegraded"
-	// ReasonMigrationBlocked is the TypeMigrating condition reason set when the
-	// pre-migration permission gate (Mothership validateInstall) refused the
-	// migration, e.g. because the operator's service account permissions are
-	// insufficient for the umbrella chart's broader RBAC surface. No release has
-	// been touched; the controller re-checks periodically and proceeds once the
-	// block reason is lifted (e.g. the operator was reinstalled with
-	// extendedPermissions="true").
+	// ReasonMigrationBlocked is the TypeMigrating condition reason set while a
+	// pre-flight guard refuses the migration before anything is touched. Two
+	// guards use it: the Mothership permission gate
+	// (components:validateInstallation) refusing the umbrella install — e.g.
+	// because the operator's service account permissions are insufficient for
+	// the umbrella chart's broader RBAC surface — and the standalone-release
+	// conflict guard refusing while a release of an umbrella-managed chart the
+	// operator does not support (e.g. castai-kvisor, castai-evictor) is
+	// present, which the umbrella install would silently absorb or duplicate.
+	// No release has been touched in either case; the controller re-checks
+	// periodically and proceeds from the recorded phase once the block reason
+	// is lifted (permissions granted, standalone release removed).
 	ReasonMigrationBlocked = "MigrationBlocked"
 )
 
@@ -131,6 +136,15 @@ type ComponentStatus struct {
 	// phase is idempotent. Cleared (empty) once migration finalizes or rolls back.
 	// +optional
 	MigrationPhase string `json:"migrationPhase,omitempty"`
+
+	// MigrationPhaseStartedAt is the time the current migration phase was
+	// entered. It is stamped by the migration controller on every phase
+	// transition and is used to enforce per-phase timeouts (e.g. the Verify
+	// deadline) — the Migrating condition's LastTransitionTime cannot serve
+	// that purpose because it only moves on a condition status change, not on
+	// a reason (phase) change. Cleared when the migration finalizes.
+	// +optional
+	MigrationPhaseStartedAt metav1.Time `json:"migrationPhaseStartedAt,omitempty"`
 }
 
 //+kubebuilder:object:root=true

@@ -32,6 +32,29 @@ var Subcomponents = []string{
 	components.ComponentNameClusterController,
 }
 
+// UmbrellaOnlyCharts are the chart names the umbrella chart renders under the
+// tag modes the migration derives (tags.readonly, tags.full) that the operator
+// does not support as individual components. A standalone release of one of
+// these in the cluster namespace is invisible to Subcomponents-based probing
+// yet collides with the umbrella install: Helm's TakeOwnership silently
+// absorbs name-matching resources — leaving a ghost release the migration
+// rollback would then delete — while name-mismatches render duplicate
+// workloads. The migration blocks until such releases are removed.
+//
+// Sourced from the umbrella chart's autoscaler profile subchart list minus the
+// operator's SupportedComponents. kent-profile charts (castai-kentroller,
+// castai-chart-upgrader, metrics-server) are excluded: the migration never
+// enables the kent profile. Update when the umbrella chart's tag sets change.
+var UmbrellaOnlyCharts = []string{
+	"castai-kvisor",                       // readonly + full
+	"castai-evictor",                      // full
+	"castai-pod-mutator",                  // full
+	"castai-pod-pinner",                   // full
+	"castai-live",                         // full
+	"castai-workload-autoscaler",          // full
+	"castai-workload-autoscaler-exporter", // full
+}
+
 // IsUmbrellaOrSubcomponent reports whether name is the umbrella component or
 // one of the individual components whose chart overlaps with the umbrella. The
 // mutual-exclusivity gate only applies to these; any other component renders
@@ -192,4 +215,27 @@ func ValidateInstallPermissions(ctx context.Context, c castai.CastAIClient, clus
 		TargetVersion:   targetVersion,
 		ComponentParams: componentParams,
 	})
+}
+
+// InstalledUmbrellaOnlyCharts returns the UmbrellaOnlyCharts chart names that
+// have a standalone release present in the given namespace. Releases are
+// matched by chart identity (rel.Chart.Metadata.Name), not by release name —
+// a standalone may be installed under any release name. Fail-safe: a helm
+// listing error is returned so callers block rather than proceed on unknown
+// state, matching the mutual-exclusivity gate's posture.
+func InstalledUmbrellaOnlyCharts(hc helm.Client, namespace string) ([]string, error) {
+	rels, err := hc.ListReleases(helm.ListReleasesOptions{Namespace: namespace})
+	if err != nil {
+		return nil, err
+	}
+	var present []string
+	for _, chart := range UmbrellaOnlyCharts {
+		for _, rel := range rels {
+			if rel.Chart != nil && rel.Chart.Metadata != nil && rel.Chart.Metadata.Name == chart {
+				present = append(present, chart)
+				break
+			}
+		}
+	}
+	return present, nil
 }

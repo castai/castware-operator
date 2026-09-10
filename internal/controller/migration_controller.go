@@ -34,6 +34,15 @@ package controller
 // block reason and leaves the CR and the cluster untouched; a Mothership failure
 // degrades the migration like any other dependency outage.
 //
+// Standalone conflict guard: the umbrella chart also renders charts the
+// operator does not manage as individual components (castai-kvisor,
+// castai-evictor, ...). A standalone release of one of those in the namespace
+// is invisible to the mutual-exclusivity gate yet collides with the umbrella
+// install (TakeOwnership silently absorbs it, or a duplicate workload is
+// rendered). phaseMarkReadonly and phaseInstallUmbrella block on such releases
+// (Migrating=False / MigrationBlocked) until they are removed; the migration
+// then proceeds from the recorded phase.
+//
 // Heartbeat continuity: the agent is the cluster's liveness signal to Mothership
 // (snapshots every ~15s). It is NEVER helm-uninstalled during migration — that
 // would delete the agent pods. Instead the umbrella installs with TakeOwnership
@@ -196,9 +205,11 @@ func (r *MigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // migration) and on each present individual sub-component CR, then advances to
 // UninstallIndividuals. Idempotent: patching an already-readonly CR is a no-op.
 //
-// The Mothership permission gate runs first, before the finalizer is armed and
-// before any spec is modified, so a refused migration leaves the CR and the
-// cluster byte-for-byte unchanged (only a status condition is written).
+// Two pre-flight guards run before the finalizer is armed and before any spec
+// is modified, so a refused migration leaves the CR and the cluster
+// byte-for-byte unchanged (only a status condition is written): the Mothership
+// permission gate (validateMigrationPermissions) and the standalone-release
+// conflict guard (checkUmbrellaOnlyConflicts).
 func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (ctrl.Result, error) {
 	// Permission gate: the umbrella chart renders a broader RBAC surface than the
 	// individual charts. An under-permissioned service account must fail here —
@@ -213,6 +224,15 @@ func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.
 	}
 	if blocked {
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+	}
+
+	// Standalone-release conflict guard: block while a standalone release of
+	// an umbrella-managed chart the operator does not support is present — the
+	// umbrella install would silently absorb or duplicate it (see
+	// checkUmbrellaOnlyConflicts). A blocked migration leaves the cluster
+	// untouched and resumes once the conflict is removed.
+	if err := r.checkUmbrellaOnlyConflicts(ctx, log, component); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Arm the deletion guard before anything else. Order is load-bearing: the
@@ -270,7 +290,6 @@ func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.
 		}
 	}
 
-	r.setMigratingCondition(component, castwarev1alpha1.MigrationPhaseMarkReadonly)
 	return r.setMigrationPhase(ctx, component, castwarev1alpha1.MigrationPhaseUninstallIndividuals)
 }
 
@@ -280,10 +299,11 @@ func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.
 // operator service account is refused here — before any release is touched —
 // instead of failing mid-swap and leaving the cluster half-migrated.
 //
-// A refused migration is recorded via blockMigration; a transport/API error is
-// returned so the caller degrades and retries (the gate must not block only
-// because it cannot ask the question). A migration resuming past MarkReadonly
-// never re-runs the gate: it is already beyond the point the gate protects.
+// A refusal is recorded via setMigratingFalse (ReasonMigrationBlocked) with the
+// Mothership block reason; a transport/API error is returned so the caller
+// degrades and retries (the gate must not block only because it cannot ask the
+// question). A migration resuming past MarkReadonly never re-runs the gate: it
+// is already beyond the point the gate protects.
 func (r *MigrationReconciler) validateMigrationPermissions(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (bool, error) {
 	castAiClient, err := r.getCastaiClient(ctx, cluster)
 	if err != nil {
@@ -309,37 +329,18 @@ func (r *MigrationReconciler) validateMigrationPermissions(ctx context.Context, 
 			blockReason = validation.BlockReason
 		}
 		log.Warnf("Migration blocked by Mothership permission validation: %s", blockReason)
-		return true, r.blockMigration(ctx, log, component, blockReason)
+		// Same condition the standalone-release conflict guard sets, so a
+		// blocked migration reads identically regardless of which guard refused
+		// it. The migration is not failed — no rollback is driven — because
+		// nothing has been touched yet; the caller requeues and the gate
+		// re-checks periodically, so the migration proceeds automatically once
+		// the block reason is lifted (e.g. the operator is reinstalled with
+		// extendedPermissions="true").
+		r.setMigratingFalse(ctx, log, component, castwarev1alpha1.ReasonMigrationBlocked, fmt.Sprintf("Migration blocked: %s", blockReason))
+		return true, nil
 	}
 	log.Info("Permission gate passed; proceeding with migration")
 	return false, nil
-}
-
-// blockMigration sets Migrating=False (ReasonMigrationBlocked) on the umbrella CR
-// with the Mothership block reason, so the refusal is visible on the CR. The
-// migration is not failed — no rollback is driven — because nothing has been
-// touched yet; the caller requeues and the gate re-checks periodically, so the
-// migration proceeds automatically once the block reason is lifted (e.g. the
-// operator is reinstalled with extendedPermissions="true"). A status-write
-// failure is returned so the caller surfaces it.
-func (r *MigrationReconciler) blockMigration(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, blockReason string) error {
-	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		latest := &castwarev1alpha1.Component{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, latest); err != nil {
-			return err
-		}
-		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
-			Type:    castwarev1alpha1.TypeMigrating,
-			Status:  metav1.ConditionFalse,
-			Reason:  castwarev1alpha1.ReasonMigrationBlocked,
-			Message: fmt.Sprintf("Migration blocked: %s", blockReason),
-		})
-		return r.Status().Update(ctx, latest)
-	}); err != nil {
-		log.WithError(err).Warn("Failed to record MigrationBlocked condition")
-		return fmt.Errorf("record MigrationBlocked condition: %w", err)
-	}
-	return nil
 }
 
 // phaseUninstallIndividuals uninstalls the non-agent individual releases in
@@ -389,7 +390,6 @@ func (r *MigrationReconciler) phaseUninstallIndividuals(ctx context.Context, log
 		}
 	}
 
-	r.setMigratingCondition(component, castwarev1alpha1.MigrationPhaseUninstallIndividuals)
 	return r.setMigrationPhase(ctx, component, castwarev1alpha1.MigrationPhaseInstallUmbrella)
 }
 
@@ -412,12 +412,21 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 		ReleaseName: umbrellaReleaseName,
 	}); getErr == nil {
 		log.Info("Umbrella release already present; advancing to verify")
-		r.setMigratingCondition(component, castwarev1alpha1.MigrationPhaseInstallUmbrella)
 		return r.setMigrationPhase(ctx, component, castwarev1alpha1.MigrationPhaseVerify)
 	} else if !isReleaseNotFound(getErr) {
 		// A non-not-found error means helm is unreachable; requeue rather than
 		// risk a partial install.
 		return ctrl.Result{}, fmt.Errorf("check umbrella release presence: %w", getErr)
+	}
+
+	// Pre-install guard: same block as phaseMarkReadonly's pre-flight, re-run
+	// here so a migration resumed at this phase (or a standalone release that
+	// appeared mid-migration) is caught before the umbrella install absorbs
+	// or duplicates it. The already-present fast path above is skipped on
+	// purpose: once the umbrella is installed the adoption (if any) already
+	// happened, and blocking Finalize would not undo it.
+	if err := r.checkUmbrellaOnlyConflicts(ctx, log, component); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	present, err := r.presentIndividuals(ctx, cluster)
@@ -477,7 +486,6 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 		return r.rollback(ctx, log, component, cluster, fmt.Errorf("install umbrella: %w", err))
 	}
 
-	r.setMigratingCondition(component, castwarev1alpha1.MigrationPhaseInstallUmbrella)
 	return r.setMigrationPhase(ctx, component, castwarev1alpha1.MigrationPhaseVerify)
 }
 
@@ -503,9 +511,9 @@ func (r *MigrationReconciler) phaseVerify(ctx context.Context, log logrus.FieldL
 	}
 
 	if rel.Info.Status != release.StatusDeployed {
-		// Check the verify deadline. The phase's start time is the
-		// Migrating condition's LastTransitionTime; if it predates the timeout,
-		// roll back rather than wait forever.
+		// Check the verify deadline. The phase's start time is
+		// status.migrationPhaseStartedAt (stamped when the phase was entered);
+		// if it predates the timeout, roll back rather than wait forever.
 		if r.verifyDeadlineExceeded(component) {
 			return r.rollback(ctx, log, component, cluster, fmt.Errorf("umbrella verify timeout: release status %s", rel.Info.Status))
 		}
@@ -524,7 +532,6 @@ func (r *MigrationReconciler) phaseVerify(ctx context.Context, log logrus.FieldL
 		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	}
 
-	r.setMigratingCondition(component, castwarev1alpha1.MigrationPhaseVerify)
 	return r.setMigrationPhase(ctx, component, castwarev1alpha1.MigrationPhaseFinalize)
 }
 
@@ -814,6 +821,7 @@ func (r *MigrationReconciler) finalizeUmbrellaSuccess(ctx context.Context, compo
 			return err
 		}
 		latest.Status.MigrationPhase = ""
+		latest.Status.MigrationPhaseStartedAt = metav1.Time{}
 		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 			Type:    castwarev1alpha1.TypeMigrating,
 			Status:  metav1.ConditionFalse,
@@ -879,8 +887,12 @@ func (r *MigrationReconciler) finalizeUmbrellaFailure(ctx context.Context, compo
 	})
 }
 
-// setMigrationPhase records the phase in status and sets the Migrating condition,
-// then returns nil so the next reconcile enters the new phase.
+// setMigrationPhase records the phase in status, stamps the per-phase start
+// time used by the Verify deadline, and sets the Migrating condition, then
+// returns nil so the next reconcile enters the new phase. This is the single
+// durable write of the Migrating condition: it re-reads the latest object and
+// persists it via the status subresource, so callers must not rely on
+// in-memory mutations of their local component copy being persisted.
 func (r *MigrationReconciler) setMigrationPhase(ctx context.Context, component *castwarev1alpha1.Component, phase string) (ctrl.Result, error) {
 	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		latest := &castwarev1alpha1.Component{}
@@ -888,6 +900,7 @@ func (r *MigrationReconciler) setMigrationPhase(ctx context.Context, component *
 			return err
 		}
 		latest.Status.MigrationPhase = phase
+		latest.Status.MigrationPhaseStartedAt = metav1.Now()
 		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 			Type:    castwarev1alpha1.TypeMigrating,
 			Status:  metav1.ConditionTrue,
@@ -901,18 +914,6 @@ func (r *MigrationReconciler) setMigrationPhase(ctx context.Context, component *
 	return ctrl.Result{}, nil
 }
 
-// setMigratingCondition sets the in-memory Migrating condition on the component
-// object so subsequent phase logic in the same reconcile reads a consistent
-// LastTransitionTime. The durable write happens in setMigrationPhase.
-func (r *MigrationReconciler) setMigratingCondition(component *castwarev1alpha1.Component, phase string) {
-	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
-		Type:    castwarev1alpha1.TypeMigrating,
-		Status:  metav1.ConditionTrue,
-		Reason:  phase,
-		Message: fmt.Sprintf("Migration in progress: %s", phase),
-	})
-}
-
 // degradeMigration sets Migrating=False (ReasonMigrationDegraded) on the
 // umbrella CR with the failure reason, then returns the error so
 // controller-runtime records a reconcile error and applies exponential backoff.
@@ -920,6 +921,27 @@ func (r *MigrationReconciler) setMigratingCondition(component *castwarev1alpha1.
 // surface the dependency failure, not the observability attempt. The condition
 // is cleared by the next successful setMigrationPhase.
 func (r *MigrationReconciler) degradeMigration(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, err error) error {
+	r.setMigratingFalse(ctx, log, component, castwarev1alpha1.ReasonMigrationDegraded, fmt.Sprintf("Migration stalled: %s", err))
+	return err
+}
+
+// blockMigration sets Migrating=False (ReasonMigrationBlocked) on the
+// umbrella CR with the blocking reason, then returns the error so
+// controller-runtime records a reconcile error and applies exponential
+// backoff. Unlike a degradation, a block requires human action (remove the
+// standalone release); the migration proceeds from the recorded phase on the
+// next reconcile once the blocking condition is gone, and the condition is
+// replaced by the next successful setMigrationPhase.
+func (r *MigrationReconciler) blockMigration(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, err error) error {
+	r.setMigratingFalse(ctx, log, component, castwarev1alpha1.ReasonMigrationBlocked, fmt.Sprintf("Migration blocked: %s", err))
+	return err
+}
+
+// setMigratingFalse writes Migrating=False with the given reason on the
+// umbrella CR. A status-write failure is logged, not propagated — the
+// returned reconcile error must surface the blocking/stalling cause, not the
+// observability attempt.
+func (r *MigrationReconciler) setMigratingFalse(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, reason, message string) {
 	if condErr := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		latest := &castwarev1alpha1.Component{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, latest); err != nil {
@@ -928,28 +950,55 @@ func (r *MigrationReconciler) degradeMigration(ctx context.Context, log logrus.F
 		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 			Type:    castwarev1alpha1.TypeMigrating,
 			Status:  metav1.ConditionFalse,
-			Reason:  castwarev1alpha1.ReasonMigrationDegraded,
-			Message: fmt.Sprintf("Migration stalled: %s", err),
+			Reason:  reason,
+			Message: message,
 		})
 		return r.Status().Update(ctx, latest)
 	}); condErr != nil {
-		log.WithError(condErr).Warn("Failed to record MigrationDegraded condition")
+		log.WithError(condErr).Warnf("Failed to record %s condition", reason)
 	}
-	return err
+}
+
+// checkUmbrellaOnlyConflicts blocks the migration while a standalone release
+// of an umbrella-managed chart the operator does not individually support
+// (e.g. castai-kvisor, castai-evictor) is present in the component's
+// namespace. The umbrella install takes ownership of name-matching
+// resources — silently absorbing the standalone release and leaving a ghost
+// that the migration rollback would then delete — and renders duplicates
+// when names differ. Blocking forces the standalone release to be removed
+// first; the migration then proceeds from the recorded phase. Fail-safe: if
+// helm cannot be queried, the migration is degraded rather than allowed to
+// proceed on unknown state.
+func (r *MigrationReconciler) checkUmbrellaOnlyConflicts(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) error {
+	present, err := migrationgate.InstalledUmbrellaOnlyCharts(r.HelmClient, component.Namespace)
+	if err != nil {
+		return r.degradeMigration(ctx, log, component, fmt.Errorf("check standalone umbrella-managed releases: %w", err))
+	}
+	if len(present) == 0 {
+		return nil
+	}
+	return r.blockMigration(ctx, log, component, fmt.Errorf(
+		"standalone release(s) of umbrella-managed chart(s) present: %s; the umbrella chart installs them and the operator cannot migrate a standalone install — remove the release(s) and the migration will proceed",
+		strings.Join(present, ", ")))
 }
 
 // verifyDeadlineExceeded reports whether the Verify phase has been running
-// longer than verifyTimeout, using the Migrating condition's LastTransitionTime
-// as the phase start. When the condition is absent (e.g. first entry), it starts
-// fresh (not exceeded).
+// longer than verifyTimeout, using status.migrationPhaseStartedAt as the phase
+// start. The Migrating condition's LastTransitionTime cannot serve this
+// purpose: meta.SetStatusCondition only moves it on a condition status change,
+// and the condition stays True across the whole state machine, so it marks
+// the migration start, not the Verify start. For migrations already in flight
+// under an operator version that predates the field (it is empty), the
+// condition's LastTransitionTime is used as a best-effort fallback; when both
+// are absent the deadline starts fresh (not exceeded).
 func (r *MigrationReconciler) verifyDeadlineExceeded(component *castwarev1alpha1.Component) bool {
+	if !component.Status.MigrationPhaseStartedAt.IsZero() {
+		return time.Since(component.Status.MigrationPhaseStartedAt.Time) > verifyTimeout
+	}
 	cond := meta.FindStatusCondition(component.Status.Conditions, castwarev1alpha1.TypeMigrating)
 	if cond == nil {
 		return false
 	}
-	// The condition's LastTransitionTime is refreshed each time the reason
-	// (phase) changes. Within the Verify phase it stays stable, so it marks the
-	// phase start. A re-entry after a prior phase sets a new timestamp.
 	return time.Since(cond.LastTransitionTime.Time) > verifyTimeout
 }
 

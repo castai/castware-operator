@@ -159,6 +159,14 @@ func expectResolveNamesPresent(ops *migrationTestOps) {
 	}
 }
 
+// expectNoUmbrellaOnlyCharts wires the helm listing expectation for the
+// pre-flight (phaseMarkReadonly) and pre-install (phaseInstallUmbrella) guard:
+// no standalone umbrella-managed releases present, so the migration proceeds.
+func expectNoUmbrellaOnlyCharts(ops *migrationTestOps) {
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return(nil, nil).AnyTimes()
+}
+
 func migRelease(name string) *release.Release {
 	return &release.Release{
 		Name:  name,
@@ -235,6 +243,7 @@ func TestMigrationReconciler_MarkReadonly(t *testing.T) {
 			return &castai.ValidateComponentInstallResponse{Allowed: true}, nil
 		}).AnyTimes()
 	expectResolveNamesPresent(ops)
+	expectNoUmbrellaOnlyCharts(ops)
 
 	reconcileOnce(t, ops)
 
@@ -306,6 +315,7 @@ func TestMigrationReconciler_PermissionGate_Blocked(t *testing.T) {
 	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
 		Return(&castai.ValidateComponentInstallResponse{Allowed: true}, nil).AnyTimes()
 	expectResolveNamesPresent(ops)
+	expectNoUmbrellaOnlyCharts(ops)
 
 	reconcileOnce(t, ops)
 
@@ -363,10 +373,11 @@ func TestMigrationReconciler_MothershipUnreachable_Degraded(t *testing.T) {
 		migUmbrella(""),
 		migIndividual(components.ComponentNameAgent),
 	)
-	// The permission gate passes; the failure happens downstream in
+	// Both pre-flight guards pass; the failure happens downstream in
 	// presentIndividuals (see PermissionGate_TransientError for the gate itself
 	// degrading on an unreachable Mothership).
 	expectPermissionGatePass(ops)
+	expectNoUmbrellaOnlyCharts(ops)
 	// Mothership lookup fails once (unknown error, not ErrNotFound — ResolveNames
 	// fails closed only when nothing resolves).
 	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
@@ -405,6 +416,7 @@ func TestMigrationReconciler_MothershipUnreachable_Degraded(t *testing.T) {
 	r.NoError(err)
 	u = getUmbrella(t, ops)
 	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase)
+	r.False(u.Status.MigrationPhaseStartedAt.IsZero(), "phase-start timestamp stamped on phase transition")
 	cond = meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
 	r.NotNil(cond, "Migrating condition present after recovery")
 	r.Equal(metav1.ConditionTrue, cond.Status)
@@ -455,6 +467,7 @@ func TestMigrationReconciler_InstallUmbrella_AgentOnly_ReadonlyTag(t *testing.T)
 		migUmbrella(castwarev1alpha1.MigrationPhaseInstallUmbrella),
 		migIndividual(components.ComponentNameAgent),
 	)
+	expectNoUmbrellaOnlyCharts(ops)
 	// ResolveNames probes all sub-components: agent is present, spot-handler and
 	// cluster-controller are absent on Mothership (ErrNotFound) so they are skipped.
 	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
@@ -493,6 +506,7 @@ func TestMigrationReconciler_InstallUmbrella_CarriesOverIndividualValues(t *test
 		migIndividualWithValues(components.ComponentNameAgent, agentValues),
 		migIndividualWithValues(components.ComponentNameSpotHandler, spotHandlerValues),
 	)
+	expectNoUmbrellaOnlyCharts(ops)
 	// Agent + spot-handler present; cluster-controller absent on Mothership.
 	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
 		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).AnyTimes()
@@ -644,6 +658,7 @@ func TestMigrationReconciler_Finalize_ClearsReadonlyBeforeFinalizerRemoval(t *te
 
 	u := getUmbrella(t, ops)
 	r.Equal("", u.Status.MigrationPhase, "phase cleared on success")
+	r.True(u.Status.MigrationPhaseStartedAt.IsZero(), "phase-start timestamp cleared on success")
 
 	// Both readonly+finalizer individuals are deleted outright (readonly cleared
 	// first, finalizer removed, then delete — no tombstones left behind).
@@ -651,6 +666,136 @@ func TestMigrationReconciler_Finalize_ClearsReadonlyBeforeFinalizerRemoval(t *te
 		err := ops.client.Get(context.Background(), types.NamespacedName{Namespace: migNamespace, Name: sub}, &castwarev1alpha1.Component{})
 		r.True(apierrors.IsNotFound(err), "individual CR %s should be deleted after Finalize (got err=%v)", sub, err)
 	}
+}
+
+// TestMigrationReconciler_VerifyDeadlineExceeded unit-tests the Verify-phase
+// deadline: the primary signal is status.migrationPhaseStartedAt (stamped on
+// every phase transition); the Migrating condition's LastTransitionTime is
+// only a legacy fallback for migrations already in flight when the field was
+// introduced, and a fresh start (neither present) is not exceeded.
+func TestMigrationReconciler_VerifyDeadlineExceeded(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	sut := &MigrationReconciler{}
+
+	withPhaseStart := func(ts metav1.Time) *castwarev1alpha1.Component {
+		c := migUmbrella(castwarev1alpha1.MigrationPhaseVerify)
+		c.Status.MigrationPhaseStartedAt = ts
+		return c
+	}
+	withLegacyCondition := func(ts metav1.Time) *castwarev1alpha1.Component {
+		c := migUmbrella(castwarev1alpha1.MigrationPhaseVerify)
+		meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+			Type:               castwarev1alpha1.TypeMigrating,
+			Status:             metav1.ConditionTrue,
+			Reason:             castwarev1alpha1.MigrationPhaseVerify,
+			LastTransitionTime: ts,
+		})
+		return c
+	}
+
+	r.True(sut.verifyDeadlineExceeded(withPhaseStart(metav1.NewTime(time.Now().Add(-2*verifyTimeout)))),
+		"phase-start timestamp past the deadline is exceeded")
+	r.False(sut.verifyDeadlineExceeded(withPhaseStart(metav1.NewTime(time.Now().Add(-verifyTimeout/2)))),
+		"phase-start timestamp inside the deadline is not exceeded")
+	r.True(sut.verifyDeadlineExceeded(withLegacyCondition(metav1.NewTime(time.Now().Add(-2*verifyTimeout)))),
+		"legacy fallback: old condition LastTransitionTime with no phase-start field is exceeded")
+	r.False(sut.verifyDeadlineExceeded(withLegacyCondition(metav1.NewTime(time.Now().Add(-verifyTimeout/2)))),
+		"legacy fallback: fresh condition LastTransitionTime with no phase-start field is not exceeded")
+	r.False(sut.verifyDeadlineExceeded(migUmbrella(castwarev1alpha1.MigrationPhaseVerify)),
+		"fresh start (neither field nor condition) is not exceeded")
+}
+
+// TestMigrationReconciler_UmbrellaOnlyStandalone_BlocksMigration asserts a
+// standalone release of an umbrella-managed chart the operator does not
+// support (castai-kvisor) blocks the migration before any mutation: no
+// finalizer, no readonly, phase unchanged, Migrating=False with
+// ReasonMigrationBlocked. Once the standalone release is removed, the next
+// reconcile proceeds — the block is self-healing and needs no operator
+// intervention.
+func TestMigrationReconciler_UmbrellaOnlyStandalone_BlocksMigration(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		migUmbrella(""),
+		migIndividual(components.ComponentNameAgent),
+	)
+	expectResolveNamesPresent(ops)
+	// The permission gate passes; the standalone-release guard blocks.
+	expectPermissionGatePass(ops)
+	// A standalone castai-kvisor release is present; after the user removes
+	// it, subsequent reconciles see an empty list.
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return([]*release.Release{migRelease("castai-kvisor")}, nil).Times(1)
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return(nil, nil).AnyTimes()
+
+	// First reconcile: blocked, surfaced as a reconcile error (backoff +
+	// metrics) with the offending chart named.
+	_, err := ops.sut.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
+	})
+	r.Error(err)
+	r.ErrorContains(err, "castai-kvisor")
+
+	u := getUmbrella(t, ops)
+	r.Equal("", u.Status.MigrationPhase, "phase unchanged while blocked")
+	r.False(u.Spec.Readonly, "umbrella untouched while blocked")
+	r.False(controllerutil.ContainsFinalizer(u, MigrationFinalizer), "finalizer not armed while blocked")
+	cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.NotNil(cond, "Migrating condition present while blocked")
+	r.Equal(metav1.ConditionFalse, cond.Status)
+	r.Equal(castwarev1alpha1.ReasonMigrationBlocked, cond.Reason)
+	r.Contains(cond.Message, "castai-kvisor")
+
+	// Standalone removed: the migration proceeds on the next reconcile and the
+	// blocked condition is replaced by the next phase.
+	_, err = ops.sut.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
+	})
+	r.NoError(err)
+	u = getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase,
+		"migration proceeds after the block clears")
+	cond = meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.NotNil(cond)
+	r.Equal(metav1.ConditionTrue, cond.Status, "blocked condition replaced by the in-progress phase")
+}
+
+// TestMigrationReconciler_UmbrellaOnlyStandalone_BlocksBeforeInstall asserts
+// the same guard re-runs before the umbrella install for a migration already
+// at the InstallUmbrella phase (resumed migration, or a standalone release
+// that appeared mid-flight): the install is not attempted while the conflict
+// exists. No Install mock is wired — an attempted install fails the test.
+func TestMigrationReconciler_UmbrellaOnlyStandalone_BlocksBeforeInstall(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		migUmbrella(castwarev1alpha1.MigrationPhaseInstallUmbrella),
+	)
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).AnyTimes()
+	// Umbrella release not yet installed (fresh/resumed pre-install path).
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(nil, errors.New("no release found"))
+	// Standalone kvisor present.
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return([]*release.Release{migRelease("castai-kvisor")}, nil)
+
+	_, err := ops.sut.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
+	})
+	r.Error(err)
+	r.ErrorContains(err, "castai-kvisor")
+
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseInstallUmbrella, u.Status.MigrationPhase,
+		"phase unchanged while blocked")
+	cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.NotNil(cond, "Migrating condition present while blocked")
+	r.Equal(castwarev1alpha1.ReasonMigrationBlocked, cond.Reason)
 }
 
 // TestMigrationReconciler_VerifyFailure_Rollback asserts an induced verify
@@ -661,14 +806,9 @@ func TestMigrationReconciler_VerifyFailure_Rollback(t *testing.T) {
 	t.Parallel()
 	r := require.New(t)
 	umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseVerify)
-	// Seed a Migrating condition whose LastTransitionTime predates verifyTimeout
-	// so the not-deployed release triggers immediate rollback rather than requeue.
-	meta.SetStatusCondition(&umbrella.Status.Conditions, metav1.Condition{
-		Type:               castwarev1alpha1.TypeMigrating,
-		Status:             metav1.ConditionTrue,
-		Reason:             castwarev1alpha1.MigrationPhaseVerify,
-		LastTransitionTime: metav1.NewTime(time.Now().Add(-2 * verifyTimeout)),
-	})
+	// Seed a phase-start timestamp that predates verifyTimeout so the
+	// not-deployed release triggers immediate rollback rather than requeue.
+	umbrella.Status.MigrationPhaseStartedAt = metav1.NewTime(time.Now().Add(-2 * verifyTimeout))
 	ops := newMigrationTestOps(t,
 		migCluster(),
 		umbrella,
@@ -765,6 +905,7 @@ func TestMigrationReconciler_BothTriggersConverge(t *testing.T) {
 	ops := newMigrationTestOps(t, migCluster(), migUmbrella(""), migIndividual(components.ComponentNameAgent))
 	expectPermissionGatePass(ops)
 	expectResolveNamesPresent(ops)
+	expectNoUmbrellaOnlyCharts(ops)
 
 	reconcileOnce(t, ops)
 	u := getUmbrella(t, ops)
@@ -929,6 +1070,7 @@ func TestMigrationReconciler_LegacyReadonlyResume_ProceedsWithoutGuard(t *testin
 	)
 	expectPermissionGatePass(ops)
 	expectResolveNamesPresent(ops)
+	expectNoUmbrellaOnlyCharts(ops)
 
 	reconcileOnce(t, ops)
 
