@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"castai-agent/pkg/services/providers/gke"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +12,8 @@ import (
 	"regexp"
 	"testing"
 	"time"
+
+	"castai-agent/pkg/services/providers/gke"
 
 	"github.com/golang/mock/gomock"
 	"github.com/google/uuid"
@@ -909,6 +910,117 @@ func TestScanExistingComponent(t *testing.T) {
 		r.Equal(castwarev1alpha1.ComponentMigrationHelm, actualComponent.Spec.Migration)
 		r.NotNil(actualComponent.Spec.Values)
 		r.Equal(helmValuesJSON, actualComponent.Spec.Values.Raw)
+	})
+}
+
+func TestScanExistingComponent_WorkloadAutoscalingMigration_CSU5996(t *testing.T) {
+	makeCluster := func() *castwarev1alpha1.Cluster {
+		return &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "test-namespace"},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster:       &castwarev1alpha1.ClusterMetadataSpec{ClusterID: uuid.NewString()},
+				MigrationMode: castwarev1alpha1.ClusterMigrationModeRead,
+			},
+		}
+	}
+
+	waDeployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "castai-workload-autoscaler",
+			Namespace: "test-namespace",
+			Labels:    map[string]string{"app.kubernetes.io/name": "castai-workload-autoscaler"},
+		},
+	}
+
+	runScan := func(t *testing.T, cluster *castwarev1alpha1.Cluster, objs []client.Object, stored map[string]interface{}, releaseName, componentName string) *castwarev1alpha1.Component {
+		t.Helper()
+		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		mockClient := mock_castai.NewMockCastAIClient(ctrl)
+		testOps := newClusterTestOps(t, append([]client.Object{cluster}, objs...)...)
+		expectGateUmbrellaNotInstalled(mockClient, testOps.mockHelm, cluster.Namespace)
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: cluster.Namespace, ReleaseName: releaseName,
+		}).Return(&release.Release{
+			Name:   releaseName,
+			Chart:  &chart.Chart{Metadata: &chart.Metadata{Version: "0.92.15"}},
+			Config: stored,
+			Info:   &release.Info{Status: release.StatusDeployed},
+		}, nil)
+
+		_, err := testOps.sut.scanExistingComponent(ctx, mockClient, cluster, releaseName, componentName)
+		r := require.New(t)
+		r.NoError(err)
+
+		actual := &castwarev1alpha1.Component{}
+		err = testOps.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: componentName}, actual)
+		r.NoError(err)
+		r.NotNil(actual.Spec.Values)
+		return actual
+	}
+
+	decodeAutoscaling := func(t *testing.T, raw []byte) (autoscaling, workloadAutoscaling map[string]interface{}) {
+		t.Helper()
+		var v map[string]interface{}
+		require.New(t).NoError(json.Unmarshal(raw, &v))
+		autoscaling, _ = v["autoscaling"].(map[string]interface{})
+		workloadAutoscaling, _ = v["workloadAutoscaling"].(map[string]interface{})
+		return
+	}
+
+	t.Run("missing workloadAutoscaling key + workload-autoscaler deployed -> adds enabled:true", func(t *testing.T) {
+		stored := map[string]interface{}{"autoscaling": map[string]interface{}{"enabled": false}}
+		actual := runScan(t, makeCluster(), []client.Object{waDeployment}, stored, "cluster-controller", components.ComponentNameClusterController)
+		_, wa := decodeAutoscaling(t, actual.Spec.Values.Raw)
+		require.New(t).Equal(true, wa["enabled"], "workloadAutoscaling.enabled must be set to true when workload-autoscaler is deployed and the key was missing")
+	})
+
+	t.Run("missing workloadAutoscaling key + workload-autoscaler not deployed -> unchanged", func(t *testing.T) {
+		stored := map[string]interface{}{"autoscaling": map[string]interface{}{"enabled": false}}
+		actual := runScan(t, makeCluster(), nil, stored, "cluster-controller", components.ComponentNameClusterController)
+		var v map[string]interface{}
+		require.New(t).NoError(json.Unmarshal(actual.Spec.Values.Raw, &v))
+		_, has := v["workloadAutoscaling"]
+		require.New(t).False(has, "workloadAutoscaling must remain absent when workload-autoscaler is not deployed")
+	})
+
+	t.Run("workloadAutoscaling.enabled:true stored + workload-autoscaler deployed -> unchanged", func(t *testing.T) {
+		stored := map[string]interface{}{
+			"autoscaling":         map[string]interface{}{"enabled": false},
+			"workloadAutoscaling": map[string]interface{}{"enabled": true},
+		}
+		actual := runScan(t, makeCluster(), []client.Object{waDeployment}, stored, "cluster-controller", components.ComponentNameClusterController)
+		_, wa := decodeAutoscaling(t, actual.Spec.Values.Raw)
+		require.New(t).Equal(true, wa["enabled"], "stored true must be preserved unchanged")
+	})
+
+	t.Run("workloadAutoscaling.enabled:true stored + workload-autoscaler not deployed -> unchanged", func(t *testing.T) {
+		// becasue we are not flipping true -> false
+		stored := map[string]interface{}{
+			"autoscaling":         map[string]interface{}{"enabled": false},
+			"workloadAutoscaling": map[string]interface{}{"enabled": true},
+		}
+		actual := runScan(t, makeCluster(), nil, stored, "cluster-controller", components.ComponentNameClusterController)
+		_, wa := decodeAutoscaling(t, actual.Spec.Values.Raw)
+		require.New(t).Equal(true, wa["enabled"], "stored true must be preserved unchanged")
+	})
+
+	t.Run("workloadAutoscaling.enabled:false stored + workload-autoscaler deployed -> flipped to true", func(t *testing.T) {
+		stored := map[string]interface{}{
+			"workloadAutoscaling": map[string]interface{}{"enabled": false},
+		}
+		actual := runScan(t, makeCluster(), []client.Object{waDeployment}, stored, "cluster-controller", components.ComponentNameClusterController)
+		_, wa := decodeAutoscaling(t, actual.Spec.Values.Raw)
+		require.New(t).Equal(true, wa["enabled"], "stored false must be flipped to true when workload-autoscaler is deployed")
+	})
+
+	t.Run("workloadAutoscaling.enabled:false stored + workload-autoscaler not deployed -> preserved", func(t *testing.T) {
+		stored := map[string]interface{}{
+			"workloadAutoscaling": map[string]interface{}{"enabled": false},
+		}
+		actual := runScan(t, makeCluster(), nil, stored, "cluster-controller", components.ComponentNameClusterController)
+		_, wa := decodeAutoscaling(t, actual.Spec.Values.Raw)
+		require.New(t).Equal(false, wa["enabled"], "stored false must be preserved when workload-autoscaler is not deployed")
 	})
 }
 
