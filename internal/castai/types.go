@@ -156,6 +156,13 @@ type ActionInstall struct {
 	ResetThenReuseValues bool `json:"resetThenReuseValues"`
 	// Name used by helm during component installation.
 	ReleaseName string `json:"releaseName,omitempty"`
+	// Migrate opts into taking over already-installed individual component
+	// releases when installing the umbrella component. The operator propagates
+	// this onto the umbrella Component CR's spec.migrate so the CR remains the
+	// source of truth and both migration triggers (Mothership action and
+	// cluster-side spec) converge on one path. No effect for non-umbrella
+	// components.
+	Migrate bool `json:"migrate,omitempty"`
 }
 
 // ActionUpgrade upgrades an existing component on a cluster.

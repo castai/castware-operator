@@ -288,6 +288,17 @@ func runOperator(args operatorArgs) error {
 		os.Exit(1)
 	}
 
+	if err = (&controller.MigrationReconciler{
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		Config:     cfg,
+		Log:        log,
+		HelmClient: helmClient,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Migration")
+		os.Exit(1)
+	}
+
 	if err = (&controller.ClusterReconciler{
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),

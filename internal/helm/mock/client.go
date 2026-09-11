@@ -37,6 +37,20 @@ func (m *MockClient) EXPECT() *MockClientMockRecorder {
 	return m.recorder
 }
 
+// ForgetRelease mocks base method.
+func (m *MockClient) ForgetRelease(opts helm.ForgetReleaseOptions) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ForgetRelease", opts)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ForgetRelease indicates an expected call of ForgetRelease.
+func (mr *MockClientMockRecorder) ForgetRelease(opts interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ForgetRelease", reflect.TypeOf((*MockClient)(nil).ForgetRelease), opts)
+}
+
 // GetRelease mocks base method.
 func (m *MockClient) GetRelease(opts helm.GetReleaseOptions) (*release.Release, error) {
 	m.ctrl.T.Helper()
@@ -65,6 +79,21 @@ func (m *MockClient) Install(ctx context.Context, opts helm.InstallOptions) (*re
 func (mr *MockClientMockRecorder) Install(ctx, opts interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Install", reflect.TypeOf((*MockClient)(nil).Install), ctx, opts)
+}
+
+// ListReleases mocks base method.
+func (m *MockClient) ListReleases(opts helm.ListReleasesOptions) ([]*release.Release, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListReleases", opts)
+	ret0, _ := ret[0].([]*release.Release)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListReleases indicates an expected call of ListReleases.
+func (mr *MockClientMockRecorder) ListReleases(opts interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListReleases", reflect.TypeOf((*MockClient)(nil).ListReleases), opts)
 }
 
 // Rollback mocks base method.
