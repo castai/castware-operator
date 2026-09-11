@@ -995,7 +995,7 @@ func TestScanExistingComponent_WorkloadAutoscalingMigration_CSU5996(t *testing.T
 	})
 
 	t.Run("workloadAutoscaling.enabled:true stored + workload-autoscaler not deployed -> unchanged", func(t *testing.T) {
-		// becasue we are not flipping true -> false
+		// because we are not flipping true -> false
 		stored := map[string]interface{}{
 			"autoscaling":         map[string]interface{}{"enabled": false},
 			"workloadAutoscaling": map[string]interface{}{"enabled": true},
