@@ -335,7 +335,11 @@ func (r *ClusterReconciler) handleRollback(ctx context.Context, cluster *castwar
 		ReleaseName: getReleaseName(component),
 	})
 	if err != nil {
-		log.WithError(err).Error("Failed to get helm release")
+		log.WithFields(map[string]any{
+			"namespace":    component.Namespace,
+			"release_name": component.Spec.ReleaseName,
+			"component":    component.Spec.Component,
+		}).WithError(err).Error("Failed to get helm release")
 		return err
 	}
 	// Helm release version start from 1 for the first install, if version is lower than 2

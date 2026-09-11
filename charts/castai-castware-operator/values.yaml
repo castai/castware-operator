@@ -145,8 +145,25 @@ defaultCluster:
 # Default components configuration
 defaultComponents:
   enabled: true
-  # List of default components to create
-  # Each component will be created with the specified configuration
+  # When true, renders a single castai-umbrella Component CR instead of
+  # individual component CRs. The tags are derived from extendedPermissions:
+  #   extendedPermissions=true  → tags.full=true
+  #   extendedPermissions=false → tags.readonly=true
+  # Override with .defaultComponents.umbrella.tags to set custom tags.
+  umbrella:
+    enabled: false
+    component: "castai-umbrella"
+    cluster: "castai"
+    # Optional: override the auto-derived tags.
+    # tags: {}
+    # Optional: extra umbrella-chart values merged into the Component CR's
+    # spec.values (verbatim). Sub-component overrides must use the umbrella
+    # chart's own paths, e.g. autoscaler.castai-agent.additionalEnv for the
+    # agent sub-chart (a top-level castai-agent block is ignored by the
+    # umbrella chart).
+    # overrides: {}
+  # Individual components (used when umbrella.enabled is false).
+  # Each component will be created with the specified configuration.
   components:
     castai-agent:
       component: "castai-agent"

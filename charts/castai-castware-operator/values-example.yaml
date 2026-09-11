@@ -47,24 +47,34 @@ defaultCluster:
   # Will use apiKeySecret.name if not specified
   apiKeySecret: ""
 
-# Create default components
+# Create default components via umbrella (recommended)
 defaultComponents:
   enabled: true
-  components:
-    castai-agent:
-      component: "castai-agent"
-      cluster: "castai"
-      enabled: true
-      overrides:
-        replicaCount: 2
-        image:
-          tag: "v1.3.0"
-        resources:
-          requests:
-            cpu: 100m
-            memory: 128Mi
-        additionalEnv:
-          PPROF_PORT: "6060"
+  umbrella:
+    enabled: true
+    component: "castai-umbrella"
+    cluster: "castai"
+    # tags are auto-derived from extendedPermissions:
+    #   extendedPermissions=true  → tags.full=true
+    #   extendedPermissions=false → tags.readonly=true
+    # Override by setting tags explicitly:
+    # tags:
+    #   readonly: true
+
+# Alternative: individual component path (when umbrella.enabled is false)
+# defaultComponents:
+#   enabled: true
+#   umbrella:
+#     enabled: false
+#   components:
+#     castai-agent:
+#       component: "castai-agent"
+#       cluster: "castai"
+#       enabled: true
+#     spot-handler:
+#       component: "spot-handler"
+#       cluster: "castai"
+#       enabled: true
 
 # -- Used to set additional volumes.
 extraVolumes: []

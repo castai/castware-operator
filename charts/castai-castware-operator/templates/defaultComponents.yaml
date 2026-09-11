@@ -1,4 +1,34 @@
 {{- if .Values.defaultComponents.enabled }}
+{{- if .Values.defaultComponents.umbrella.enabled }}
+---
+apiVersion: castware.cast.ai/v1alpha1
+kind: Component
+metadata:
+  name: {{ .Values.defaultComponents.umbrella.component | default "castai-umbrella" }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: post-install
+    helm.sh/hook-delete-policy: hook-failed
+    helm.sh/hook-weight: "10"
+  labels:
+    {{- include "castware-operator.labels" . | nindent 4 }}
+spec:
+  component: {{ .Values.defaultComponents.umbrella.component | default "castai-umbrella" | quote }}
+  cluster: {{ .Values.defaultComponents.umbrella.cluster | default "castai" | quote }}
+  enabled: true
+  values:
+    tags:
+      {{- if .Values.defaultComponents.umbrella.tags }}
+      {{- toYaml .Values.defaultComponents.umbrella.tags | nindent 6 }}
+      {{- else if .Values.extendedPermissions }}
+      full: true
+      {{- else }}
+      readonly: true
+      {{- end }}
+    {{- if .Values.defaultComponents.umbrella.overrides }}
+    {{- toYaml .Values.defaultComponents.umbrella.overrides | nindent 4 }}
+    {{- end }}
+{{- else }}
 {{- range $name, $comp := .Values.defaultComponents.components }}
 ---
 apiVersion: castware.cast.ai/v1alpha1
@@ -23,5 +53,6 @@ spec:
   values:
     {{- toYaml $comp.overrides | nindent 4 }}
   {{- end }}
+{{- end }}
 {{- end }}
 {{- end }}

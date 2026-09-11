@@ -438,6 +438,20 @@ func TestComponentReconciler_ValueOverrides(t *testing.T) {
 	log := logrus.New()
 	log.SetOutput(io.Discard)
 
+	// apiKeySecretForCluster creates the API key secret consumed by the
+	// cluster-controller and spot-handler value-override paths (auth.GetApiKey).
+	apiKeySecretForCluster := func(cluster *castwarev1alpha1.Cluster) *corev1.Secret {
+		return &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      cluster.Spec.APIKeySecret,
+				Namespace: cluster.Namespace,
+			},
+			Data: map[string][]byte{
+				"API_KEY": []byte("test-api-key"),
+			},
+		}
+	}
+
 	t.Run("when component.Spec.Values not nil then add overrides", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
@@ -462,16 +476,7 @@ func TestComponentReconciler_ValueOverrides(t *testing.T) {
 
 		testCluster := newTestCluster(t, uuid.NewString(), true)
 		testComponent := newTestComponent(t, testCluster.Name, "cluster-controller")
-		apiKeySecret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      testCluster.Spec.APIKeySecret,
-				Namespace: testCluster.Namespace,
-			},
-			Data: map[string][]byte{
-				"API_KEY": []byte("test-api-key"),
-			},
-		}
-		testOps := newComponentTestOps(t, testCluster, testComponent, apiKeySecret)
+		testOps := newComponentTestOps(t, testCluster, testComponent, apiKeySecretForCluster(testCluster))
 
 		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
 
@@ -492,16 +497,7 @@ func TestComponentReconciler_ValueOverrides(t *testing.T) {
 
 		testCluster := newTestCluster(t, uuid.NewString(), true)
 		testComponent := newTestComponent(t, testCluster.Name, "spot-handler")
-		apiKeySecret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      testCluster.Spec.APIKeySecret,
-				Namespace: testCluster.Namespace,
-			},
-			Data: map[string][]byte{
-				"API_KEY": []byte("test-api-key"),
-			},
-		}
-		testOps := newComponentTestOps(t, testCluster, testComponent, apiKeySecret)
+		testOps := newComponentTestOps(t, testCluster, testComponent, apiKeySecretForCluster(testCluster))
 
 		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
 
@@ -564,10 +560,20 @@ func TestComponentReconciler_ValueOverrides(t *testing.T) {
 		r.True(ok)
 		r.Equal(testCluster.Spec.API.APIURL, castai["apiURL"])
 		r.Equal(testCluster.Spec.Provider, castai["provider"])
+		// The operator knows the cluster ID from Mothership and injects it
+		// directly; the chart forbids a direct clusterID next to the kvisor
+		// clusterIdConfigMapKeyRef default, so that default is neutralized.
 		r.Equal(testCluster.Spec.Cluster.ClusterID, castai["clusterID"])
 		r.Equal(testCluster.Spec.APIKeySecret, castai["apiKeySecretRef"])
+		r.NotContains(castai, "apiKey")
 		// grpcURL is omitted when the cluster spec does not set it.
 		r.NotContains(castai, "grpcURL")
+		// The kvisor sub-chart defaults to reading the cluster ID from the
+		// agent-created "castai-agent-metadata" ConfigMap; with a direct
+		// clusterID injected the default refs are cleared.
+		kvisor := overrides["autoscaler"].(map[string]any)["castai-kvisor"].(map[string]any)["castai"].(map[string]any)
+		r.Equal("", kvisor["clusterIdConfigMapKeyRef"].(map[string]any)["name"])
+		r.Equal("", kvisor["clusterIdSecretKeyRef"].(map[string]any)["name"])
 
 		// User-supplied values are preserved through the merge.
 		tags, ok := overrides["tags"].(map[string]any)
@@ -590,6 +596,23 @@ func TestComponentReconciler_ValueOverrides(t *testing.T) {
 		r.NoError(err)
 		castai := overrides["global"].(map[string]any)["castai"].(map[string]any)
 		r.Equal("grpc.cast.ai:443", castai["grpcURL"])
+	})
+
+	t.Run("when umbrella cluster has KvisorGrpcURL then it is mapped into autoscaler.castai-kvisor.castai.grpcAddr", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testCluster.Spec.API.KvisorGrpcURL = "kvisor.dev-master.cast.ai"
+		testComponent := newTestComponent(t, testCluster.Name, "castai-umbrella")
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
+
+		r.NoError(err)
+		kvisor := overrides["autoscaler"].(map[string]any)["castai-kvisor"].(map[string]any)["castai"].(map[string]any)
+		r.Equal("kvisor.dev-master.cast.ai", kvisor["grpcAddr"])
 	})
 
 	t.Run("when umbrella user values override global.castai then user wins", func(t *testing.T) {
@@ -617,7 +640,7 @@ func TestComponentReconciler_ValueOverrides(t *testing.T) {
 		r.Equal(false, evictor["enabled"])
 	})
 
-	t.Run("when umbrella cluster spec has nil cluster metadata then clusterID omitted", func(t *testing.T) {
+	t.Run("when cluster spec has no cluster ID then it is omitted and kvisor refs are untouched", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
 		r := require.New(t)
@@ -632,6 +655,8 @@ func TestComponentReconciler_ValueOverrides(t *testing.T) {
 		r.NoError(err)
 		castai := overrides["global"].(map[string]any)["castai"].(map[string]any)
 		r.NotContains(castai, "clusterID")
+		// No cluster ID injected means no kvisor ref neutralization either.
+		r.NotContains(overrides, "autoscaler")
 	})
 
 	t.Run("when component.Spec.Component is unknown then add default overrides", func(t *testing.T) {
@@ -651,6 +676,34 @@ func TestComponentReconciler_ValueOverrides(t *testing.T) {
 		r.Equal("eks", overrides["provider"])
 		r.Equal(false, overrides["createNamespace"])
 		r.Equal("value1-value", overrides["value1"])
+	})
+
+	t.Run("when umbrella user values pass tags then tags are passed through as-is", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "castai-umbrella")
+		testComponent.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"readonly":true}}`)}
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
+		r.NoError(err)
+
+		// Tags are passed through unchanged — the umbrella chart handles them.
+		tags, ok := overrides["tags"].(map[string]any)
+		r.True(ok)
+		r.Equal(true, tags["readonly"])
+
+		// The builder does NOT translate tags into autoscaler enables: the only
+		// autoscaler content is the kvisor cluster-ID ref neutralization that
+		// accompanies the injected clusterID.
+		autoscaler := overrides["autoscaler"].(map[string]any)
+		r.Len(autoscaler, 1)
+		kvisor := autoscaler["castai-kvisor"].(map[string]any)["castai"].(map[string]any)
+		r.Equal(map[string]any{"name": ""}, kvisor["clusterIdConfigMapKeyRef"])
+		r.Equal(map[string]any{"name": ""}, kvisor["clusterIdSecretKeyRef"])
 	})
 }
 
@@ -1722,7 +1775,15 @@ func TestReconcileMutualExclusivityGate(t *testing.T) {
 		umbrella.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"readonly":true}}`)}
 		umbrella.Status.CurrentVersion = ""
 
-		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, umbrella)
+		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, umbrella, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      testCluster.Spec.APIKeySecret,
+				Namespace: testCluster.Namespace,
+			},
+			Data: map[string][]byte{
+				"API_KEY": []byte("test-api-key"),
+			},
+		})
 
 		// refuseUmbrellaIfIndividualsPresent resolves all release names and
 		// finds castai-agent installed, but spec.migrate is true so the install
