@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	"castai-agent/pkg/castai"
@@ -38,6 +39,7 @@ type CastAIClient interface {
 	PollActions(ctx context.Context, clusterID string) (*PollActionsResponse, error)
 	AckAction(ctx context.Context, clusterID, actionID string, error error) error
 	ValidateComponentUpgrade(ctx context.Context, req *ValidateComponentUpgradeRequest) (*ValidateComponentUpgradeResponse, error)
+	ValidateComponentInstall(ctx context.Context, req *ValidateComponentInstallRequest) (*ValidateComponentInstallResponse, error)
 }
 type Client struct {
 	log    logrus.FieldLogger
@@ -54,7 +56,15 @@ func GetVersion() config.CastwareOperatorVersion {
 }
 
 // NewClient returns new Client for communicating with Cast AI.
+// NewClient returns a CAST AI API client. A nil logger is defended against
+// — replaced with a discarding logger — so a caller passing nil cannot store
+// a FieldLogger that panics the first time a client method logs.
 func NewClient(log logrus.FieldLogger, config *config.Config, rest *resty.Client) CastAIClient {
+	if log == nil {
+		discard := logrus.New()
+		discard.SetOutput(io.Discard)
+		log = discard
+	}
 	return &Client{
 		log:    log,
 		config: config,
@@ -290,6 +300,29 @@ func (c *Client) ValidateComponentUpgrade(ctx context.Context, req *ValidateComp
 		SetPathParam("clusterId", req.ClusterID).
 		SetBody(req).
 		Post("cluster-management/v1/clusters/{clusterId}/components:validateUpgrade")
+	if err != nil {
+		return nil, err
+	}
+	err = c.toValidationError(resp)
+	if err != nil {
+		result.Allowed = false
+		result.BlockReason = err.Error()
+	}
+
+	return result, nil
+}
+
+func (c *Client) ValidateComponentInstall(ctx context.Context, req *ValidateComponentInstallRequest) (*ValidateComponentInstallResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.config.RequestTimeout)
+	defer cancel()
+
+	result := &ValidateComponentInstallResponse{}
+	resp, err := c.rest.R().
+		SetContext(ctx).
+		SetResult(result).
+		SetPathParam("clusterId", req.ClusterID).
+		SetBody(req).
+		Post("cluster-management/v1/clusters/{clusterId}/components:validateInstallation")
 	if err != nil {
 		return nil, err
 	}

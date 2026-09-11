@@ -201,3 +201,18 @@ type ValidateComponentUpgradeResponse struct {
 	Allowed     bool   `json:"allowed"`
 	BlockReason string `json:"blockReason,omitempty"`
 }
+
+type ValidateComponentInstallRequest struct {
+	ClusterID     string `json:"cluster_id"`
+	ComponentName string `json:"component_name"`
+	TargetVersion string `json:"target_version"`
+	// ComponentParams holds the component's install values (e.g. the
+	// umbrella's effective values map) so the server can compare the
+	// component's required RBAC surface against the operator's conditions.
+	ComponentParams map[string]any `json:"component_params,omitempty"`
+}
+
+type ValidateComponentInstallResponse struct {
+	Allowed     bool   `json:"allowed"`
+	BlockReason string `json:"blockReason,omitempty"`
+}

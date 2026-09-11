@@ -1708,7 +1708,72 @@ func TestReconcileMutualExclusivityGate(t *testing.T) {
 		r.Nil(progressing, "umbrella must not be marked as progressing when refused by the gate")
 	})
 
-	t.Run("umbrella CR with migrate true proceeds to install despite individual releases present", func(t *testing.T) {
+	t.Run("umbrella CR with migrate true defers the install to the migration controller", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		umbrella := newTestComponent(t, testCluster.Name, components.ComponentNameUmbrella)
+		umbrella.Spec.Component = components.ComponentNameUmbrella
+		umbrella.Spec.ReleaseName = components.ComponentNameUmbrella
+		umbrella.Spec.Migrate = true
+		umbrella.Spec.Version = "0.1.0"
+		umbrella.Status.CurrentVersion = ""
+
+		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, umbrella)
+
+		// refuseUmbrellaIfIndividualsPresent resolves all release names and
+		// finds castai-agent installed, but spec.migrate is true so the Mothership
+		// permission gate runs — and the install is NOT done from here.
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+			Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil)
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameAgent).
+			Return(&castai.Component{Name: components.ComponentNameAgent, ReleaseName: components.ComponentNameAgent}, nil)
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
+			Return(&castai.Component{Name: components.ComponentNameSpotHandler, ReleaseName: components.ComponentNameSpotHandler}, nil)
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameClusterController).
+			Return(&castai.Component{Name: components.ComponentNameClusterController, ReleaseName: components.ComponentNameClusterController}, nil)
+
+		// The migrate path runs the Mothership permission gate; it passes, but
+		// the install is still deferred to the migration controller.
+		testOps.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+			Return(&castai.ValidateComponentInstallResponse{Allowed: true}, nil)
+
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: umbrella.Namespace, ReleaseName: components.ComponentNameAgent,
+		}).Return(&release.Release{Name: components.ComponentNameAgent, Info: &release.Info{Status: release.StatusDeployed}}, nil)
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: umbrella.Namespace, ReleaseName: components.ComponentNameSpotHandler,
+		}).Return(nil, driver.ErrReleaseNotFound)
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: umbrella.Namespace, ReleaseName: components.ComponentNameClusterController,
+		}).Return(nil, driver.ErrReleaseNotFound)
+		// No installComponent mocks (umbrella GetRelease, Install,
+		// RecordActionResult) are wired: an attempted install fails the test.
+
+		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: umbrella.Name, Namespace: umbrella.Namespace}}
+		_, err := testOps.sut.Reconcile(ctx, req)
+		r.NoError(err)
+
+		var actualComponent castwarev1alpha1.Component
+		r.NoError(testOps.sut.Get(ctx, client.ObjectKey{Name: umbrella.Name, Namespace: umbrella.Namespace}, &actualComponent))
+
+		// The install path never ran: no progressing condition (and no Install
+		// mock was wired, so a helm install would have failed the test).
+		progressing := meta.FindStatusCondition(actualComponent.Status.Conditions, typeProgressingComponent)
+		r.Nil(progressing, "the component reconciler must not install the umbrella while a migration is intended")
+
+		// The handoff is visible on the CR: the install is blocked, owned by the
+		// migration controller, until it sidelines this reconciler or completes.
+		conflict := meta.FindStatusCondition(actualComponent.Status.Conditions, typeUmbrellaConflict)
+		r.NotNil(conflict, "UmbrellaConflict condition must be set while the migration owns the install")
+		r.Equal(metav1.ConditionTrue, conflict.Status)
+		r.Equal(reasonIndividualReleasesPresent, conflict.Reason)
+		r.Contains(conflict.Message, "migration controller")
+	})
+
+	t.Run("umbrella CR with migrate true is refused by the Mothership permission gate before install", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
 		r := require.New(t)
@@ -1724,9 +1789,9 @@ func TestReconcileMutualExclusivityGate(t *testing.T) {
 
 		testOps := newComponentTestOpsWithCastAIClient(t, testCluster, umbrella)
 
-		// refuseUmbrellaIfIndividualsPresent resolves all release names and
-		// finds castai-agent installed, but spec.migrate is true so the install
-		// is allowed to proceed (blocked=false).
+		// Release-name resolution finds castai-agent installed (the migration
+		// precondition); spec.migrate is true so the mutual-exclusivity gate
+		// passes to the permission check.
 		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
 			Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil)
 		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameAgent).
@@ -1746,41 +1811,33 @@ func TestReconcileMutualExclusivityGate(t *testing.T) {
 			Namespace: umbrella.Namespace, ReleaseName: components.ComponentNameClusterController,
 		}).Return(nil, driver.ErrReleaseNotFound)
 
-		// installComponent: record progressing, probe the umbrella release
-		// (not found -> install), then install the chart. The deferred
-		// recordActionResult on success records an OK result.
-		testOps.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), testCluster.Spec.Cluster.ClusterID, gomock.Any()).Return(nil).AnyTimes()
-
-		helmRelease := &release.Release{
-			Name:  components.ComponentNameUmbrella,
-			Info:  &release.Info{Status: release.StatusDeployed},
-			Chart: &chart.Chart{Metadata: &chart.Metadata{Version: "0.1.0"}},
-		}
-		// installComponent GetRelease for the umbrella release (not found -> install).
-		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
-			Namespace: umbrella.Namespace, ReleaseName: components.ComponentNameUmbrella,
-		}).Return(nil, driver.ErrReleaseNotFound)
-		testOps.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).Return(helmRelease, nil)
+		// The permission gate refuses: the operator's service account is
+		// under-permissioned for the umbrella's broader RBAC surface.
+		testOps.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+			Return(&castai.ValidateComponentInstallResponse{
+				Allowed:     false,
+				BlockReason: "service account lacks permissions for the umbrella chart",
+			}, nil)
 
 		req := reconcile.Request{NamespacedName: client.ObjectKey{Name: umbrella.Name, Namespace: umbrella.Namespace}}
-		_, err := testOps.sut.Reconcile(ctx, req)
+		result, err := testOps.sut.Reconcile(ctx, req)
 		r.NoError(err)
+		r.NotEqual(time.Duration(0), result.RequeueAfter, "blocked install requeues")
 
 		var actualComponent castwarev1alpha1.Component
 		r.NoError(testOps.sut.Get(ctx, client.ObjectKey{Name: umbrella.Name, Namespace: umbrella.Namespace}, &actualComponent))
 
-		// Install proceeded: progressing condition is set to installing.
-		progressing := meta.FindStatusCondition(actualComponent.Status.Conditions, typeProgressingComponent)
-		r.NotNil(progressing, "umbrella with migrate=true must proceed to install")
-		r.Equal(metav1.ConditionTrue, progressing.Status)
-		r.Equal(progressingReasonInstalling, progressing.Reason)
+		// The refusal is visible as Migrating=False / MigrationBlocked with the
+		// Mothership block reason.
+		migrating := meta.FindStatusCondition(actualComponent.Status.Conditions, castwarev1alpha1.TypeMigrating)
+		r.NotNil(migrating, "Migrating condition must be set")
+		r.Equal(metav1.ConditionFalse, migrating.Status)
+		r.Equal(castwarev1alpha1.ReasonMigrationBlocked, migrating.Reason)
+		r.Contains(migrating.Message, "service account lacks permissions for the umbrella chart")
 
-		// No UmbrellaConflict condition is left blocking: with migrate=true the
-		// gate clears any stale refusal.
-		conflict := meta.FindStatusCondition(actualComponent.Status.Conditions, typeUmbrellaConflict)
-		if conflict != nil {
-			r.Equal(metav1.ConditionFalse, conflict.Status, "UmbrellaConflict must not be True when migrate allowed the install")
-		}
+		// The install path never ran: no progressing condition, no helm Install.
+		progressing := meta.FindStatusCondition(actualComponent.Status.Conditions, typeProgressingComponent)
+		r.Nil(progressing, "umbrella must not be marked as progressing when blocked by the permission gate")
 	})
 
 	t.Run("per-component CR fails closed when Mothership cannot resolve the umbrella release name", func(t *testing.T) {

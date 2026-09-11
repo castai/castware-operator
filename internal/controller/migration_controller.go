@@ -24,6 +24,16 @@ package controller
 // regime before the CR — and its status.migrationPhase — is removed, instead of
 // leaving a half-migrated cluster with no controller to drive recovery.
 //
+// Permission gate: the umbrella chart renders a broader RBAC surface than the
+// phase1/phase2 individual charts, so an under-permissioned operator service
+// account would only fail mid-swap — after the non-agent individuals are already
+// uninstalled — leaving the cluster half-migrated. Before any release is touched
+// (top of phaseMarkReadonly, before the finalizer is armed), the controller asks
+// Mothership (components:validateInstall) whether the umbrella install is
+// permitted. A refusal sets Migrating=False / MigrationBlocked with the Mothership
+// block reason and leaves the CR and the cluster untouched; a Mothership failure
+// degrades the migration like any other dependency outage.
+//
 // Standalone conflict guard: the umbrella chart also renders charts the
 // operator does not manage as individual components (castai-kvisor,
 // castai-evictor, ...). A standalone release of one of those in the namespace
@@ -150,7 +160,12 @@ func (r *MigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	if !component.Spec.Migrate {
-		return ctrl.Result{}, nil
+		// Terminal repair hook: a migration whose finalize cleared spec.migrate
+		// but whose status write failed would otherwise be invisible forever —
+		// this gate returns early and nothing re-runs the finalize. The stale
+		// phase identifies the outcome (see repairStaleMigrationStatus); clean
+		// states (phase "" after success, RolledBack after failure) no-op.
+		return r.repairStaleMigrationStatus(ctx, log, component)
 	}
 
 	log = log.WithField("cluster", component.Spec.Cluster)
@@ -167,17 +182,27 @@ func (r *MigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
+	// One CAST AI client per reconcile: the permission gate, release-name
+	// resolution, present-individuals probing, and the Mothership result report
+	// all share it, so the API-key secret is read once and the resty client's
+	// connection pool is reused instead of each helper building (and discarding)
+	// its own client.
+	castAiClient, err := r.getCastaiClient(ctx, cluster)
+	if err != nil {
+		return ctrl.Result{}, r.degradeMigration(ctx, log, component, fmt.Errorf("get castai client: %w", err))
+	}
+
 	switch component.Status.MigrationPhase {
 	case "", castwarev1alpha1.MigrationPhaseMarkReadonly:
-		return r.phaseMarkReadonly(ctx, log, component, cluster)
+		return r.phaseMarkReadonly(ctx, log, component, cluster, castAiClient)
 	case castwarev1alpha1.MigrationPhaseUninstallIndividuals:
-		return r.phaseUninstallIndividuals(ctx, log, component, cluster)
+		return r.phaseUninstallIndividuals(ctx, log, component, cluster, castAiClient)
 	case castwarev1alpha1.MigrationPhaseInstallUmbrella:
-		return r.phaseInstallUmbrella(ctx, log, component, cluster)
+		return r.phaseInstallUmbrella(ctx, log, component, cluster, castAiClient)
 	case castwarev1alpha1.MigrationPhaseVerify:
-		return r.phaseVerify(ctx, log, component, cluster)
+		return r.phaseVerify(ctx, log, component, cluster, castAiClient)
 	case castwarev1alpha1.MigrationPhaseFinalize:
-		return r.phaseFinalize(ctx, log, component, cluster)
+		return r.phaseFinalize(ctx, log, component, cluster, castAiClient)
 	case castwarev1alpha1.MigrationPhaseRolledBack:
 		// Terminal failure state. Stop reconciling; the cluster is back on the
 		// individual regime and a human must clear spec.migrate to retry.
@@ -194,13 +219,33 @@ func (r *MigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // spec.readonly=true on it (sidelining the component reconciler for the whole
 // migration) and on each present individual sub-component CR, then advances to
 // UninstallIndividuals. Idempotent: patching an already-readonly CR is a no-op.
-func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (ctrl.Result, error) {
-	// Pre-flight guard, before any CR/release mutation: block while a
-	// standalone release of an umbrella-managed chart the operator does not
-	// support is present — the umbrella install would silently absorb or
-	// duplicate it (see checkUmbrellaOnlyConflicts). Runs first so a blocked
-	// migration leaves the cluster untouched and resumes once the conflict is
-	// removed.
+//
+// Two pre-flight guards run before the finalizer is armed and before any spec
+// is modified, so a refused migration leaves the CR and the cluster
+// byte-for-byte unchanged (only a status condition is written): the Mothership
+// permission gate (validateMigrationPermissions) and the standalone-release
+// conflict guard (checkUmbrellaOnlyConflicts).
+func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster, castAiClient castai.CastAIClient) (ctrl.Result, error) {
+	// Permission gate: the umbrella chart renders a broader RBAC surface than the
+	// individual charts. An under-permissioned service account must fail here —
+	// before any release is touched — rather than mid-swap after the non-agent
+	// individuals were uninstalled.
+	blocked, err := r.validateMigrationPermissions(ctx, log, component, cluster, castAiClient)
+	if err != nil {
+		// Mothership/auth unreachable: transient. Degrade (retry with backoff)
+		// rather than treat it as a refusal — the gate must not block a migration
+		// only because it cannot ask the question.
+		return ctrl.Result{}, r.degradeMigration(ctx, log, component, err)
+	}
+	if blocked {
+		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+	}
+
+	// Standalone-release conflict guard: block while a standalone release of
+	// an umbrella-managed chart the operator does not support is present — the
+	// umbrella install would silently absorb or duplicate it (see
+	// checkUmbrellaOnlyConflicts). A blocked migration leaves the cluster
+	// untouched and resumes once the conflict is removed.
 	if err := r.checkUmbrellaOnlyConflicts(ctx, log, component); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -238,7 +283,7 @@ func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.
 	// Mark each present individual sub-component CR read-only so the component
 	// reconciler stops reconciling them while the migration uninstalls their
 	// releases. The CRs are retained (with their spec.values) for rollback.
-	present, err := r.presentIndividuals(ctx, cluster)
+	present, err := r.presentIndividuals(ctx, castAiClient, cluster)
 	if err != nil {
 		// Returning the error (not Warn + fixed requeue) records a reconcile
 		// error and applies exponential backoff, and degradeMigration surfaces
@@ -263,13 +308,58 @@ func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.
 	return r.setMigrationPhase(ctx, component, castwarev1alpha1.MigrationPhaseUninstallIndividuals)
 }
 
+// validateMigrationPermissions asks Mothership whether the umbrella install is
+// permitted for this cluster (components:validateInstall). The umbrella renders a
+// broader RBAC surface than the individual charts, so an under-permissioned
+// operator service account is refused here — before any release is touched —
+// instead of failing mid-swap and leaving the cluster half-migrated.
+//
+// A refusal is recorded via setMigratingFalse (ReasonMigrationBlocked) with the
+// Mothership block reason; a transport/API error is returned so the caller
+// degrades and retries (the gate must not block only because it cannot ask the
+// question). A migration resuming past MarkReadonly never re-runs the gate: it
+// is already beyond the point the gate protects.
+func (r *MigrationReconciler) validateMigrationPermissions(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster, castAiClient castai.CastAIClient) (bool, error) {
+	// The server compares the component's required RBAC surface (selected from
+	// component_params) against the operator's installed conditions, so send
+	// the umbrella's user-supplied install values.
+	componentParams, err := utils.UnmarshalJSON(component.Spec.Values)
+	if err != nil {
+		return false, fmt.Errorf("unmarshal umbrella values for permission gate: %w", err)
+	}
+
+	validation, err := migrationgate.ValidateInstallPermissions(ctx, castAiClient, cluster.Spec.Cluster.ClusterID, component.Spec.Component, component.Spec.Version, componentParams)
+	if err != nil {
+		return false, fmt.Errorf("validate umbrella install permissions: %w", err)
+	}
+
+	if !validation.Allowed {
+		blockReason := "umbrella install not permitted by CAST.AI"
+		if validation.BlockReason != "" {
+			blockReason = validation.BlockReason
+		}
+		log.Warnf("Migration blocked by Mothership permission validation: %s", blockReason)
+		// Same condition the standalone-release conflict guard sets, so a
+		// blocked migration reads identically regardless of which guard refused
+		// it. The migration is not failed — no rollback is driven — because
+		// nothing has been touched yet; the caller requeues and the gate
+		// re-checks periodically, so the migration proceeds automatically once
+		// the block reason is lifted (e.g. the operator is reinstalled with
+		// extendedPermissions="true").
+		r.setMigratingFalse(ctx, log, component, castwarev1alpha1.ReasonMigrationBlocked, fmt.Sprintf("Migration blocked: %s", blockReason))
+		return true, nil
+	}
+	log.Info("Permission gate passed; proceeding with migration")
+	return false, nil
+}
+
 // phaseUninstallIndividuals uninstalls the non-agent individual releases in
 // reverse phase order (cluster-controller first, then spot-handler). The agent
 // is excluded: its resources are adopted by the umbrella install (TakeOwnership)
 // and its release is forgotten in Finalize, never uninstalled. Individual CRs
 // are kept (readonly) for rollback. Idempotent via IgnoreNotFound.
-func (r *MigrationReconciler) phaseUninstallIndividuals(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (ctrl.Result, error) {
-	present, err := r.presentIndividuals(ctx, cluster)
+func (r *MigrationReconciler) phaseUninstallIndividuals(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster, castAiClient castai.CastAIClient) (ctrl.Result, error) {
+	present, err := r.presentIndividuals(ctx, castAiClient, cluster)
 	if err != nil {
 		// See phaseMarkReadonly: the error is returned so controller-runtime
 		// records it and backs off, and the stall is surfaced on the CR.
@@ -293,7 +383,7 @@ func (r *MigrationReconciler) phaseUninstallIndividuals(ctx context.Context, log
 		if !contains(present, sub) {
 			continue
 		}
-		releaseName, err := r.releaseNameFor(ctx, cluster, sub)
+		releaseName, err := r.releaseNameFor(ctx, castAiClient, sub)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("resolve release name for %s: %w", sub, err)
 		}
@@ -306,7 +396,7 @@ func (r *MigrationReconciler) phaseUninstallIndividuals(ctx context.Context, log
 		}); err != nil {
 			// An uninstall failure is a migration failure: roll back.
 			log.WithError(err).Errorf("Failed to uninstall %s; rolling back", sub)
-			return r.rollback(ctx, log, component, cluster, fmt.Errorf("uninstall %s: %w", sub, err))
+			return r.rollback(ctx, log, component, cluster, castAiClient, fmt.Errorf("uninstall %s: %w", sub, err))
 		}
 	}
 
@@ -319,8 +409,8 @@ func (r *MigrationReconciler) phaseUninstallIndividuals(ctx context.Context, log
 // agent Deployment without a pod restart, preserving the Mothership heartbeat.
 // Idempotent: if the umbrella release is already present (a partial prior run),
 // it skips straight to Verify.
-func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (ctrl.Result, error) {
-	umbrellaReleaseName, err := r.releaseNameFor(ctx, cluster, components.ComponentNameUmbrella)
+func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster, castAiClient castai.CastAIClient) (ctrl.Result, error) {
+	umbrellaReleaseName, err := r.releaseNameFor(ctx, castAiClient, components.ComponentNameUmbrella)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("resolve umbrella release name: %w", err)
 	}
@@ -349,7 +439,7 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 		return ctrl.Result{}, err
 	}
 
-	present, err := r.presentIndividuals(ctx, cluster)
+	present, err := r.presentIndividuals(ctx, castAiClient, cluster)
 	if err != nil {
 		// See phaseMarkReadonly: returned (not swallowed) so the failure is
 		// observable in reconcile-error metrics and the Migrating condition.
@@ -403,7 +493,7 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 		// its individual release) and the non-agent individuals were already
 		// uninstalled. Roll back so the component reconciler reinstalls them.
 		log.WithError(err).Error("Umbrella install failed; rolling back")
-		return r.rollback(ctx, log, component, cluster, fmt.Errorf("install umbrella: %w", err))
+		return r.rollback(ctx, log, component, cluster, castAiClient, fmt.Errorf("install umbrella: %w", err))
 	}
 
 	return r.setMigrationPhase(ctx, component, castwarev1alpha1.MigrationPhaseVerify)
@@ -412,8 +502,8 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 // phaseVerify waits for the umbrella release to reach deployed status and the
 // agent to be healthy (first verified), then advances to Finalize. A verify
 // failure or timeout rolls back to the individual regime.
-func (r *MigrationReconciler) phaseVerify(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (ctrl.Result, error) {
-	umbrellaReleaseName, err := r.releaseNameFor(ctx, cluster, components.ComponentNameUmbrella)
+func (r *MigrationReconciler) phaseVerify(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster, castAiClient castai.CastAIClient) (ctrl.Result, error) {
+	umbrellaReleaseName, err := r.releaseNameFor(ctx, castAiClient, components.ComponentNameUmbrella)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("resolve umbrella release name: %w", err)
 	}
@@ -425,7 +515,7 @@ func (r *MigrationReconciler) phaseVerify(ctx context.Context, log logrus.FieldL
 	if err != nil {
 		if isReleaseNotFound(err) {
 			// Umbrella release vanished — the install did not take. Roll back.
-			return r.rollback(ctx, log, component, cluster, errors.New("umbrella release not found during verify"))
+			return r.rollback(ctx, log, component, cluster, castAiClient, errors.New("umbrella release not found during verify"))
 		}
 		return ctrl.Result{}, fmt.Errorf("get umbrella release for verify: %w", err)
 	}
@@ -435,7 +525,7 @@ func (r *MigrationReconciler) phaseVerify(ctx context.Context, log logrus.FieldL
 		// status.migrationPhaseStartedAt (stamped when the phase was entered);
 		// if it predates the timeout, roll back rather than wait forever.
 		if r.verifyDeadlineExceeded(component) {
-			return r.rollback(ctx, log, component, cluster, fmt.Errorf("umbrella verify timeout: release status %s", rel.Info.Status))
+			return r.rollback(ctx, log, component, cluster, castAiClient, fmt.Errorf("umbrella verify timeout: release status %s", rel.Info.Status))
 		}
 		log.Infof("Umbrella release not yet deployed (status=%s); requeueing", rel.Info.Status)
 		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
@@ -446,7 +536,7 @@ func (r *MigrationReconciler) phaseVerify(ctx context.Context, log logrus.FieldL
 	// gate before finalizing.
 	if err := r.verifyAgentHealthy(ctx, component); err != nil {
 		if r.verifyDeadlineExceeded(component) {
-			return r.rollback(ctx, log, component, cluster, fmt.Errorf("agent not healthy after verify timeout: %w", err))
+			return r.rollback(ctx, log, component, cluster, castAiClient, fmt.Errorf("agent not healthy after verify timeout: %w", err))
 		}
 		log.WithError(err).Warn("Agent not yet healthy; requeueing")
 		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
@@ -460,11 +550,11 @@ func (r *MigrationReconciler) phaseVerify(ctx context.Context, log logrus.FieldL
 // individual Component CRs, then clears the umbrella's migrate/readonly flags
 // and reports success to Mothership. After Finalize the umbrella is the sole
 // owner and ComponentReconciler resumes normal reconcile.
-func (r *MigrationReconciler) phaseFinalize(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (ctrl.Result, error) {
+func (r *MigrationReconciler) phaseFinalize(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster, castAiClient castai.CastAIClient) (ctrl.Result, error) {
 	// Forget the individual agent release: its resources are now owned by the
 	// umbrella (adopted via TakeOwnership). Deleting only the storage record
 	// leaves the running agent pods untouched. Idempotent.
-	agentReleaseName, err := r.releaseNameFor(ctx, cluster, components.ComponentNameAgent)
+	agentReleaseName, err := r.releaseNameFor(ctx, castAiClient, components.ComponentNameAgent)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("resolve agent release name: %w", err)
 	}
@@ -543,7 +633,7 @@ func (r *MigrationReconciler) phaseFinalize(ctx context.Context, log logrus.Fiel
 	}
 
 	// Report success to Mothership.
-	r.recordMigrationResult(ctx, log, cluster, castai.Status_OK, "migration succeeded: cluster now managed by the umbrella chart", "")
+	r.recordMigrationResult(ctx, log, castAiClient, cluster, castai.Status_OK, "migration succeeded: cluster now managed by the umbrella chart", "")
 
 	log.Info("Migration finalized: umbrella is the sole owner")
 	return ctrl.Result{}, nil
@@ -556,7 +646,7 @@ func (r *MigrationReconciler) phaseFinalize(ctx context.Context, log logrus.Fiel
 // bound applies to the success path only; rollback may take longer to fully
 // reinstall individuals, and the agent specifically incurs a pod restart (see
 // the uninstall comment below).
-func (r *MigrationReconciler) rollback(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster, cause error) (ctrl.Result, error) {
+func (r *MigrationReconciler) rollback(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster, castAiClient castai.CastAIClient, cause error) (ctrl.Result, error) {
 	log.WithError(cause).Warn("Migration failed; rolling back to individual regime")
 
 	// Uninstall the umbrella if it was installed. IgnoreNotFound: a pre-install
@@ -574,19 +664,30 @@ func (r *MigrationReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 	// uninstalling would preserve the pods but orphan its non-agent resources
 	// — cluster-controller/spot-handler — leaving a hybrid state, which is
 	// worse.)
-	umbrellaReleaseName, nameErr := r.releaseNameFor(ctx, cluster, components.ComponentNameUmbrella)
-	if nameErr == nil {
-		if _, err := r.HelmClient.Uninstall(helm.UninstallOptions{
-			Namespace:      component.Namespace,
-			ReleaseName:    umbrellaReleaseName,
-			IgnoreNotFound: true,
-			Wait:           true,
-		}); err != nil {
-			// A failed umbrella uninstall leaves the cluster in a hybrid state.
-			// Surface it; the next reconcile of the scan path will warn
-			// Mothership about the hybrid config.
-			log.WithError(err).Error("Failed to uninstall umbrella during rollback; cluster may be in hybrid state")
-		}
+	umbrellaReleaseName, nameErr := r.releaseNameFor(ctx, castAiClient, components.ComponentNameUmbrella)
+	if nameErr != nil {
+		// Fall back to the default umbrella release name rather than skip the
+		// uninstall: skipping re-enables the individuals below while the
+		// umbrella stays installed — the hybrid state this rollback exists to
+		// prevent. The default matches the common case (the release name is the
+		// component name unless Mothership overrides it), and Uninstall's
+		// IgnoreNotFound makes a wrong guess harmless. Mirrors the fallback in
+		// recordMigrationResult.
+		log.WithError(nameErr).Warn("Failed to resolve umbrella release name for rollback; falling back to the default release name")
+		umbrellaReleaseName = components.ComponentNameUmbrella
+	}
+	if _, err := r.HelmClient.Uninstall(helm.UninstallOptions{
+		Namespace:      component.Namespace,
+		ReleaseName:    umbrellaReleaseName,
+		IgnoreNotFound: true,
+		Wait:           true,
+	}); err != nil {
+		// A failed umbrella uninstall leaves the cluster in a hybrid state.
+		// Surface it on the CR's failure condition (via the wrapped cause below)
+		// as well as the operator log; the next reconcile of the scan path will
+		// also warn Mothership about the hybrid config.
+		log.WithError(err).Error("Failed to uninstall umbrella during rollback; cluster may be in hybrid state")
+		cause = fmt.Errorf("%w; additionally, the umbrella uninstall failed: %v — cluster may be in a hybrid state until it is removed", cause, err)
 	}
 
 	// Re-enable the individual CRs so ComponentReconciler reinstalls them. The
@@ -619,7 +720,7 @@ func (r *MigrationReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 		return ctrl.Result{}, err
 	}
 
-	r.recordMigrationResult(ctx, log, cluster, castai.Status_ERROR, "migration failed and rolled back; individual components restored", cause.Error())
+	r.recordMigrationResult(ctx, log, castAiClient, cluster, castai.Status_ERROR, "migration failed and rolled back; individual components restored", cause.Error())
 
 	return ctrl.Result{}, nil
 }
@@ -671,8 +772,16 @@ func (r *MigrationReconciler) handleUmbrellaDeletion(ctx context.Context, log lo
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
+	// One client for the abort-rollback (see Reconcile): built once, shared by
+	// every Mothership call in the path.
+	castAiClient, err := r.getCastaiClient(ctx, cluster)
+	if err != nil {
+		log.WithError(err).Error("Failed to get castai client for mid-migration deletion abort")
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+
 	log.Warn("Umbrella CR deleted mid-migration; aborting and rolling back to individual regime")
-	return r.rollback(ctx, log, component, cluster, errors.New("umbrella component CR deleted mid-migration"))
+	return r.rollback(ctx, log, component, cluster, castAiClient, errors.New("umbrella component CR deleted mid-migration"))
 }
 
 // removeMigrationFinalizer releases the deletion guard via a merge patch,
@@ -730,6 +839,15 @@ func (r *MigrationReconciler) finalizeUmbrellaSuccess(ctx context.Context, compo
 		}
 		return fmt.Errorf("clear umbrella migrate/readonly: %w", err)
 	}
+	return r.writeUmbrellaSuccessStatus(ctx, component)
+}
+
+// writeUmbrellaSuccessStatus records the terminal success status: empty
+// migration phase, Migrating=False (ReasonMigrationSucceeded), Available=True.
+// Split out of finalizeUmbrellaSuccess so repairStaleMigrationStatus can
+// re-record it when the original write failed after spec.migrate was cleared.
+// The CR having already been deleted (abort path) is tolerated.
+func (r *MigrationReconciler) writeUmbrellaSuccessStatus(ctx context.Context, component *castwarev1alpha1.Component) error {
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		latest := &castwarev1alpha1.Component{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, latest); err != nil {
@@ -781,6 +899,16 @@ func (r *MigrationReconciler) finalizeUmbrellaFailure(ctx context.Context, compo
 		}
 		return fmt.Errorf("clear umbrella migrate/readonly on failure: %w", err)
 	}
+	return r.writeUmbrellaFailureStatus(ctx, component, cause)
+}
+
+// writeUmbrellaFailureStatus records the terminal failure status: RolledBack
+// phase, Migrating=False (ReasonMigrationFailed), Available=False. Split out of
+// finalizeUmbrellaFailure so repairStaleMigrationStatus can re-record it when
+// the original write failed after spec.migrate was cleared; the original cause
+// is lost in that case, so the repair passes a synthetic one. The CR having
+// already been deleted (abort path) is tolerated.
+func (r *MigrationReconciler) writeUmbrellaFailureStatus(ctx context.Context, component *castwarev1alpha1.Component, cause error) error {
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		latest := &castwarev1alpha1.Component{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, latest); err != nil {
@@ -805,6 +933,44 @@ func (r *MigrationReconciler) finalizeUmbrellaFailure(ctx context.Context, compo
 		})
 		return r.Status().Update(ctx, latest)
 	})
+}
+
+// repairStaleMigrationStatus re-records the terminal migration status on an
+// umbrella CR whose finalize status write failed. The finalize paths clear
+// spec.migrate (and readonly/finalizer) in one write and record the terminal
+// status in a second; if that second write fails, the requeue hits the
+// spec.migrate gate in Reconcile and nothing ever corrects the status — the CR
+// would keep reporting an in-flight migration forever. The stale phase
+// identifies the terminal outcome, because the only writers of spec.migrate=false
+// are the finalize paths and the phase each leaves behind is deterministic:
+//
+//   - phase Finalize: the migration reached and completed phaseFinalize (no
+//     rollback is reachable from Finalize — its error paths requeue instead),
+//     so the success status write failed. Re-record the success status.
+//   - any other non-empty phase: the rollback path ran (its setMigrationPhase
+//     recorded the phase it was triggered from), so the failure status write
+//     failed. Re-record the failure status with a synthetic cause (the original
+//     cause was lost with the failed write).
+//   - phase "" (clean success) and RolledBack (the failure path's own terminal
+//     record) are the normal terminal states and are left alone.
+func (r *MigrationReconciler) repairStaleMigrationStatus(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component) (ctrl.Result, error) {
+	switch phase := component.Status.MigrationPhase; phase {
+	case "", castwarev1alpha1.MigrationPhaseRolledBack:
+		return ctrl.Result{}, nil
+	case castwarev1alpha1.MigrationPhaseFinalize:
+		log.Info("Repairing stale migration status: finalize succeeded but its status write failed")
+		if err := r.writeUmbrellaSuccessStatus(ctx, component); err != nil {
+			return ctrl.Result{}, fmt.Errorf("repair stale success status: %w", err)
+		}
+		return ctrl.Result{}, nil
+	default:
+		log.Warnf("Repairing stale migration status: rollback from phase %q completed but its status write failed", phase)
+		err := r.writeUmbrellaFailureStatus(ctx, component, errors.New("original failure cause unavailable (terminal status re-recorded after a failed status write)"))
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("repair stale failure status: %w", err)
+		}
+		return ctrl.Result{}, nil
+	}
 }
 
 // setMigrationPhase records the phase in status, stamps the per-phase start
@@ -954,11 +1120,7 @@ func (r *MigrationReconciler) verifyAgentHealthy(ctx context.Context, component 
 // presentIndividuals returns the sub-component names whose helm releases are
 // currently installed, in Subcomponents order. Resolves release names from
 // Mothership (fail-safe per migrationgate).
-func (r *MigrationReconciler) presentIndividuals(ctx context.Context, cluster *castwarev1alpha1.Cluster) ([]string, error) {
-	castAiClient, err := r.getCastaiClient(ctx, cluster)
-	if err != nil {
-		return nil, err
-	}
+func (r *MigrationReconciler) presentIndividuals(ctx context.Context, castAiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster) ([]string, error) {
 	names, err := migrationgate.ResolveNames(ctx, castAiClient)
 	if err != nil {
 		return nil, err
@@ -987,11 +1149,7 @@ func (r *MigrationReconciler) individualComponents(ctx context.Context, namespac
 
 // releaseNameFor resolves a component's helm release name from Mothership,
 // falling back to the component name (matching getReleaseName semantics).
-func (r *MigrationReconciler) releaseNameFor(ctx context.Context, cluster *castwarev1alpha1.Cluster, componentName string) (string, error) {
-	castAiClient, err := r.getCastaiClient(ctx, cluster)
-	if err != nil {
-		return "", err
-	}
+func (r *MigrationReconciler) releaseNameFor(ctx context.Context, castAiClient castai.CastAIClient, componentName string) (string, error) {
 	mc, err := castAiClient.GetComponentByName(ctx, componentName)
 	if err != nil {
 		return "", err
@@ -1032,13 +1190,8 @@ func (r *MigrationReconciler) deriveUmbrellaOverrides(present []string) map[stri
 
 // recordMigrationResult reports the migration outcome to Mothership as a
 // component action result on the umbrella component.
-func (r *MigrationReconciler) recordMigrationResult(ctx context.Context, log logrus.FieldLogger, cluster *castwarev1alpha1.Cluster, status castai.Status, message, errMsg string) {
-	castAiClient, err := r.getCastaiClient(ctx, cluster)
-	if err != nil {
-		log.WithError(err).Error("Failed to get castai client for migration result report")
-		return
-	}
-	releaseName, err := r.releaseNameFor(ctx, cluster, components.ComponentNameUmbrella)
+func (r *MigrationReconciler) recordMigrationResult(ctx context.Context, log logrus.FieldLogger, castAiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, status castai.Status, message, errMsg string) {
+	releaseName, err := r.releaseNameFor(ctx, castAiClient, components.ComponentNameUmbrella)
 	if err != nil {
 		log.WithError(err).Warn("Failed to resolve umbrella release name for result report")
 		releaseName = components.ComponentNameUmbrella
@@ -1058,6 +1211,10 @@ func (r *MigrationReconciler) recordMigrationResult(ctx context.Context, log log
 	}
 }
 
+// getCastaiClient builds a CAST AI client for the cluster (loads the API-key
+// secret, constructs the resty client). Reconcile resolves it once per
+// reconcile and passes it down to every Mothership call in the path, so the
+// secret is read once and the HTTP connection pool is shared.
 func (r *MigrationReconciler) getCastaiClient(ctx context.Context, cluster *castwarev1alpha1.Cluster) (castai.CastAIClient, error) {
 	if r.castAIClientGetter != nil {
 		return r.castAIClientGetter(ctx, cluster)
@@ -1067,7 +1224,7 @@ func (r *MigrationReconciler) getCastaiClient(ctx context.Context, cluster *cast
 		return nil, err
 	}
 	rest := castai.NewRestyClient(r.Config, cluster.Spec.API.APIURL, auth)
-	return castai.NewClient(nil, r.Config, rest), nil
+	return castai.NewClient(r.Log, r.Config, rest), nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -134,6 +134,14 @@ func migIndividualWithValues(name, rawValues string) *castwarev1alpha1.Component
 	return ind
 }
 
+// expectPermissionGatePass wires the Mothership validateInstall expectation for
+// the pre-migration permission gate (phaseMarkReadonly runs it before anything
+// else). allowed=true lets the migration proceed.
+func expectPermissionGatePass(ops *migrationTestOps) {
+	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+		Return(&castai.ValidateComponentInstallResponse{Allowed: true}, nil).AnyTimes()
+}
+
 // expectResolveNames wires Mothership + helm expectations for
 // migrationgate.ResolveNames returning the three sub-components as present.
 func expectResolveNamesPresent(ops *migrationTestOps) {
@@ -211,17 +219,29 @@ func TestMigrationReconciler_NoOpForNonUmbrella(t *testing.T) {
 }
 
 // TestMigrationReconciler_MarkReadonly verifies the first phase sets readonly on
-// the umbrella and present individual CRs, then advances.
+// the umbrella and present individual CRs, then advances. The permission gate
+// must carry the umbrella's spec.values as component_params so the server
+// validates the RBAC surface the install will actually render.
 func TestMigrationReconciler_MarkReadonly(t *testing.T) {
 	t.Parallel()
 	r := require.New(t)
+	umbrella := migUmbrella("")
+	umbrella.Spec.Values = &apiextensionsv1.JSON{Raw: []byte(`{"tags":{"readonly":true}}`)}
 	ops := newMigrationTestOps(t,
 		migCluster(),
-		migUmbrella(""),
+		umbrella,
 		migIndividual(components.ComponentNameAgent),
 		migIndividual(components.ComponentNameSpotHandler),
 		migIndividual(components.ComponentNameClusterController),
 	)
+	// The gate request must carry the umbrella's effective values.
+	gateReq := func() *castai.ValidateComponentInstallRequest { return nil }
+	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, req *castai.ValidateComponentInstallRequest) (*castai.ValidateComponentInstallResponse, error) {
+			gateReqPtr := req
+			gateReq = func() *castai.ValidateComponentInstallRequest { return gateReqPtr }
+			return &castai.ValidateComponentInstallResponse{Allowed: true}, nil
+		}).AnyTimes()
 	expectResolveNamesPresent(ops)
 	expectNoUmbrellaOnlyCharts(ops)
 
@@ -232,6 +252,111 @@ func TestMigrationReconciler_MarkReadonly(t *testing.T) {
 	r.True(u.Spec.Readonly, "umbrella should be readonly")
 	// The deletion guard is armed before readonly is set (webhook ordering).
 	r.True(controllerutil.ContainsFinalizer(u, MigrationFinalizer), "migration finalizer armed in MarkReadonly")
+
+	// The permission gate ran with the umbrella's spec.values as component_params.
+	got := gateReq()
+	r.NotNil(got, "permission gate was called")
+	r.Equal(components.ComponentNameUmbrella, got.ComponentName)
+	r.Equal("1.0.0", got.TargetVersion)
+	tags, ok := got.ComponentParams["tags"].(map[string]any)
+	r.True(ok, "component_params.tags should be an object, got %T", got.ComponentParams["tags"])
+	r.Equal(true, tags["readonly"])
+}
+
+// TestMigrationReconciler_PermissionGate_Blocked asserts the pre-migration
+// permission gate: when Mothership's validateInstall refuses the umbrella
+// install (e.g. an under-permissioned operator service account for the
+// umbrella's broader RBAC surface), the migration is refused before ANY
+// release is touched — no helm interactions (no mock expectations are wired, so
+// any call fails the test), no finalizer armed, no readonly set, phase not
+// advanced — and the CR carries Migrating=False / MigrationBlocked with the
+// Mothership block reason. A later allowed validation lets the migration
+// proceed, so fixing the permissions auto-recovers.
+func TestMigrationReconciler_PermissionGate_Blocked(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	agent := migIndividual(components.ComponentNameAgent)
+	agent.Spec.Readonly = false
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		migUmbrella(""),
+		agent,
+		migIndividual(components.ComponentNameSpotHandler),
+	)
+	// Gate refuses with a block reason. No other Mothership/helm expectations:
+	// a blocked migration must not touch anything else.
+	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+		Return(&castai.ValidateComponentInstallResponse{
+			Allowed:     false,
+			BlockReason: "service account lacks permissions for the umbrella chart",
+		}, nil).Times(1)
+
+	// First reconcile: refused, nothing modified.
+	reconcileOnce(t, ops)
+
+	u := getUmbrella(t, ops)
+	r.Equal("", u.Status.MigrationPhase, "phase must not advance while blocked")
+	r.False(u.Spec.Readonly, "umbrella must not be set readonly while blocked")
+	r.False(controllerutil.ContainsFinalizer(u, MigrationFinalizer), "finalizer must not be armed while blocked")
+	cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.NotNil(cond, "Migrating condition present")
+	r.Equal(metav1.ConditionFalse, cond.Status)
+	r.Equal(castwarev1alpha1.ReasonMigrationBlocked, cond.Reason)
+	r.Contains(cond.Message, "service account lacks permissions for the umbrella chart")
+
+	// The individuals are untouched (no readonly, releases not probed).
+	for _, sub := range []string{components.ComponentNameAgent, components.ComponentNameSpotHandler} {
+		ind := &castwarev1alpha1.Component{}
+		r.NoError(ops.client.Get(context.Background(), types.NamespacedName{Namespace: migNamespace, Name: sub}, ind))
+		r.False(ind.Spec.Readonly, "individual %s must not be set readonly while blocked", sub)
+	}
+
+	// Permissions fixed: the gate passes and the migration proceeds.
+	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+		Return(&castai.ValidateComponentInstallResponse{Allowed: true}, nil).AnyTimes()
+	expectResolveNamesPresent(ops)
+	expectNoUmbrellaOnlyCharts(ops)
+
+	reconcileOnce(t, ops)
+
+	u = getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase,
+		"migration proceeds once the permission gate passes")
+	cond = meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.Equal(metav1.ConditionTrue, cond.Status, "blocked condition replaced by the in-progress phase")
+}
+
+// TestMigrationReconciler_PermissionGate_TransientError asserts the gate does
+// not treat a Mothership outage as a refusal: a validateInstall transport error
+// degrades the migration (reconcile error + MigrationDegraded condition) and
+// nothing is modified. Blocking on an unreachable Mothership would wedge every
+// migration behind a connectivity blip.
+func TestMigrationReconciler_PermissionGate_TransientError(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		migUmbrella(""),
+		migIndividual(components.ComponentNameAgent),
+	)
+	// No other Mothership/helm expectations: the reconcile must stop at the gate.
+	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+		Return(nil, errors.New("connection refused")).Times(1)
+
+	_, err := ops.sut.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
+	})
+	r.Error(err, "gate transport failure must surface as a reconcile error")
+	r.ErrorContains(err, "validate umbrella install permissions")
+
+	u := getUmbrella(t, ops)
+	r.Equal("", u.Status.MigrationPhase, "phase must not advance on a degraded gate")
+	r.False(u.Spec.Readonly, "umbrella untouched while degraded")
+	cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.NotNil(cond, "Migrating condition present")
+	r.Equal(metav1.ConditionFalse, cond.Status)
+	r.Equal(castwarev1alpha1.ReasonMigrationDegraded, cond.Reason)
+	r.Contains(cond.Message, "connection refused")
 }
 
 // TestMigrationReconciler_MothershipUnreachable_Degraded asserts a persistent
@@ -248,6 +373,10 @@ func TestMigrationReconciler_MothershipUnreachable_Degraded(t *testing.T) {
 		migUmbrella(""),
 		migIndividual(components.ComponentNameAgent),
 	)
+	// Both pre-flight guards pass; the failure happens downstream in
+	// presentIndividuals (see PermissionGate_TransientError for the gate itself
+	// degrading on an unreachable Mothership).
+	expectPermissionGatePass(ops)
 	expectNoUmbrellaOnlyCharts(ops)
 	// Mothership lookup fails once (unknown error, not ErrNotFound — ResolveNames
 	// fails closed only when nothing resolves).
@@ -593,6 +722,8 @@ func TestMigrationReconciler_UmbrellaOnlyStandalone_BlocksMigration(t *testing.T
 		migIndividual(components.ComponentNameAgent),
 	)
 	expectResolveNamesPresent(ops)
+	// The permission gate passes; the standalone-release guard blocks.
+	expectPermissionGatePass(ops)
 	// A standalone castai-kvisor release is present; after the user removes
 	// it, subsequent reconciles see an empty list.
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
@@ -731,6 +862,170 @@ func TestMigrationReconciler_VerifyFailure_Rollback(t *testing.T) {
 	}
 }
 
+// TestMigrationReconciler_RepairStaleMigrationStatus asserts the terminal
+// repair: when a finalize cleared spec.migrate but its status write failed,
+// the next reconcile (which stops at the spec.migrate gate) re-records the
+// terminal status instead of leaving the CR reporting an in-flight migration
+// forever. The stale phase identifies the outcome: Finalize means the success
+// status write failed; any other non-terminal phase means the failure status
+// write failed. Clean terminal states ("" and RolledBack) are left alone.
+func TestMigrationReconciler_RepairStaleMigrationStatus(t *testing.T) {
+	t.Parallel()
+
+	// migTerminal builds an umbrella CR in the stuck state a failed finalize
+	// status write leaves behind: spec.migrate already cleared (the spec write
+	// succeeded), stale phase, stale in-flight Migrating condition.
+	migTerminal := func(phase string) *castwarev1alpha1.Component {
+		u := migUmbrella(phase)
+		u.Spec.Migrate = false
+		u.Status.MigrationPhaseStartedAt = metav1.NewTime(time.Now().Add(-time.Hour))
+		meta.SetStatusCondition(&u.Status.Conditions, metav1.Condition{
+			Type:    castwarev1alpha1.TypeMigrating,
+			Status:  metav1.ConditionTrue,
+			Reason:  phase,
+			Message: "Migration in progress: " + phase,
+		})
+		return u
+	}
+
+	t.Run("stale success (phase Finalize) is repaired", func(t *testing.T) {
+		r := require.New(t)
+		ops := newMigrationTestOps(t, migCluster(), migTerminal(castwarev1alpha1.MigrationPhaseFinalize))
+		reconcileOnce(t, ops)
+
+		u := getUmbrella(t, ops)
+		r.Equal("", u.Status.MigrationPhase, "phase cleared by the repair")
+		r.True(u.Status.MigrationPhaseStartedAt.IsZero(), "phase-start timestamp cleared by the repair")
+		cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+		r.NotNil(cond)
+		r.Equal(metav1.ConditionFalse, cond.Status)
+		r.Equal(castwarev1alpha1.ReasonMigrationSucceeded, cond.Reason)
+		avail := meta.FindStatusCondition(u.Status.Conditions, typeAvailableComponent)
+		r.NotNil(avail, "Available condition recorded by the repair")
+		r.Equal(metav1.ConditionTrue, avail.Status)
+	})
+
+	t.Run("stale failure (non-terminal phase) is repaired", func(t *testing.T) {
+		r := require.New(t)
+		ops := newMigrationTestOps(t, migCluster(), migTerminal(castwarev1alpha1.MigrationPhaseVerify))
+		reconcileOnce(t, ops)
+
+		u := getUmbrella(t, ops)
+		r.Equal(castwarev1alpha1.MigrationPhaseRolledBack, u.Status.MigrationPhase, "RolledBack recorded by the repair")
+		cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+		r.NotNil(cond)
+		r.Equal(metav1.ConditionFalse, cond.Status)
+		r.Equal(castwarev1alpha1.ReasonMigrationFailed, cond.Reason)
+		r.Contains(cond.Message, "original failure cause unavailable")
+		avail := meta.FindStatusCondition(u.Status.Conditions, typeAvailableComponent)
+		r.NotNil(avail, "Available condition recorded by the repair")
+		r.Equal(metav1.ConditionFalse, avail.Status)
+	})
+
+	t.Run("clean states are left alone", func(t *testing.T) {
+		t.Run("empty phase", func(t *testing.T) {
+			r := require.New(t)
+			clean := migUmbrella("")
+			clean.Spec.Migrate = false
+			ops := newMigrationTestOps(t, migCluster(), clean)
+			reconcileOnce(t, ops)
+
+			u := getUmbrella(t, ops)
+			r.Equal("", u.Status.MigrationPhase)
+			r.Nil(meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating),
+				"no conditions written for a clean terminal state")
+		})
+
+		t.Run("RolledBack phase", func(t *testing.T) {
+			r := require.New(t)
+			// Terminal failure already fully recorded (phase + Migrating
+			// condition, but no Available yet — if the repair rewrote the
+			// status, Available would appear).
+			rolledBack := migTerminal(castwarev1alpha1.MigrationPhaseRolledBack)
+			rolledBack.Status.Conditions = []metav1.Condition{{
+				Type:   castwarev1alpha1.TypeMigrating,
+				Status: metav1.ConditionFalse,
+				Reason: castwarev1alpha1.ReasonMigrationFailed,
+			}}
+			ops := newMigrationTestOps(t, migCluster(), rolledBack)
+			reconcileOnce(t, ops)
+
+			u := getUmbrella(t, ops)
+			r.Equal(castwarev1alpha1.MigrationPhaseRolledBack, u.Status.MigrationPhase)
+			r.Nil(meta.FindStatusCondition(u.Status.Conditions, typeAvailableComponent),
+				"RolledBack is already terminal; no status rewrite")
+		})
+	})
+}
+
+// TestMigrationReconciler_Rollback_NameResolutionFallback asserts the rollback
+// umbrella uninstall does not depend on Mothership being reachable: when the
+// umbrella release name cannot be resolved, the uninstall falls back to the
+// default release name instead of being skipped (a skipped uninstall would
+// re-enable the individuals while the umbrella stays installed — the hybrid
+// state the rollback exists to prevent). A failing uninstall additionally
+// surfaces the hybrid-state risk on the Migrating condition, not just in the
+// operator log.
+func TestMigrationReconciler_Rollback_NameResolutionFallback(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseVerify)
+	umbrella.Status.MigrationPhaseStartedAt = metav1.NewTime(time.Now().Add(-2 * verifyTimeout))
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		umbrella,
+		migIndividual(components.ComponentNameAgent),
+		migIndividual(components.ComponentNameClusterController),
+	)
+	// Umbrella release exists but is Failed — not Deployed.
+	failedRelease := migRelease(components.ComponentNameUmbrella)
+	failedRelease.Info.Status = release.StatusFailed
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(failedRelease, nil)
+	// phaseVerify resolves the umbrella release name before probing helm; the
+	// Mothership outage starts right after, so the rollback (and the result
+	// report) hit the unresolvable-name path.
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).Times(1)
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(nil, errors.New("connection refused")).AnyTimes()
+	// The uninstall is still attempted — with the DEFAULT release name (the
+	// gomock expectation's exact match enforces it) — and fails, exercising the
+	// hybrid-state surfacing.
+	ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+		Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella, Wait: true, IgnoreNotFound: true,
+	}).Return(nil, errors.New("helm unreachable"))
+	// Rollback's re-enable loop does not call Mothership; recordMigrationResult
+	// falls back to the default name like the uninstall.
+	ops.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), migClusterID, gomock.Any()).
+		Return(nil).AnyTimes()
+
+	// Mark individuals readonly first so rollback can clear it.
+	for _, sub := range []string{components.ComponentNameAgent, components.ComponentNameClusterController} {
+		ind := &castwarev1alpha1.Component{}
+		r.NoError(ops.client.Get(context.Background(), types.NamespacedName{Namespace: migNamespace, Name: sub}, ind))
+		ind.Spec.Readonly = true
+		r.NoError(ops.client.Update(context.Background(), ind))
+	}
+
+	reconcileOnce(t, ops)
+
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseRolledBack, u.Status.MigrationPhase)
+	r.False(u.Spec.Migrate, "migrate cleared on rollback")
+	// The hybrid-state risk is surfaced on the condition, not just logged.
+	cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.NotNil(cond)
+	r.Equal(castwarev1alpha1.ReasonMigrationFailed, cond.Reason)
+	r.Contains(cond.Message, "hybrid state", "uninstall failure surfaces the hybrid-state risk on the condition")
+	// Individuals still re-enabled.
+	for _, sub := range []string{components.ComponentNameAgent, components.ComponentNameClusterController} {
+		ind := &castwarev1alpha1.Component{}
+		r.NoError(ops.client.Get(context.Background(), types.NamespacedName{Namespace: migNamespace, Name: sub}, ind))
+		r.False(ind.Spec.Readonly, "individual %s re-enabled for rollback", sub)
+	}
+}
+
 // TestMigrationReconciler_RestartResume asserts the controller resumes from the
 // recorded phase across a "restart" (a fresh reconcile reading status.phase).
 func TestMigrationReconciler_RestartResume(t *testing.T) {
@@ -772,6 +1067,7 @@ func TestMigrationReconciler_BothTriggersConverge(t *testing.T) {
 	// migration target.
 	r := require.New(t)
 	ops := newMigrationTestOps(t, migCluster(), migUmbrella(""), migIndividual(components.ComponentNameAgent))
+	expectPermissionGatePass(ops)
 	expectResolveNamesPresent(ops)
 	expectNoUmbrellaOnlyCharts(ops)
 
@@ -936,6 +1232,7 @@ func TestMigrationReconciler_LegacyReadonlyResume_ProceedsWithoutGuard(t *testin
 		migIndividual(components.ComponentNameSpotHandler),
 		migIndividual(components.ComponentNameClusterController),
 	)
+	expectPermissionGatePass(ops)
 	expectResolveNamesPresent(ops)
 	expectNoUmbrellaOnlyCharts(ops)
 

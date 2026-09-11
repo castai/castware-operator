@@ -46,11 +46,17 @@ const (
 	// the controller retries with backoff until the dependency recovers.
 	ReasonMigrationDegraded = "MigrationDegraded"
 	// ReasonMigrationBlocked is the TypeMigrating condition reason set while a
-	// standalone release of an umbrella-managed chart the operator does not
-	// support (e.g. castai-kvisor, castai-evictor) is present in the cluster.
-	// The migration is halted before the umbrella install — which would
-	// silently absorb or duplicate such a release — until it is removed; it
-	// then proceeds from the recorded phase without operator intervention.
+	// pre-flight guard refuses the migration before anything is touched. Two
+	// guards use it: the Mothership permission gate
+	// (components:validateInstallation) refusing the umbrella install — e.g.
+	// because the operator's service account permissions are insufficient for
+	// the umbrella chart's broader RBAC surface — and the standalone-release
+	// conflict guard refusing while a release of an umbrella-managed chart the
+	// operator does not support (e.g. castai-kvisor, castai-evictor) is
+	// present, which the umbrella install would silently absorb or duplicate.
+	// No release has been touched in either case; the controller re-checks
+	// periodically and proceeds from the recorded phase once the block reason
+	// is lifted (permissions granted, standalone release removed).
 	ReasonMigrationBlocked = "MigrationBlocked"
 )
 
