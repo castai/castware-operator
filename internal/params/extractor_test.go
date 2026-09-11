@@ -211,6 +211,129 @@ func TestExtractClusterControllerParams_NilHelmRelease(t *testing.T) {
 	assert.Empty(t, params)
 }
 
+func TestExtractUmbrellaParams_TagsFromConfig(t *testing.T) {
+	helmRelease := &release.Release{
+		Config: map[string]interface{}{
+			"tags": map[string]interface{}{
+				"readonly":            false,
+				"node-autoscaler":     true,
+				"workload-autoscaler": false,
+				"full":                false,
+				"autoscaler-anywhere": false,
+			},
+		},
+	}
+
+	params := extractUmbrellaParams(helmRelease)
+
+	assert.NotNil(t, params)
+	assert.Contains(t, params, "tags")
+
+	tags := params["tags"].(map[string]bool)
+	assert.Equal(t, false, tags["readonly"])
+	assert.Equal(t, true, tags["node-autoscaler"])
+	assert.Equal(t, false, tags["workload-autoscaler"])
+	assert.Equal(t, false, tags["full"])
+	assert.Equal(t, false, tags["autoscaler-anywhere"])
+}
+
+func TestExtractUmbrellaParams_TagsFromChartDefaults(t *testing.T) {
+	helmRelease := &release.Release{
+		Chart: &chart.Chart{
+			Values: map[string]interface{}{
+				"tags": map[string]interface{}{
+					"readonly": true,
+				},
+			},
+		},
+	}
+
+	params := extractUmbrellaParams(helmRelease)
+
+	assert.NotNil(t, params)
+	assert.Contains(t, params, "tags")
+
+	tags := params["tags"].(map[string]bool)
+	assert.Equal(t, true, tags["readonly"])
+}
+
+func TestExtractUmbrellaParams_TagsOverrideChartDefaults(t *testing.T) {
+	helmRelease := &release.Release{
+		Chart: &chart.Chart{
+			Values: map[string]interface{}{
+				"tags": map[string]interface{}{
+					"readonly": true,
+					"full":     false,
+				},
+			},
+		},
+		Config: map[string]interface{}{
+			"tags": map[string]interface{}{
+				"readonly":        false,
+				"node-autoscaler": true,
+			},
+		},
+	}
+
+	params := extractUmbrellaParams(helmRelease)
+
+	assert.NotNil(t, params)
+	assert.Contains(t, params, "tags")
+
+	// Config (overrides) win over chart defaults.
+	tags := params["tags"].(map[string]bool)
+	assert.Equal(t, false, tags["readonly"])
+	assert.Equal(t, true, tags["node-autoscaler"])
+	// Untouched chart default survives.
+	assert.Equal(t, false, tags["full"])
+}
+
+func TestExtractUmbrellaParams_IgnoresNonBoolTags(t *testing.T) {
+	helmRelease := &release.Release{
+		Config: map[string]interface{}{
+			"tags": map[string]interface{}{
+				"readonly":        true,
+				"node-autoscaler": "true", // string, not bool — must be ignored
+				"full":            nil,    // nil — must be ignored
+			},
+		},
+	}
+
+	params := extractUmbrellaParams(helmRelease)
+
+	assert.NotNil(t, params)
+	assert.Contains(t, params, "tags")
+
+	tags := params["tags"].(map[string]bool)
+	assert.Equal(t, true, tags["readonly"])
+	assert.NotContains(t, tags, "node-autoscaler")
+	assert.NotContains(t, tags, "full")
+}
+
+func TestExtractUmbrellaParams_NilHelmRelease(t *testing.T) {
+	params := extractUmbrellaParams(nil)
+
+	assert.NotNil(t, params)
+	assert.Empty(t, params)
+}
+
+func TestExtractUmbrellaParams_NoTags(t *testing.T) {
+	helmRelease := &release.Release{
+		Config: map[string]interface{}{
+			"global": map[string]interface{}{
+				"castai": map[string]interface{}{
+					"apiURL": "https://api.cast.ai",
+				},
+			},
+		},
+	}
+
+	params := extractUmbrellaParams(helmRelease)
+
+	assert.NotNil(t, params)
+	assert.Empty(t, params)
+}
+
 func TestExtractComponentParams_UnknownComponent(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = rbacv1.AddToScheme(scheme)
@@ -335,6 +458,47 @@ func TestExtractComponentParams_Agent(t *testing.T) {
 
 	assert.NotNil(t, params)
 	assert.Empty(t, params)
+}
+
+func TestExtractComponentParams_Umbrella(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = rbacv1.AddToScheme(scheme)
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		Build()
+
+	helmRelease := &release.Release{
+		Config: map[string]interface{}{
+			"tags": map[string]interface{}{
+				"readonly":            true,
+				"node-autoscaler":     false,
+				"workload-autoscaler": false,
+				"full":                false,
+				"autoscaler-anywhere": false,
+			},
+		},
+	}
+
+	log := logrus.New()
+	params := ExtractComponentParams(
+		context.Background(),
+		log,
+		components.ComponentNameUmbrella,
+		helmRelease,
+		k8sClient,
+		"test-namespace",
+	)
+
+	assert.NotNil(t, params)
+	assert.Contains(t, params, "tags")
+
+	tags := params["tags"].(map[string]bool)
+	assert.Equal(t, true, tags["readonly"])
+	assert.Equal(t, false, tags["node-autoscaler"])
+	assert.Equal(t, false, tags["workload-autoscaler"])
+	assert.Equal(t, false, tags["full"])
+	assert.Equal(t, false, tags["autoscaler-anywhere"])
 }
 
 func TestExtractComponentParams_ClusterController(t *testing.T) {

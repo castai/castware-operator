@@ -470,7 +470,7 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.Fie
 	// component name so the flat value-override path used by the other components
 	// never runs against the umbrella CR.
 	if component.Spec.Component == components.ComponentNameUmbrella {
-		return r.umbrellaValues(component, cluster)
+		return values.UmbrellaValues(component, cluster, nil)
 	}
 
 	overrides := map[string]any{}
@@ -549,14 +549,6 @@ func (r *ComponentReconciler) valueOverrides(ctx context.Context, log logrus.Fie
 	}
 
 	return overrides, nil
-}
-
-// umbrellaValues builds the Helm values for the castai-umbrella component from
-// the Cluster spec. Delegates to the shared values.UmbrellaValues builder so the
-// component reconciler and the migration controller derive umbrella values from
-// one source of truth. See values.UmbrellaValues for the merge semantics.
-func (r *ComponentReconciler) umbrellaValues(component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (map[string]any, error) {
-	return values.UmbrellaValues(component, cluster, nil)
 }
 
 // forceReadonlyIfUmbrellaInstalled enforces the umbrella / individual charts
