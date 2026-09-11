@@ -55,7 +55,7 @@ IMG ?= $(IMAGE_TAG_BASE):$(VERSION)
 # DEVBOX_RUN prefixes commands to run inside the devbox environment.
 # Auto-detected: uses devbox if installed, otherwise runs commands directly.
 # Override with DEVBOX_RUN= to force direct execution, or DEVBOX_RUN="devbox run --" to force devbox.
-DEVBOX_RUN ?= $(shell command -v devbox >/dev/null 2>&1 && echo "devbox run --" || echo "")
+DEVBOX_RUN ?= $(shell command -v devbox >/dev/null 2>&1 && echo "devbox run --quiet --" || echo "")
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell $(DEVBOX_RUN) go env GOBIN))
@@ -227,10 +227,15 @@ GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 KUSTOMIZE_VERSION ?= v5.6.0
 CONTROLLER_TOOLS_VERSION ?= v0.17.2
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
-ENVTEST_VERSION ?= $(shell $(DEVBOX_RUN) go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
+#Evaluated once (:=) so the go list command doesn't re-run on every use; command line/env overrides still work.
+ifeq ($(origin ENVTEST_VERSION),undefined)
+ENVTEST_VERSION := $(shell $(DEVBOX_RUN) go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
+endif
 #ENVTEST_K8S_VERSION is the version of Kubernetes to use for setting up ENVTEST binaries (i.e. 1.31)
-ENVTEST_K8S_VERSION ?= $(shell $(DEVBOX_RUN) go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
-GOLANGCI_LINT_VERSION ?= v2.6.1
+ifeq ($(origin ENVTEST_K8S_VERSION),undefined)
+ENVTEST_K8S_VERSION := $(shell $(DEVBOX_RUN) go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
+endif
+GOLANGCI_LINT_VERSION ?= $(shell cat .golangci-lint-version)
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.

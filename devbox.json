@@ -1,6 +1,6 @@
 {
   "packages": [
-    "go@1.25",
+    "go@1.27",
     "kubectl@1.31",
     "kind@0.24",
     "docker@27",
@@ -8,6 +8,8 @@
     "curl@8"
   ],
   "shell": {
-    "init_hook": []
+    "init_hook": [
+      "unset GOROOT"
+    ]
   }
 }
