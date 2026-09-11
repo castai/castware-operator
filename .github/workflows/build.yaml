@@ -247,7 +247,7 @@ jobs:
         with:
           cluster_name: castware-operator-e2e
           version: v0.24.0
-          node_image: kindest/node:v1.27.3
+          node_image: kindest/node:v1.31.2
           kubectl_version: v1.31.2
           config: test/e2e/kind-config.yaml
 
