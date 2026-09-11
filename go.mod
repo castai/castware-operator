@@ -1,8 +1,6 @@
 module github.com/castai/castware-operator
 
-go 1.25.0
-
-godebug default=go1.25.0
+go 1.27.0
 
 require (
 	castai-agent v0.106.0

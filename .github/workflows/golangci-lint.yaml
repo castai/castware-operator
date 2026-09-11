@@ -10,12 +10,13 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - uses: actions/setup-go@v4
+      - uses: actions/setup-go@v7
         with:
-          go-version: 1.25.4
-          cache: false
+          go-version-file: go.mod
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9.0.0
+        uses: golangci/golangci-lint-action@v9.3.0
         with:
+          # Keep in sync with .golangci-lint-version (also read by the Makefile)
+          version-file: .golangci-lint-version
           args: --timeout=10m
