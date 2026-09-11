@@ -18,7 +18,7 @@ func renderChart(t *testing.T, sets ...string) string {
 	if err != nil {
 		t.Fatalf("resolve chart path: %v", err)
 	}
-	args := []string{"template", abs, "--set", "apiKeySecret.apiKey=test"}
+	args := []string{"template", abs, "--set", "apiKeySecret.apiKey=test"} //nolint:prealloc
 	args = append(args, sets...)
 	cmd := exec.Command("helm", args...)
 	cmd.Stderr = os.Stderr
@@ -199,7 +199,9 @@ func TestIndividualPath_ExplicitComponents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create temp file: %v", err)
 	}
-	defer os.Remove(valuesFile.Name())
+	defer func() {
+		_ = os.Remove(valuesFile.Name())
+	}()
 
 	valuesContent := `
 defaultComponents:
@@ -222,7 +224,7 @@ defaultComponents:
 	if _, err := valuesFile.WriteString(valuesContent); err != nil {
 		t.Fatalf("write temp file: %v", err)
 	}
-	valuesFile.Close()
+	_ = valuesFile.Close()
 
 	abs, err := filepath.Abs(chartPath)
 	if err != nil {
