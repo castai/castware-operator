@@ -334,7 +334,7 @@ func (r *MigrationReconciler) validateMigrationPermissions(ctx context.Context, 
 	}
 
 	if !validation.Allowed {
-		blockReason := "umbrella install not permitted by CAST.AI"
+		blockReason := "missing permissions"
 		if validation.BlockReason != "" {
 			blockReason = validation.BlockReason
 		}

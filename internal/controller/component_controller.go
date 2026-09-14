@@ -760,7 +760,7 @@ func (r *ComponentReconciler) validateUmbrellaMigrationPermissions(ctx context.C
 		return false, nil
 	}
 
-	blockReason := "umbrella install not permitted by CAST.AI"
+	blockReason := "missing permissions"
 	if validation.BlockReason != "" {
 		blockReason = validation.BlockReason
 	}
