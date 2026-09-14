@@ -196,14 +196,7 @@ func releasePresent(hc helm.Client, namespace, releaseName string) bool {
 // ValidateInstallPermissions asks Mothership whether the umbrella install for
 // the migration is permitted (components:validateInstallation). The umbrella
 // chart renders a broader RBAC surface than the phase1/phase2 individual
-// charts, so the operator's service account may be under-permissioned for it;
-// the swap must be refused before any release is touched rather than fail
-// mid-migration with the cluster half-swapped.
-//
-// componentParams carries the umbrella's effective install values; the server
-// uses them to select the component's required RBAC condition sets (e.g.
-// autoscaler.castai-spot-handler.phase2Permissions) and compare them against
-// the operator's installed conditions.
+// charts, so the operator's service account may be under-permissioned for it.
 //
 // Returns the validation response so the caller can surface the block reason on
 // the CR. A transport/API error is returned as-is (transient, retry-worthy);
