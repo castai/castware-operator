@@ -80,6 +80,7 @@ import (
 	"github.com/castai/castware-operator/internal/config"
 	"github.com/castai/castware-operator/internal/helm"
 	"github.com/castai/castware-operator/internal/migrationgate"
+	"github.com/castai/castware-operator/internal/params"
 	"github.com/castai/castware-operator/internal/utils"
 	"github.com/castai/castware-operator/internal/values"
 )
@@ -320,25 +321,16 @@ func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.
 // question). A migration resuming past MarkReadonly never re-runs the gate: it
 // is already beyond the point the gate protects.
 func (r *MigrationReconciler) validateMigrationPermissions(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster, castAiClient castai.CastAIClient) (bool, error) {
-	// The server compares the component's required RBAC surface (selected from
-	// component_params) against the operator's installed conditions, so send
-	// the umbrella's user-supplied install values.
-	componentParams, err := utils.UnmarshalJSON(component.Spec.Values)
-	if err != nil {
-		return false, fmt.Errorf("unmarshal umbrella values for permission gate: %w", err)
-	}
-
-	validation, err := migrationgate.ValidateInstallPermissions(ctx, castAiClient, cluster.Spec.Cluster.ClusterID, component.Spec.Component, component.Spec.Version, componentParams)
+	// The gate sends the umbrella's user-supplied install values as
+	// component_params; see migrationgate.ValidateUmbrellaInstallPermissions
+	// for why the full values (not a tags-only whitelist) are required.
+	validation, err := migrationgate.ValidateUmbrellaInstallPermissions(ctx, castAiClient, cluster.Spec.Cluster.ClusterID, component.Spec.Version, component.Spec.Values)
 	if err != nil {
 		return false, fmt.Errorf("validate umbrella install permissions: %w", err)
 	}
 
 	if !validation.Allowed {
-		blockReason := "missing permissions"
-		if validation.BlockReason != "" {
-			blockReason = validation.BlockReason
-		}
-		log.Warnf("Migration blocked by Mothership permission validation: %s", blockReason)
+		log.Warnf("Migration blocked by Mothership permission validation: %s", validation.BlockReason)
 		// Same condition the standalone-release conflict guard sets, so a
 		// blocked migration reads identically regardless of which guard refused
 		// it. The migration is not failed — no rollback is driven — because
@@ -346,7 +338,7 @@ func (r *MigrationReconciler) validateMigrationPermissions(ctx context.Context, 
 		// re-checks periodically, so the migration proceeds automatically once
 		// the block reason is lifted (e.g. the operator is reinstalled with
 		// extendedPermissions="true").
-		r.setMigratingFalse(ctx, log, component, castwarev1alpha1.ReasonMigrationBlocked, fmt.Sprintf("Migration blocked: %s", blockReason))
+		r.setMigratingFalse(ctx, log, component, castwarev1alpha1.ReasonMigrationBlocked, fmt.Sprintf("Migration blocked: %s", validation.BlockReason))
 		return true, nil
 	}
 	log.Info("Permission gate passed; proceeding with migration")
@@ -633,7 +625,7 @@ func (r *MigrationReconciler) phaseFinalize(ctx context.Context, log logrus.Fiel
 	}
 
 	// Report success to Mothership.
-	r.recordMigrationResult(ctx, log, castAiClient, cluster, castai.Status_OK, "migration succeeded: cluster now managed by the umbrella chart", "")
+	r.recordMigrationResult(ctx, log, castAiClient, cluster, component, castai.Status_OK, "migration succeeded: cluster now managed by the umbrella chart", "")
 
 	log.Info("Migration finalized: umbrella is the sole owner")
 	return ctrl.Result{}, nil
@@ -720,7 +712,7 @@ func (r *MigrationReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 		return ctrl.Result{}, err
 	}
 
-	r.recordMigrationResult(ctx, log, castAiClient, cluster, castai.Status_ERROR, "migration failed and rolled back; individual components restored", cause.Error())
+	r.recordMigrationResult(ctx, log, castAiClient, cluster, component, castai.Status_ERROR, "migration failed and rolled back; individual components restored", cause.Error())
 
 	return ctrl.Result{}, nil
 }
@@ -1189,8 +1181,14 @@ func (r *MigrationReconciler) deriveUmbrellaOverrides(present []string) map[stri
 }
 
 // recordMigrationResult reports the migration outcome to Mothership as a
-// component action result on the umbrella component.
-func (r *MigrationReconciler) recordMigrationResult(ctx context.Context, log logrus.FieldLogger, castAiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, status castai.Status, message, errMsg string) {
+// component action result on the umbrella component. On success it also
+// carries the umbrella's component params (tags), extracted from the
+// installed release with the same params.ExtractComponentParams whitelist the
+// component controller uses for any other install report, so Mothership
+// learns which sub-charts the migration actually rendered from the install
+// result itself instead of waiting for the component reconciler's next
+// revision-change report.
+func (r *MigrationReconciler) recordMigrationResult(ctx context.Context, log logrus.FieldLogger, castAiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster, component *castwarev1alpha1.Component, status castai.Status, message, errMsg string) {
 	releaseName, err := r.releaseNameFor(ctx, castAiClient, components.ComponentNameUmbrella)
 	if err != nil {
 		log.WithError(err).Warn("Failed to resolve umbrella release name for result report")
@@ -1205,6 +1203,25 @@ func (r *MigrationReconciler) recordMigrationResult(ctx context.Context, log log
 	}
 	if errMsg != "" {
 		req.Message = fmt.Sprintf("%s: %s", message, errMsg)
+	}
+	// Success path only: on failure/rollback the umbrella release may already
+	// be gone. Best-effort — a release lookup failure must not fail the report.
+	if status == castai.Status_OK {
+		if helmRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
+			Namespace:   component.Namespace,
+			ReleaseName: releaseName,
+		}); err != nil {
+			log.WithError(err).Warn("Failed to get umbrella release for component params; reporting result without params")
+		} else {
+			req.ComponentParams = params.ExtractComponentParams(
+				ctx,
+				log,
+				components.ComponentNameUmbrella,
+				helmRelease,
+				r.Client,
+				component.Namespace,
+			)
+		}
 	}
 	if err := castAiClient.RecordActionResult(ctx, cluster.Spec.Cluster.ClusterID, req); err != nil {
 		log.WithError(err).Error("Failed to record migration result to Mothership")

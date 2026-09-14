@@ -36,7 +36,6 @@ import (
 	"github.com/castai/castware-operator/internal/migrationgate"
 	"github.com/castai/castware-operator/internal/params"
 	"github.com/castai/castware-operator/internal/rolebindings"
-	"github.com/castai/castware-operator/internal/utils"
 	"github.com/castai/castware-operator/internal/values"
 )
 
@@ -726,25 +725,21 @@ func (r *ComponentReconciler) refuseUmbrellaIfIndividualsPresent(ctx context.Con
 
 // validateUmbrellaMigrationPermissions runs the Mothership permission gate for
 // a spec.migrate=true umbrella install on the component reconciler's path. The
-// migration controller runs the same gate in phaseMarkReadonly; this copy
-// exists so a refusal surfaces on the CR (Migrating=False / MigrationBlocked)
-// whichever reconciler runs first — this reconciler never installs the umbrella
-// during a migration (see refuseUmbrellaIfIndividualsPresent), so the gate is
-// purely early surfacing, not install authorization.
+// migration controller runs the same gate in phaseMarkReadonly (both share
+// migrationgate.ValidateUmbrellaInstallPermissions); this copy exists so a
+// refusal surfaces on the CR (Migrating=False / MigrationBlocked) whichever
+// reconciler runs first — this reconciler never installs the umbrella during
+// a migration (see refuseUmbrellaIfIndividualsPresent), so the gate is purely
+// early surfacing, not install authorization.
 //
 // A denial sets Migrating=False / MigrationBlocked and returns blocked=true. A
 // Mothership failure is returned as an error so the caller requeues rather
 // than treating an outage as a refusal.
 func (r *ComponentReconciler) validateUmbrellaMigrationPermissions(ctx context.Context, log logrus.FieldLogger, castAiClient castai.CastAIClient, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (bool, error) {
-	// The server compares the component's required RBAC surface (selected from
-	// component_params) against the operator's installed conditions, so send
-	// the umbrella's user-supplied install values.
-	componentParams, err := utils.UnmarshalJSON(component.Spec.Values)
-	if err != nil {
-		return false, fmt.Errorf("unmarshal umbrella values for permission gate: %w", err)
-	}
-
-	validation, err := migrationgate.ValidateInstallPermissions(ctx, castAiClient, cluster.Spec.Cluster.ClusterID, component.Spec.Component, component.Spec.Version, componentParams)
+	// The gate sends the umbrella's user-supplied install values as
+	// component_params; see migrationgate.ValidateUmbrellaInstallPermissions
+	// for why the full values (not a tags-only whitelist) are required.
+	validation, err := migrationgate.ValidateUmbrellaInstallPermissions(ctx, castAiClient, cluster.Spec.Cluster.ClusterID, component.Spec.Version, component.Spec.Values)
 	if err != nil {
 		return false, fmt.Errorf("call validateInstall: %w", err)
 	}
@@ -752,16 +747,12 @@ func (r *ComponentReconciler) validateUmbrellaMigrationPermissions(ctx context.C
 		return false, nil
 	}
 
-	blockReason := "missing permissions"
-	if validation.BlockReason != "" {
-		blockReason = validation.BlockReason
-	}
-	log.Warnf("Umbrella migration blocked by Mothership permission validation: %s", blockReason)
+	log.Warnf("Umbrella migration blocked by Mothership permission validation: %s", validation.BlockReason)
 	meta.SetStatusCondition(&component.Status.Conditions, metav1.Condition{
 		Type:    castwarev1alpha1.TypeMigrating,
 		Status:  metav1.ConditionFalse,
 		Reason:  castwarev1alpha1.ReasonMigrationBlocked,
-		Message: fmt.Sprintf("Migration blocked: %s", blockReason),
+		Message: fmt.Sprintf("Migration blocked: %s", validation.BlockReason),
 	})
 	if err := r.updateStatus(ctx, component); err != nil {
 		log.WithError(err).Error("Failed to set MigrationBlocked status")
