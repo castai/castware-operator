@@ -43,6 +43,29 @@ Ignore the error about the missing `castware-operator-controller-manager` deploy
    - Install Helm chart with local image
    - Create default Cluster and Component resources
 
+   #### Umbrella path
+
+   By default the operator installs individual component CRs (`castai-agent`,
+   `spot-handler`). To install a single `castai-umbrella` Component CR
+   instead, pass `--umbrella`:
+
+   ```bash
+   # Minimal permissions (tags.readonly=true)
+   ./local/install-local.sh --umbrella
+
+   # Extended permissions (tags.full=true)
+   ./local/install-local.sh --umbrella --extended-permissions
+
+   # Custom umbrella mode tag — only one is allowed:
+   # readonly | node-autoscaler | workload-autoscaler | full |
+   # autoscaler-anywhere | autoscaler-openshift
+   # Non-readonly tags auto-enable extended permissions.
+   ./local/install-local.sh --umbrella --tag=node-autoscaler
+   ```
+
+   The tag is derived from `extendedPermissions`: `false` → `tags.readonly`,
+   `true` → `tags.full`.
+
 ### Development Workflow
 
 After making code changes, quickly reload the operator without full reinstall:

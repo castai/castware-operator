@@ -29,6 +29,8 @@ func ExtractComponentParams(
 		return extractSpotHandlerParams(helmRelease)
 	case components.ComponentNameClusterController:
 		return extractClusterControllerParams(helmRelease)
+	case components.ComponentNameUmbrella:
+		return extractUmbrellaParams(helmRelease)
 	default:
 		return make(map[string]interface{})
 	}
@@ -115,6 +117,44 @@ func extractClusterControllerParams(helmRelease *release.Release) map[string]int
 				params["workloadAutoscaling"] = workloadAutoscalingParams
 			}
 		}
+	}
+
+	return params
+}
+
+func extractUmbrellaParams(helmRelease *release.Release) map[string]interface{} {
+	params := make(map[string]interface{})
+
+	if helmRelease == nil {
+		return params
+	}
+
+	var paramsLookup []map[string]any
+
+	// first check for defaults then overrides
+	if helmRelease.Chart != nil && helmRelease.Chart.Values != nil {
+		paramsLookup = append(paramsLookup, helmRelease.Chart.Values)
+	}
+
+	if helmRelease.Config != nil {
+		paramsLookup = append(paramsLookup, helmRelease.Config)
+	}
+
+	tags := make(map[string]bool)
+	for _, helmParams := range paramsLookup {
+		tagsBlock, ok := helmParams["tags"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for name, value := range tagsBlock {
+			if enabled, ok := value.(bool); ok {
+				tags[name] = enabled
+			}
+		}
+	}
+
+	if len(tags) > 0 {
+		params["tags"] = tags
 	}
 
 	return params
