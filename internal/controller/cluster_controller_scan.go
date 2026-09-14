@@ -361,6 +361,8 @@ func (r *ClusterReconciler) scanExistingComponent(ctx context.Context, castaiCli
 	if err != nil {
 		return false, err
 	}
+	// Migration-time value correction: guards against a chart-version regression
+	values = r.correctMigratedComponentValues(ctx, log, cluster.Namespace, componentName, values)
 	component = newComponent(componentName, compVersion.Version, cluster)
 	component.Spec.Values = &v1.JSON{Raw: values}
 	component.Spec.Migration = compVersion.MigrationMode
@@ -511,4 +513,66 @@ func newComponent(componentName, version string, cluster *castwarev1alpha1.Clust
 		component.Spec.Version = version
 	}
 	return component
+}
+
+func (r *ClusterReconciler) correctMigratedComponentValues(
+	ctx context.Context,
+	log logrus.FieldLogger,
+	namespace, componentName string,
+	valuesJSON []byte,
+) []byte {
+	// The only known issue so far is for Cluster-Controller
+	if componentName != components.ComponentNameClusterController {
+		return valuesJSON
+	}
+
+	var values map[string]any
+	if err := json.Unmarshal(valuesJSON, &values); err != nil {
+		return valuesJSON
+	}
+
+	workloadAutoscaling, _ := values["workloadAutoscaling"].(map[string]any)
+	if workloadAutoscaling == nil {
+		workloadAutoscaling = map[string]any{}
+	}
+	if enabled, _ := workloadAutoscaling["enabled"].(bool); enabled {
+		return valuesJSON
+	}
+
+	// If workloadAutoscaler.enabled = false, check if autoscaler is installed and override the value. Fix related to CSU-5996
+	deployed, err := workloadAutoscalerDeployed(ctx, r.Client, namespace)
+	if err != nil {
+		log.WithError(err).WithField("component", componentName).Warn("Failed to probe workload-autoscaler deployment; skipping migration correction")
+		return valuesJSON
+	}
+	if !deployed {
+		return valuesJSON
+	}
+
+	workloadAutoscaling["enabled"] = true
+	values["workloadAutoscaling"] = workloadAutoscaling
+
+	corrected, err := json.Marshal(values)
+	if err != nil {
+		log.WithError(err).WithField("component", componentName).Warn("Failed to re-marshal corrected migration values; falling back to stored values")
+		return valuesJSON
+	}
+
+	log.WithFields(logrus.Fields{
+		"component": componentName,
+		"namespace": namespace,
+	}).Warn("Set workloadAutoscaling.enabled=true on migrated Component CR")
+
+	return corrected
+}
+
+func workloadAutoscalerDeployed(ctx context.Context, c client.Client, namespace string) (bool, error) {
+	var list appsv1.DeploymentList
+	if err := c.List(ctx, &list, &client.ListOptions{
+		Namespace:     namespace,
+		LabelSelector: labels.SelectorFromSet(labels.Set{nameLabelKey: "castai-workload-autoscaler"}),
+	}); err != nil {
+		return false, err
+	}
+	return len(list.Items) > 0, nil
 }
