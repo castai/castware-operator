@@ -31,17 +31,39 @@ func UmbrellaValues(component *castwarev1alpha1.Component, cluster *castwarev1al
 		"provider":        cluster.Spec.Provider,
 		"apiKeySecretRef": cluster.Spec.APIKeySecret,
 	}
+
 	if cluster.Spec.API.GrpcURL != "" {
 		globalCastai["grpcURL"] = cluster.Spec.API.GrpcURL
 	}
+
+	kvisorCastai := map[string]any{}
+	if cluster.Spec.API.KvisorGrpcURL != "" {
+		kvisorCastai["grpcAddr"] = cluster.Spec.API.KvisorGrpcURL
+	}
+
+	// Inject the cluster ID directly and neutralize the kvisor sub-chart's
+	// default clusterIdConfigMapKeyRef/clusterIdSecretKeyRef: the umbrella
+	// chart forbids a direct clusterID next to those refs, and clearing the
+	// refs lets kvisor consume the injected cluster ID immediately instead of
+	// waiting for the agent to publish "castai-agent-metadata".
 	if cluster.Spec.Cluster != nil && cluster.Spec.Cluster.ClusterID != "" {
 		globalCastai["clusterID"] = cluster.Spec.Cluster.ClusterID
+		kvisorCastai["clusterIdConfigMapKeyRef"] = map[string]any{"name": ""}
+		kvisorCastai["clusterIdSecretKeyRef"] = map[string]any{"name": ""}
 	}
 
 	values := map[string]any{
 		"global": map[string]any{
 			"castai": globalCastai,
 		},
+	}
+
+	if len(kvisorCastai) > 0 {
+		values["autoscaler"] = map[string]any{
+			"castai-kvisor": map[string]any{
+				"castai": kvisorCastai,
+			},
+		}
 	}
 
 	// Caller-provided derived overrides (e.g. tag mode from present individuals)
