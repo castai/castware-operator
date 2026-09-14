@@ -313,7 +313,6 @@ func TestDisabled_NoComponentCRs(t *testing.T) {
 }
 
 func TestHelmLint_UmbrellaPath(t *testing.T) {
-	t.Helper()
 	abs, err := filepath.Abs(chartPath)
 	if err != nil {
 		t.Fatalf("resolve chart path: %v", err)
@@ -334,7 +333,6 @@ func TestHelmLint_UmbrellaPath(t *testing.T) {
 }
 
 func TestHelmLint_IndividualPath(t *testing.T) {
-	t.Helper()
 	abs, err := filepath.Abs(chartPath)
 	if err != nil {
 		t.Fatalf("resolve chart path: %v", err)
