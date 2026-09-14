@@ -316,24 +316,24 @@ var _ = Describe("Component Webhook", func() {
 			Expect(err).Error().To(MatchError("component 'cluster-controller' requires extended permissions, please run `helm upgrade castware-operator -n castai-agent --set extendedPermissions=\"true\" --reuse-values castai-helm/castware-operator`"))
 		})
 
-		It("Should deny umbrella creation when a non-readonly tag is set and extended permissions are not enabled", func() {
-			By("umbrella with tags.full requires extended permissions")
+		It("Should deny umbrella creation when a non-readonly tag is set — only readonly is supported", func() {
+			By("umbrella with tags.full is not supported yet")
 			obj.Spec.Component = components.ComponentNameUmbrella
 			obj.Spec.Cluster = clusterName
 			obj.SetNamespace("default")
 			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"full":true}}`)}
 			_, err := validator.ValidateCreate(ctx, obj)
-			Expect(err).Error().To(MatchError("component 'castai-umbrella' requires extended permissions, please run `helm upgrade castware-operator -n castai-agent --set extendedPermissions=\"true\" --reuse-values castai-helm/castware-operator`"))
+			Expect(err).Error().To(MatchError("component 'castai-umbrella' supports only the readonly tag for now; non-readonly umbrella modes (node-autoscaler, workload-autoscaler, full) are not supported yet"))
 		})
 
-		It("Should deny umbrella creation with no tags when extended permissions are not enabled", func() {
-			By("umbrella with empty values requires extended permissions")
+		It("Should deny umbrella creation with no tags — only readonly is supported", func() {
+			By("umbrella with empty values does not enable readonly")
 			obj.Spec.Component = components.ComponentNameUmbrella
 			obj.Spec.Cluster = clusterName
 			obj.SetNamespace("default")
 			obj.Spec.Values = nil
 			_, err := validator.ValidateCreate(ctx, obj)
-			Expect(err).Error().To(MatchError("component 'castai-umbrella' requires extended permissions, please run `helm upgrade castware-operator -n castai-agent --set extendedPermissions=\"true\" --reuse-values castai-helm/castware-operator`"))
+			Expect(err).Error().To(MatchError("component 'castai-umbrella' supports only the readonly tag for now; non-readonly umbrella modes (node-autoscaler, workload-autoscaler, full) are not supported yet"))
 		})
 
 		It("Should admit umbrella creation with tags.readonly=true without extended permissions", func() {
@@ -351,13 +351,13 @@ var _ = Describe("Component Webhook", func() {
 		})
 
 		It("Should deny umbrella creation when readonly tag and cluster-controller are both enabled", func() {
-			By("the chart allows tags.readonly + cluster-controller enabled; the operator must require extended perms")
+			By("an explicitly enabled cluster-controller is a non-readonly profile and is not supported yet")
 			obj.Spec.Component = components.ComponentNameUmbrella
 			obj.Spec.Cluster = clusterName
 			obj.SetNamespace("default")
 			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"readonly":true},"autoscaler":{"castai-cluster-controller":{"enabled":true}}}`)}
 			_, err := validator.ValidateCreate(ctx, obj)
-			Expect(err).Error().To(MatchError("component 'castai-umbrella' requires extended permissions, please run `helm upgrade castware-operator -n castai-agent --set extendedPermissions=\"true\" --reuse-values castai-helm/castware-operator`"))
+			Expect(err).Error().To(MatchError("component 'castai-umbrella' supports only the readonly tag for now; non-readonly umbrella modes (node-autoscaler, workload-autoscaler, full) are not supported yet"))
 		})
 
 		It("Should admit creation", func() {

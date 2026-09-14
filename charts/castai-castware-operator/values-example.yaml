@@ -54,9 +54,9 @@ defaultComponents:
     enabled: true
     component: "castai-umbrella"
     cluster: "castai"
-    # tags are auto-derived from extendedPermissions:
-    #   extendedPermissions=true  → tags.full=true
-    #   extendedPermissions=false → tags.readonly=true
+    # Only the readonly profile is supported for now (extendedPermissions=false
+    # → tags.readonly=true). Non-readonly umbrella modes are blocked by a guard
+    # until full support is validated.
     # Override by setting tags explicitly:
     # tags:
     #   readonly: true

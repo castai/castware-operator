@@ -146,15 +146,17 @@ defaultCluster:
 defaultComponents:
   enabled: true
   # When true, renders a single castai-umbrella Component CR instead of
-  # individual component CRs. The tags are derived from extendedPermissions:
-  #   extendedPermissions=true  → tags.full=true
-  #   extendedPermissions=false → tags.readonly=true
-  # Override with .defaultComponents.umbrella.tags to set custom tags.
+  # individual component CRs. Only the readonly profile is supported for now:
+  #   extendedPermissions=false → tags.readonly=true (default)
+  # Any non-readonly mode (extendedPermissions=true or a custom non-readonly
+  # tag) aborts the install with a guard error until full umbrella support is
+  # validated.
   umbrella:
     enabled: false
     component: "castai-umbrella"
     cluster: "castai"
-    # Optional: override the auto-derived tags.
+    # Optional: override the auto-derived tags. Only tags.readonly=true is
+    # currently allowed; non-readonly tags fail the install.
     # tags: {}
     # Optional: extra umbrella-chart values merged into the Component CR's
     # spec.values (verbatim). Sub-component overrides must use the umbrella
