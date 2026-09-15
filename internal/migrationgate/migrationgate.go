@@ -17,10 +17,12 @@ import (
 	"fmt"
 
 	"helm.sh/helm/v3/pkg/storage/driver"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
 	"github.com/castai/castware-operator/internal/castai"
 	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/internal/helm"
+	"github.com/castai/castware-operator/internal/utils"
 )
 
 // Subcomponents are the individual component names whose charts overlap with
@@ -191,6 +193,57 @@ func releasePresent(hc helm.Client, namespace, releaseName string) bool {
 		return true
 	}
 	return !errors.Is(err, driver.ErrReleaseNotFound)
+}
+
+// ValidateInstallPermissions asks Mothership whether the umbrella install for
+// the migration is permitted (components:validateInstallation). The umbrella
+// chart renders a broader RBAC surface than the phase1/phase2 individual
+// charts, so the operator's service account may be under-permissioned for it.
+//
+// Returns the validation response so the caller can surface the block reason on
+// the CR. A transport/API error is returned as-is (transient, retry-worthy);
+// a denial arrives as Allowed=false + BlockReason, not as an error.
+func ValidateInstallPermissions(ctx context.Context, c castai.CastAIClient, clusterID, componentName, targetVersion string, componentParams map[string]any) (*castai.ValidateComponentInstallResponse, error) {
+	return c.ValidateComponentInstall(ctx, &castai.ValidateComponentInstallRequest{
+		ClusterID:       clusterID,
+		ComponentName:   componentName,
+		TargetVersion:   targetVersion,
+		ComponentParams: componentParams,
+	})
+}
+
+// ValidateUmbrellaInstallPermissions runs the Mothership permission gate for
+// an umbrella install: it sends the umbrella CR's user-supplied install values
+// (spec.values) as component_params so the server can compare the umbrella's
+// required RBAC surface against the operator's installed conditions.
+//
+// The payload is deliberately the full user-supplied values — not the
+// component_params whitelist params.ExtractComponentParams builds from an
+// installed release — because the RBAC surface is not determined by tags
+// alone (an explicitly enabled cluster-controller sub-component forces the
+// broader surface even with tags.readonly=true, and spot-handler presence is
+// values-driven, not tag-driven), and pre-install there is no release to
+// extract from anyway.
+//
+// The response's BlockReason is normalized to "missing permissions" when the
+// server returns none, so callers surface one consistent message.
+// Transport/API errors are returned as-is so each caller wraps them with its
+// own context. A nil userValues (or empty raw) is sent as no params.
+func ValidateUmbrellaInstallPermissions(ctx context.Context, c castai.CastAIClient, clusterID, targetVersion string, userValues *apiextensionsv1.JSON) (*castai.ValidateComponentInstallResponse, error) {
+	componentParams, err := utils.UnmarshalJSON(userValues)
+	if err != nil {
+		return nil, fmt.Errorf("unmarshal umbrella values for permission gate: %w", err)
+	}
+
+	validation, err := ValidateInstallPermissions(ctx, c, clusterID, components.ComponentNameUmbrella, targetVersion, componentParams)
+	if err != nil {
+		return nil, err
+	}
+
+	if !validation.Allowed && validation.BlockReason == "" {
+		validation.BlockReason = "missing permissions"
+	}
+	return validation, nil
 }
 
 // InstalledUmbrellaOnlyCharts returns the UmbrellaOnlyCharts chart names that

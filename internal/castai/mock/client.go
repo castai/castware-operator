@@ -183,6 +183,21 @@ func (mr *MockCastAIClientMockRecorder) SendLogEvent(arg0, arg1, arg2 interface{
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SendLogEvent", reflect.TypeOf((*MockCastAIClient)(nil).SendLogEvent), arg0, arg1, arg2)
 }
 
+// ValidateComponentInstall mocks base method.
+func (m *MockCastAIClient) ValidateComponentInstall(arg0 context.Context, arg1 *castai0.ValidateComponentInstallRequest) (*castai0.ValidateComponentInstallResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ValidateComponentInstall", arg0, arg1)
+	ret0, _ := ret[0].(*castai0.ValidateComponentInstallResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ValidateComponentInstall indicates an expected call of ValidateComponentInstall.
+func (mr *MockCastAIClientMockRecorder) ValidateComponentInstall(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ValidateComponentInstall", reflect.TypeOf((*MockCastAIClient)(nil).ValidateComponentInstall), arg0, arg1)
+}
+
 // ValidateComponentUpgrade mocks base method.
 func (m *MockCastAIClient) ValidateComponentUpgrade(arg0 context.Context, arg1 *castai0.ValidateComponentUpgradeRequest) (*castai0.ValidateComponentUpgradeResponse, error) {
 	m.ctrl.T.Helper()
