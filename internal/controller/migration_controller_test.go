@@ -611,9 +611,9 @@ func TestMigrationReconciler_VerifySuccess_Finalize(t *testing.T) {
 	r.NotNil(report, "migration success reported to Mothership")
 	r.Equal(castai.Action_INSTALL, report.Action)
 	r.Equal(castai.Status_OK, report.Status)
-	tags, ok := report.ComponentParams["tags"].(map[string]interface{})
+	tags, ok := report.ComponentParams["tags"].(map[string]bool)
 	r.True(ok, "component_params.tags should be a map on the migration install report, got %T", report.ComponentParams["tags"])
-	r.True(tags["readonly"].(bool))
+	r.True(tags["readonly"])
 
 	// Individual CRs deleted.
 	for _, sub := range []string{components.ComponentNameAgent, components.ComponentNameSpotHandler, components.ComponentNameClusterController} {

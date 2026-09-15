@@ -185,9 +185,19 @@ func extractUmbrellaParams(ctx context.Context, log logrus.FieldLogger, helmRele
 		coalesced = c
 	}
 
-	// Active tag modes, reported as-is.
-	if tags, ok := coalesced["tags"].(map[string]interface{}); ok && len(tags) > 0 {
-		params["tags"] = tags
+	// Active tag modes, sanitized to bools only: Mothership flattens tags
+	// into umbrella conditions, so non-bool entries (strings, nil, nested
+	// maps) are dropped to keep the map[string]bool contract.
+	if raw, ok := coalesced["tags"].(map[string]interface{}); ok {
+		tags := make(map[string]bool, len(raw))
+		for name, value := range raw {
+			if b, ok := value.(bool); ok {
+				tags[name] = b
+			}
+		}
+		if len(tags) > 0 {
+			params["tags"] = tags
+		}
 	}
 
 	// Actual view: live workload versions of the umbrella's sub-components.

@@ -482,11 +482,12 @@ func TestExtractUmbrellaParams_TagsAndInventory(t *testing.T) {
 
 	params := extractUmbrellaParams(context.Background(), log, rel, nil, "test-namespace")
 
-	// Active tag mode reported as-is.
-	tags, ok := params["tags"].(map[string]interface{})
+	// Active tag mode, sanitized to bools only.
+	tags, ok := params["tags"].(map[string]bool)
 	assert.True(t, ok, "tags must be reported")
 	assert.Equal(t, true, tags["node-autoscaler"])
 	assert.Equal(t, false, tags["readonly"])
+	assert.Len(t, tags, 4, "the chart-default tag modes are reported alongside the active one")
 
 	// Inventory: the mode-tagged sub-components are enabled, the others are
 	// not; versions are the release-resolved (requested) sub-chart versions.
@@ -642,6 +643,30 @@ func TestExtractUmbrellaParams_LiveWorkloadVersionWins(t *testing.T) {
 	assert.Equal(t, "1.170.0", kvisor.Version, "daemonset workloads are included")
 	cc := inventoryEntry(t, params, "castai-cluster-controller")
 	assert.Equal(t, "0.92.4", cc.Version, "no live workload: requested version reported")
+}
+
+func TestExtractUmbrellaParams_TagsNonBoolValuesDropped(t *testing.T) {
+	log := logrus.New()
+	rel := umbrellaTestRelease(map[string]interface{}{
+		"tags": map[string]interface{}{
+			"node-autoscaler": true,
+			"readonly":        "yes",                              // string: dropped
+			"full":           nil,                                // nil: dropped
+			"workload-autoscaler": map[string]interface{}{ // map: dropped
+				"nested": true,
+			},
+		},
+	})
+
+	params := extractUmbrellaParams(context.Background(), log, rel, nil, "test-namespace")
+
+	// Only bool entries survive the sanitization — including entries whose
+	// non-bool user override replaced the chart's bool default — so
+	// Mothership keeps receiving the map[string]bool contract it flattens
+	// into umbrella conditions.
+	tags, ok := params["tags"].(map[string]bool)
+	assert.True(t, ok, "tags must be reported")
+	assert.Equal(t, map[string]bool{"node-autoscaler": true}, tags)
 }
 
 func TestExtractUmbrellaParams_NilRelease(t *testing.T) {
