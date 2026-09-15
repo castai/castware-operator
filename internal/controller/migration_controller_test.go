@@ -570,8 +570,10 @@ func TestMigrationReconciler_VerifySuccess_Finalize(t *testing.T) {
 	// Umbrella deployed + agent healthy on first check.
 	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
 		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).AnyTimes()
+	umbrellaRel := migRelease(components.ComponentNameUmbrella)
+	umbrellaRel.Config = map[string]interface{}{"tags": map[string]interface{}{"readonly": true}}
 	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
-		Return(migRelease(components.ComponentNameUmbrella), nil).AnyTimes()
+		Return(umbrellaRel, nil).AnyTimes()
 	// Agent Deployment healthy.
 	r.NoError(ops.client.Create(context.Background(), &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "castai-agent", Namespace: migNamespace,
@@ -584,9 +586,14 @@ func TestMigrationReconciler_VerifySuccess_Finalize(t *testing.T) {
 		Return(&castai.Component{Name: components.ComponentNameAgent, ReleaseName: components.ComponentNameAgent}, nil).AnyTimes()
 	ops.mockHelm.EXPECT().ForgetRelease(helm.ForgetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameAgent}).
 		Return(nil)
-	// Finalize reports success to Mothership.
+	// Finalize reports success to Mothership, carrying the umbrella's
+	// component params (tags) extracted from the installed release.
+	var report *castai.ComponentActionResult
 	ops.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), migClusterID, gomock.Any()).
-		Return(nil)
+		DoAndReturn(func(_ context.Context, _ string, req *castai.ComponentActionResult) error {
+			report = req
+			return nil
+		})
 
 	// Verify advances to Finalize; a second reconcile runs Finalize to completion.
 	reconcileOnce(t, ops)
@@ -597,6 +604,16 @@ func TestMigrationReconciler_VerifySuccess_Finalize(t *testing.T) {
 	r.False(u.Spec.Migrate, "migrate cleared on success")
 	r.False(u.Spec.Readonly, "readonly cleared on success")
 	r.False(controllerutil.ContainsFinalizer(u, MigrationFinalizer), "migration finalizer released on success")
+
+	// The success report carries the umbrella's component params (tags) from
+	// the installed release, so Mothership learns the rendered sub-chart set
+	// from the install result itself.
+	r.NotNil(report, "migration success reported to Mothership")
+	r.Equal(castai.Action_INSTALL, report.Action)
+	r.Equal(castai.Status_OK, report.Status)
+	tags, ok := report.ComponentParams["tags"].(map[string]interface{})
+	r.True(ok, "component_params.tags should be a map on the migration install report, got %T", report.ComponentParams["tags"])
+	r.True(tags["readonly"].(bool))
 
 	// Individual CRs deleted.
 	for _, sub := range []string{components.ComponentNameAgent, components.ComponentNameSpotHandler, components.ComponentNameClusterController} {

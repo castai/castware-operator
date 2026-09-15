@@ -10,6 +10,7 @@ import (
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/storage/driver"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
 	"github.com/castai/castware-operator/internal/castai"
 	mock_castai "github.com/castai/castware-operator/internal/castai/mock"
@@ -323,5 +324,97 @@ func TestInstalledUmbrellaOnlyCharts(t *testing.T) {
 		present, err := InstalledUmbrellaOnlyCharts(hc, ns)
 		r.Error(err)
 		r.Nil(present)
+	})
+}
+
+func TestValidateUmbrellaInstallPermissions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("sends the user values as component_params", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mc := mock_castai.NewMockCastAIClient(ctrl)
+		mc.EXPECT().ValidateComponentInstall(ctx, &castai.ValidateComponentInstallRequest{
+			ClusterID:       "cluster-id",
+			ComponentName:   components.ComponentNameUmbrella,
+			TargetVersion:   "1.2.3",
+			ComponentParams: map[string]any{"tags": map[string]any{"readonly": true}},
+		}).Return(&castai.ValidateComponentInstallResponse{Allowed: true}, nil)
+
+		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3",
+			&apiextensionsv1.JSON{Raw: []byte(`{"tags":{"readonly":true}}`)})
+		r.NoError(err)
+		r.True(resp.Allowed)
+		r.Empty(resp.BlockReason)
+	})
+
+	t.Run("nil values are sent as no params", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mc := mock_castai.NewMockCastAIClient(ctrl)
+		mc.EXPECT().ValidateComponentInstall(ctx, &castai.ValidateComponentInstallRequest{
+			ClusterID:       "cluster-id",
+			ComponentName:   components.ComponentNameUmbrella,
+			TargetVersion:   "1.2.3",
+			ComponentParams: map[string]any{},
+		}).Return(&castai.ValidateComponentInstallResponse{Allowed: true}, nil)
+
+		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", nil)
+		r.NoError(err)
+		r.True(resp.Allowed)
+	})
+
+	t.Run("empty block reason is normalized", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mc := mock_castai.NewMockCastAIClient(ctrl)
+		mc.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+			Return(&castai.ValidateComponentInstallResponse{Allowed: false}, nil)
+
+		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", nil)
+		r.NoError(err)
+		r.False(resp.Allowed)
+		r.Equal("missing permissions", resp.BlockReason)
+	})
+
+	t.Run("server block reason is preserved", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mc := mock_castai.NewMockCastAIClient(ctrl)
+		mc.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+			Return(&castai.ValidateComponentInstallResponse{
+				Allowed:     false,
+				BlockReason: "service account lacks permissions for the umbrella chart",
+			}, nil)
+
+		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", nil)
+		r.NoError(err)
+		r.False(resp.Allowed)
+		r.Equal("service account lacks permissions for the umbrella chart", resp.BlockReason)
+	})
+
+	t.Run("invalid values JSON fails before calling Mothership", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mc := mock_castai.NewMockCastAIClient(ctrl)
+
+		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3",
+			&apiextensionsv1.JSON{Raw: []byte(`not-json`)})
+		r.Error(err)
+		r.ErrorContains(err, "unmarshal umbrella values for permission gate")
+		r.Nil(resp)
+	})
+
+	t.Run("transport error is returned as-is for caller wrapping", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mc := mock_castai.NewMockCastAIClient(ctrl)
+		mc.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+			Return(nil, errors.New("connection refused"))
+
+		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", nil)
+		r.EqualError(err, "connection refused")
+		r.Nil(resp)
 	})
 }
