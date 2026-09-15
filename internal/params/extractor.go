@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chartutil"
@@ -347,12 +348,17 @@ func subchartEnabled(dep *chart.Dependency, parentPath, depPath string, values m
 // owned by the umbrella release are considered, so a standalone release of a
 // sub-chart in the same namespace does not shadow it.
 //
-// Supported workload kinds are the persistent kinds the umbrella's
-// sub-charts render: Deployments, DaemonSets and StatefulSets. ReplicaSets
-// are covered by their owning Deployment, and Jobs are transient — a
-// completed Job lingering after an upgrade would report a stale version —
-// so both are skipped; sub-components whose workloads are of other kinds
-// fall back to their release-resolved requested version.
+// When several workloads owned by the release share an app name but run
+// different versions (a mid-rollout snapshot or a duplicate workload), the
+// highest semantic version wins and the conflict is logged, so the report is
+// deterministic regardless of list order; versions that do not parse as
+// semantic versions lose to ones that do. Supported workload kinds are the
+// persistent kinds the umbrella's sub-charts render: Deployments, DaemonSets
+// and StatefulSets. ReplicaSets are covered by their owning Deployment, and
+// Jobs are transient — a completed Job lingering after an upgrade would
+// report a stale version — so both are skipped; sub-components whose
+// workloads are of other kinds fall back to their release-resolved requested
+// version.
 func liveUmbrellaWorkloadVersions(ctx context.Context, log logrus.FieldLogger, k8sClient client.Client, namespace, releaseName string) map[string]string {
 	versions := map[string]string{}
 	if k8sClient == nil || releaseName == "" {
@@ -370,9 +376,22 @@ func liveUmbrellaWorkloadVersions(ctx context.Context, log logrus.FieldLogger, k
 		if name == "" || version == "" {
 			return
 		}
-		if _, seen := versions[name]; !seen {
+		existing, seen := versions[name]
+		if !seen || existing == version {
+			versions[name] = version
+			return
+		}
+		// Same app name, different running versions: a mid-rollout snapshot
+		// or a duplicate workload. Keep the deterministic winner and surface
+		// the conflict so the duplicate can be cleaned up.
+		if newerVersion(version, existing) {
 			versions[name] = version
 		}
+		log.WithFields(logrus.Fields{
+			"app":          name,
+			"version":      version,
+			"kept_version": versions[name],
+		}).Warn("Umbrella workloads share an app name but run different versions")
 	}
 
 	// One list call per kind; a kind with no matching workloads simply
@@ -402,6 +421,23 @@ func liveUmbrellaWorkloadVersions(ctx context.Context, log logrus.FieldLogger, k
 	}
 
 	return versions
+}
+
+// newerVersion reports whether version should displace other as the
+// reported running version: a version that parses as a semantic version
+// beats one that does not, and among two parseable versions the higher one
+// wins. The comparison is a total order on the values that reach it, so the
+// reported version never depends on the order workloads are listed in.
+func newerVersion(version, other string) bool {
+	v, err := semver.NewVersion(version)
+	if err != nil {
+		return false
+	}
+	o, err := semver.NewVersion(other)
+	if err != nil {
+		return true
+	}
+	return v.GreaterThan(o)
 }
 
 // lookupBool resolves a dot-separated path in nested values maps to a bool. A

@@ -13,6 +13,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	components "github.com/castai/castware-operator/internal/component"
@@ -732,6 +733,60 @@ func TestUmbrellaInventory_MalformedChartNodes(t *testing.T) {
 			{Name: "castai-agent", Version: "0.161.0", Enabled: true},
 		}, umbrellaInventory(root, map[string]interface{}{}, nil))
 	})
+}
+
+func TestUmbrellaLiveWorkloadVersions_ConflictingVersions(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+
+	deployment := func(name, version string) *appsv1.Deployment {
+		return &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "test-namespace",
+				Labels: map[string]string{
+					labelAppName:    "castai-agent",
+					labelAppVersion: version,
+				},
+				Annotations: map[string]string{
+					helmReleaseNameAnnotation: "castai",
+				},
+			},
+		}
+	}
+	live := func(objs ...client.Object) map[string]string {
+		k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+		return liveUmbrellaWorkloadVersions(context.Background(), logrus.New(), k8sClient, "test-namespace", "castai")
+	}
+
+	// The fake client lists in name order, so the OLDER workload is seen
+	// first: the higher semantic version must still win, deterministically.
+	versions := live(
+		deployment("castai-agent-a", "v0.170.0"),
+		deployment("castai-agent-b", "v0.180.0"),
+	)
+	assert.Equal(t, "0.180.0", versions["castai-agent"],
+		"the highest semantic version wins regardless of list order")
+
+	// Equal versions are not a conflict.
+	versions = live(
+		deployment("castai-agent-a", "v0.170.0"),
+		deployment("castai-agent-b", "v0.170.0"),
+	)
+	assert.Equal(t, "0.170.0", versions["castai-agent"])
+
+	// A version that does not parse as semantic loses to one that does,
+	// whichever is seen first.
+	versions = live(
+		deployment("castai-agent-a", "v0.5.0"),
+		deployment("castai-agent-b", "not-semver"),
+	)
+	assert.Equal(t, "0.5.0", versions["castai-agent"])
+	versions = live(
+		deployment("castai-agent-a", "not-semver"),
+		deployment("castai-agent-b", "v0.5.0"),
+	)
+	assert.Equal(t, "0.5.0", versions["castai-agent"])
 }
 
 func TestExtractUmbrellaParams_NilRelease(t *testing.T) {
