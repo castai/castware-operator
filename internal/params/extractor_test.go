@@ -704,6 +704,36 @@ func TestExtractUmbrellaParams_TagsNonBoolValuesDropped(t *testing.T) {
 	assert.Equal(t, map[string]bool{"node-autoscaler": true}, tags)
 }
 
+func TestUmbrellaInventory_MalformedChartNodes(t *testing.T) {
+	// A root without metadata: the walk must return early instead of
+	// panicking on the ch.Metadata.Dependencies dereference.
+	assert.NotPanics(t, func() {
+		assert.Empty(t, umbrellaInventory(&chart.Chart{}, map[string]interface{}{}, nil))
+	})
+
+	// A metadata-less node in the dependency tree is skipped; the healthy
+	// sibling is still inventoried. (Helm's own AddDependency rejects nil
+	// charts, so only the metadata-less shape is reachable here.)
+	root := &chart.Chart{
+		Metadata: &chart.Metadata{
+			Name:    "castai",
+			Version: "0.38.16",
+			Dependencies: []*chart.Dependency{
+				{Name: "castai-agent", Version: "0.161.0"},
+			},
+		},
+	}
+	root.AddDependency(&chart.Chart{}, &chart.Chart{
+		Metadata: &chart.Metadata{Name: "castai-agent", Version: "0.161.0"},
+	})
+
+	assert.NotPanics(t, func() {
+		assert.Equal(t, []umbrellaSubcomponent{
+			{Name: "castai-agent", Version: "0.161.0", Enabled: true},
+		}, umbrellaInventory(root, map[string]interface{}{}, nil))
+	})
+}
+
 func TestExtractUmbrellaParams_NilRelease(t *testing.T) {
 	log := logrus.New()
 	params := extractUmbrellaParams(context.Background(), log, nil, nil, "test-namespace")

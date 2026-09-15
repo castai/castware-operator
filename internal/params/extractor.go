@@ -236,6 +236,14 @@ func umbrellaInventory(root *chart.Chart, values map[string]interface{}, live ma
 
 	var walk func(ch *chart.Chart, parentPath string, parentEnabled bool)
 	walk = func(ch *chart.Chart, parentPath string, parentEnabled bool) {
+		// Defensive: a malformed or partially-loaded chart node (nil, or
+		// without metadata) ends the descent here instead of panicking on
+		// the Metadata.Dependencies dereference below. The recursion
+		// already only descends through metadata-checked nodes, but the
+		// guard keeps walk safe regardless of how it is entered.
+		if ch == nil || ch.Metadata == nil {
+			return
+		}
 		loaded := map[string]*chart.Chart{}
 		for _, sub := range ch.Dependencies() {
 			if sub != nil && sub.Metadata != nil {
