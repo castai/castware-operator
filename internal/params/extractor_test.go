@@ -9,6 +9,7 @@ import (
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/release"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -578,6 +579,7 @@ func TestExtractUmbrellaParams_ExplicitTrueBeatsReadonlyMode(t *testing.T) {
 func TestExtractUmbrellaParams_LiveWorkloadVersionWins(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
 
 	// A live agent Deployment owned by the umbrella release, running a newer
 	// version than the release's resolved sub-chart (a stale release record).
@@ -623,10 +625,40 @@ func TestExtractUmbrellaParams_LiveWorkloadVersionWins(t *testing.T) {
 			},
 		},
 	}
+	// A kentroller StatefulSet owned by the umbrella release, running a newer
+	// version than the release's resolved sub-chart.
+	kentrollerStatefulSet := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "castai-kentroller",
+			Namespace: "test-namespace",
+			Labels: map[string]string{
+				labelAppName:    "castai-kentroller",
+				labelAppVersion: "v0.2.0",
+			},
+			Annotations: map[string]string{
+				helmReleaseNameAnnotation: "castai",
+			},
+		},
+	}
+	// A chart-rendered Job owned by the umbrella release: Jobs are transient
+	// and must not contribute a (possibly stale) version to the inventory.
+	transientJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "castai-kentroller-migrate",
+			Namespace: "test-namespace",
+			Labels: map[string]string{
+				labelAppName:    "castai-kentroller",
+				labelAppVersion: "v9.9.9",
+			},
+			Annotations: map[string]string{
+				helmReleaseNameAnnotation: "castai",
+			},
+		},
+	}
 
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(agentDeployment, kvisorDaemonSet, standaloneAgent).
+		WithObjects(agentDeployment, kvisorDaemonSet, standaloneAgent, kentrollerStatefulSet, transientJob).
 		Build()
 
 	log := logrus.New()
@@ -641,6 +673,9 @@ func TestExtractUmbrellaParams_LiveWorkloadVersionWins(t *testing.T) {
 		"the live workload version must win over the stale release-resolved value")
 	kvisor := inventoryEntry(t, params, "castai-kvisor")
 	assert.Equal(t, "1.170.0", kvisor.Version, "daemonset workloads are included")
+	kentroller := inventoryEntry(t, params, "castai-kentroller")
+	assert.Equal(t, "0.2.0", kentroller.Version, "statefulset workloads are included")
+	assert.NotEqual(t, "9.9.9", kentroller.Version, "transient job workloads must not contribute a version")
 	cc := inventoryEntry(t, params, "castai-cluster-controller")
 	assert.Equal(t, "0.92.4", cc.Version, "no live workload: requested version reported")
 }
@@ -650,8 +685,8 @@ func TestExtractUmbrellaParams_TagsNonBoolValuesDropped(t *testing.T) {
 	rel := umbrellaTestRelease(map[string]interface{}{
 		"tags": map[string]interface{}{
 			"node-autoscaler": true,
-			"readonly":        "yes",                              // string: dropped
-			"full":           nil,                                // nil: dropped
+			"readonly":        "yes", // string: dropped
+			"full":            nil,   // nil: dropped
 			"workload-autoscaler": map[string]interface{}{ // map: dropped
 				"nested": true,
 			},

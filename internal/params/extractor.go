@@ -10,7 +10,9 @@ import (
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/release"
 	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	components "github.com/castai/castware-operator/internal/component"
@@ -336,50 +338,59 @@ func subchartEnabled(dep *chart.Dependency, parentPath, depPath string, values m
 // the component version is read from app.kubernetes.io/version. Only workloads
 // owned by the umbrella release are considered, so a standalone release of a
 // sub-chart in the same namespace does not shadow it.
+//
+// Supported workload kinds are the persistent kinds the umbrella's
+// sub-charts render: Deployments, DaemonSets and StatefulSets. ReplicaSets
+// are covered by their owning Deployment, and Jobs are transient — a
+// completed Job lingering after an upgrade would report a stale version —
+// so both are skipped; sub-components whose workloads are of other kinds
+// fall back to their release-resolved requested version.
 func liveUmbrellaWorkloadVersions(ctx context.Context, log logrus.FieldLogger, k8sClient client.Client, namespace, releaseName string) map[string]string {
 	versions := map[string]string{}
 	if k8sClient == nil || releaseName == "" {
 		return versions
 	}
 
-	collect := func(items []metav1.Object) {
-		for _, obj := range items {
-			annos := obj.GetAnnotations()
-			if annos[helmReleaseNameAnnotation] != releaseName {
-				continue
-			}
-			labels := obj.GetLabels()
-			name := labels[labelAppName]
-			version := strings.TrimPrefix(labels[labelAppVersion], "v")
-			if name == "" || version == "" {
-				continue
-			}
-			if _, seen := versions[name]; !seen {
-				versions[name] = version
-			}
+	collect := func(obj metav1.Object) {
+		annos := obj.GetAnnotations()
+		if annos[helmReleaseNameAnnotation] != releaseName {
+			return
+		}
+		labels := obj.GetLabels()
+		name := labels[labelAppName]
+		version := strings.TrimPrefix(labels[labelAppVersion], "v")
+		if name == "" || version == "" {
+			return
+		}
+		if _, seen := versions[name]; !seen {
+			versions[name] = version
 		}
 	}
 
-	depList := &appsv1.DeploymentList{}
-	if err := k8sClient.List(ctx, depList, client.InNamespace(namespace)); err != nil {
-		log.WithError(err).Warn("Failed to list deployments for umbrella inventory; using requested versions")
-	} else {
-		objs := make([]metav1.Object, 0, len(depList.Items))
-		for i := range depList.Items {
-			objs = append(objs, &depList.Items[i])
-		}
-		collect(objs)
+	// One list call per kind; a kind with no matching workloads simply
+	// returns an empty list. A list failure logs and leaves that kind's
+	// workloads unreported (requested versions win).
+	workloadKinds := []struct {
+		name string
+		list client.ObjectList
+	}{
+		{"deployments", &appsv1.DeploymentList{}},
+		{"daemonsets", &appsv1.DaemonSetList{}},
+		{"statefulsets", &appsv1.StatefulSetList{}},
 	}
-
-	dsList := &appsv1.DaemonSetList{}
-	if err := k8sClient.List(ctx, dsList, client.InNamespace(namespace)); err != nil {
-		log.WithError(err).Warn("Failed to list daemonsets for umbrella inventory; using requested versions")
-	} else {
-		objs := make([]metav1.Object, 0, len(dsList.Items))
-		for i := range dsList.Items {
-			objs = append(objs, &dsList.Items[i])
+	for _, kind := range workloadKinds {
+		if err := k8sClient.List(ctx, kind.list, client.InNamespace(namespace)); err != nil {
+			log.WithError(err).Warnf("Failed to list %s for umbrella inventory; using requested versions", kind.name)
+			continue
 		}
-		collect(objs)
+		if err := meta.EachListItem(kind.list, func(obj runtime.Object) error {
+			if m, ok := obj.(metav1.Object); ok {
+				collect(m)
+			}
+			return nil
+		}); err != nil {
+			log.WithError(err).Warnf("Failed to walk %s for umbrella inventory; using requested versions", kind.name)
+		}
 	}
 
 	return versions
