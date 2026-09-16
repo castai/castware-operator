@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/castai/castware-operator/internal/utils"
 	"github.com/sirupsen/logrus"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/release"
@@ -21,6 +20,8 @@ import (
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/clientcmd/api"
+
+	"github.com/castai/castware-operator/internal/utils"
 )
 
 // TODO: move?
@@ -144,6 +145,7 @@ func (c *client) Install(ctx context.Context, opts InstallOptions) (*release.Rel
 	install.ReleaseName = opts.ReleaseName
 	install.Timeout = 10 * time.Minute
 	install.TakeOwnership = true
+	install.Replace = true
 	install.DryRun = opts.DryRun
 
 	// Prepare user value overrides.
