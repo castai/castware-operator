@@ -29,27 +29,6 @@ func renderChart(t *testing.T, sets ...string) string {
 	return string(out)
 }
 
-// renderChartExpectFailure asserts that `helm template` fails with the given
-// substring in the error output (used for guard rules that must abort the
-// install).
-func renderChartExpectFailure(t *testing.T, want string, sets ...string) {
-	t.Helper()
-	abs, err := filepath.Abs(chartPath)
-	if err != nil {
-		t.Fatalf("resolve chart path: %v", err)
-	}
-	args := []string{"template", abs, "--set", "apiKeySecret.apiKey=test"} //nolint:prealloc
-	args = append(args, sets...)
-	cmd := exec.Command("helm", args...)
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatalf("expected helm template to fail, but it succeeded:\n%s", out)
-	}
-	if !strings.Contains(string(out), want) {
-		t.Fatalf("expected error containing %q, got:\n%s", want, out)
-	}
-}
-
 // extractComponentManifests pulls out the post-install Component CRs (hook-weight "10")
 // from a full helm template render.
 func extractComponentManifests(t *testing.T, rendered string) []string {
@@ -90,21 +69,42 @@ func TestUmbrellaPath_MinimalPermissions(t *testing.T) {
 	}
 }
 
-func TestUmbrellaPath_ExtendedPermissionsRefused(t *testing.T) {
-	// Non-readonly umbrella modes are not supported yet: extendedPermissions
-	// would derive tags.full=true, which the guard refuses at install time.
-	renderChartExpectFailure(t, "supports only the readonly tag",
+func TestUmbrellaPath_ExtendedPermissionsDerivesFull(t *testing.T) {
+	// extendedPermissions=true without an explicit tags block derives
+	// tags.full=true (the umbrella renders every mode component).
+	rendered := renderChart(t,
 		"--set", "defaultComponents.umbrella.enabled=true",
 		"--set", "extendedPermissions=true",
 	)
+
+	components := extractComponentManifests(t, rendered)
+	if len(components) != 1 {
+		t.Fatalf("expected 1 Component CR, got %d", len(components))
+	}
+	comp := components[0]
+	if !strings.Contains(comp, "full: true") {
+		t.Errorf("expected tags.full=true when extendedPermissions=true, got:\n%s", comp)
+	}
 }
 
-func TestUmbrellaPath_NonReadonlyTagRefused(t *testing.T) {
-	// An explicit non-readonly mode tag is refused at install time.
-	renderChartExpectFailure(t, "supports only the readonly tag",
+func TestUmbrellaPath_NodeAutoscalerTagAllowed(t *testing.T) {
+	// An explicit non-readonly mode tag renders as-is.
+	rendered := renderChart(t,
 		"--set", "defaultComponents.umbrella.enabled=true",
 		"--set", "defaultComponents.umbrella.tags.node-autoscaler=true",
 	)
+
+	components := extractComponentManifests(t, rendered)
+	if len(components) != 1 {
+		t.Fatalf("expected 1 Component CR, got %d", len(components))
+	}
+	comp := components[0]
+	if !strings.Contains(comp, "node-autoscaler: true") {
+		t.Errorf("expected tags.node-autoscaler=true, got:\n%s", comp)
+	}
+	if strings.Contains(comp, "readonly: true") {
+		t.Errorf("tags.readonly should not appear when an explicit tag is set")
+	}
 }
 
 func TestUmbrellaPath_DefaultExtendedPermissionsUnset(t *testing.T) {

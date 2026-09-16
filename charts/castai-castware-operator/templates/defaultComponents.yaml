@@ -1,19 +1,14 @@
 {{- if .Values.defaultComponents.enabled }}
 {{- if .Values.defaultComponents.umbrella.enabled }}
-{{- /* Only the readonly umbrella mode is supported until full (woop/autoscaler)
-       support is validated. Compute the effective tags and fail the install
-       early when a non-readonly mode is requested. */ -}}
+{{- /* Compute the effective umbrella mode tags: an explicit tags block wins;
+       otherwise extendedPermissions derives tags.full (everything) and the
+       default is tags.readonly (agent, spot-handler, kvisor only). */ -}}
 {{- $umbrellaTags := .Values.defaultComponents.umbrella.tags }}
 {{- if not $umbrellaTags }}
 {{-   if .Values.extendedPermissions }}
 {{-     $umbrellaTags = dict "full" true }}
 {{-   else }}
 {{-     $umbrellaTags = dict "readonly" true }}
-{{-   end }}
-{{- end }}
-{{- range $tag, $enabled := $umbrellaTags }}
-{{-   if and $enabled (ne $tag "readonly") }}
-{{-     fail "castai-umbrella supports only the readonly tag for now; non-readonly modes (node-autoscaler, workload-autoscaler, full, autoscaler-anywhere, autoscaler-openshift) are not supported yet. Remove --extended-permissions / --tag or set --tag=readonly." }}
 {{-   end }}
 {{- end }}
 ---
