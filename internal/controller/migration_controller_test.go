@@ -612,7 +612,7 @@ func TestMigrationReconciler_VerifySuccess_Finalize(t *testing.T) {
 	r.Equal(castai.Action_INSTALL, report.Action)
 	r.Equal(castai.Status_OK, report.Status)
 	tags, ok := report.ComponentParams["tags"].(map[string]bool)
-	r.True(ok, "component_params.tags should be a bool map on the migration install report, got %T", report.ComponentParams["tags"])
+	r.True(ok, "component_params.tags should be a map on the migration install report, got %T", report.ComponentParams["tags"])
 	r.True(tags["readonly"])
 
 	// Individual CRs deleted.
