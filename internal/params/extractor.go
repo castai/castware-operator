@@ -237,11 +237,6 @@ func umbrellaInventory(root *chart.Chart, values map[string]interface{}, live ma
 
 	var walk func(ch *chart.Chart, parentPath string, parentEnabled bool)
 	walk = func(ch *chart.Chart, parentPath string, parentEnabled bool) {
-		// Defensive: a malformed or partially-loaded chart node (nil, or
-		// without metadata) ends the descent here instead of panicking on
-		// the Metadata.Dependencies dereference below. The recursion
-		// already only descends through metadata-checked nodes, but the
-		// guard keeps walk safe regardless of how it is entered.
 		if ch == nil || ch.Metadata == nil {
 			return
 		}
@@ -350,15 +345,7 @@ func subchartEnabled(dep *chart.Dependency, parentPath, depPath string, values m
 //
 // When several workloads owned by the release share an app name but run
 // different versions (a mid-rollout snapshot or a duplicate workload), the
-// highest semantic version wins and the conflict is logged, so the report is
-// deterministic regardless of list order; versions that do not parse as
-// semantic versions lose to ones that do. Supported workload kinds are the
-// persistent kinds the umbrella's sub-charts render: Deployments, DaemonSets
-// and StatefulSets. ReplicaSets are covered by their owning Deployment, and
-// Jobs are transient — a completed Job lingering after an upgrade would
-// report a stale version — so both are skipped; sub-components whose
-// workloads are of other kinds fall back to their release-resolved requested
-// version.
+// highest semantic version wins and the conflict is logged.
 func liveUmbrellaWorkloadVersions(ctx context.Context, log logrus.FieldLogger, k8sClient client.Client, namespace, releaseName string) map[string]string {
 	versions := map[string]string{}
 	if k8sClient == nil || releaseName == "" {
@@ -424,10 +411,7 @@ func liveUmbrellaWorkloadVersions(ctx context.Context, log logrus.FieldLogger, k
 }
 
 // newerVersion reports whether version should displace other as the
-// reported running version: a version that parses as a semantic version
-// beats one that does not, and among two parseable versions the higher one
-// wins. The comparison is a total order on the values that reach it, so the
-// reported version never depends on the order workloads are listed in.
+// reported running version
 func newerVersion(version, other string) bool {
 	v, err := semver.NewVersion(version)
 	if err != nil {
