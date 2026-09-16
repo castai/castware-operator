@@ -1,7 +1,20 @@
 package values
 
-// This file carries over individual (standalone) component chart values into the
-// umbrella chart's values layout during standalone→umbrella migration (CID-1047).
+// This file carries over user-supplied values from standalone component charts
+// into the umbrella chart's values layout during standalone→umbrella migration,
+// via two paths that both produce the same autoscaler.<name> layout and thus
+// compose with each other under the umbrella CR's own spec.values (see
+// UmbrellaValues' merge order):
+//
+//   - CR-based carry-over (CID-1047): CarryOverIndividualValues reads the
+//     operator-managed individuals (agent, spot-handler, cluster-controller)
+//     directly from their Component CRs' spec.values.
+//   - release-config-based carry-over (CID-1053): CarryOverCoveredReleaseValues
+//     reads the user config of absorbed covered standalone releases the
+//     operator does not manage (castai-kvisor, gpu-metrics-exporter,
+//     castai-evictor, castai-pod-mutator, castai-pod-pinner, castai-live,
+//     castai-workload-autoscaler, castai-workload-autoscaler-exporter) —
+//     releases that are uninstalled and re-rendered under the umbrella chart.
 //
 // The umbrella chart mounts each overlapping sub-component under the
 // autoscaler.<alias> values key (confirmed in the castai-umbrella chart's
@@ -9,21 +22,26 @@ package values
 // autoscaler.castai-spot-handler). So a user's per-component customization that
 // lived at the top level of the individual chart's values — e.g. the agent CR's
 // spec.values.topologySpreadConstraints / spec.values.additionalEnv — must be
-// placed under autoscaler.<alias> for the umbrella's subchart to pick it up.
+// placed under autoscaler.<alias> for the umbrella's subchart to pick it up. The
+// same layout applies to the covered releases' user configs, keyed by chart
+// name (e.g. autoscaler.castai-kvisor).
 //
 // This mirrors the reference castctl migration's buildExtraValues +
-// stripUmbrellaManagedKeys (castctl/internal/cli/cluster/migrate/command.go),
-// adapted to the operator's data source: the operator reads the individual
-// Component CRs' spec.values directly (user customizations only), whereas castctl
-// reads the full coalesced helm release values (which include operator-injected
-// credentials) and must strip them. Stripping is still applied here as
-// defense-in-depth: a user may have set credential-like keys in their CR
-// spec.values, and carrying those into autoscaler.<alias> re-trips the subchart
-// template validation failures the umbrella-managed key set guards against.
+// stripUmbrellaManagedKeys (castctl/internal/cli/cluster/migrate/command.go).
+// The CR-based path is adapted to the operator's data source: the operator reads
+// the individual Component CRs' spec.values directly (user customizations
+// only), whereas castctl reads the full coalesced helm release values (which
+// include operator-injected credentials) and must strip them; the
+// release-config path reads the standalone releases' user config, the
+// operator's counterpart of castctl's data source for covered charts. Stripping
+// is still applied on both paths as defense-in-depth: a user may have set
+// credential-like keys, and carrying those into autoscaler.<name> re-trips the
+// subchart template validation failures the umbrella-managed key set guards
+// against.
 //
 // The carried values are merged UNDER the umbrella CR's own spec.values (see
 // UmbrellaValues' merge order), so an explicit umbrella value still wins over a
-// carried-over individual value.
+// carried-over individual or release value.
 
 import (
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
@@ -111,6 +129,58 @@ func CarryOverIndividualValues(individuals map[string]*castwarev1alpha1.Componen
 			continue
 		}
 		subcharts[alias] = stripped
+	}
+	if len(subcharts) == 0 {
+		return nil
+	}
+
+	return map[string]any{
+		parentKeyForProvider(provider): subcharts,
+	}
+}
+
+// CarryOverCoveredReleaseValues wraps each covered standalone release's
+// user-supplied values (the release's user config with umbrella-managed keys
+// stripped) under the umbrella chart's <parent>.<chart> layout, where <parent>
+// is "autoscaler-anywhere" for anywhere clusters and "autoscaler" otherwise.
+//
+// configs maps an umbrella-covered chart name (e.g. "castai-kvisor") to that
+// standalone release's user-supplied values (the helm release config). The
+// caller is responsible for passing only covered non-operator charts — the
+// migration controller derives this input from its absorbed-releases snapshot
+// — so no covered-chart filtering happens here. The map is keyed by chart
+// name, so there is at most one entry per chart; multiple releases of the
+// same chart are the caller's concern.
+//
+// For each chart, a nil or empty config is skipped, and the config is stripped
+// of umbrella-managed keys recursively (see umbrellaManagedKeys); a chart
+// whose config does not survive the strip is skipped rather than written as a
+// nil subchart entry (which would make Helm's value coalescer panic — same
+// rationale as CarryOverIndividualValues). Returns nil when nothing survives,
+// so the caller can skip merging an empty entry.
+//
+// The returned map is intended for the same extraOverrides slot as
+// CarryOverIndividualValues' output: merged under the umbrella CR's own
+// spec.values via UmbrellaValues' merge order, so an explicit umbrella value
+// still wins over a carried-over release value, and the two carry-over results
+// compose under the single parent key.
+func CarryOverCoveredReleaseValues(configs map[string]map[string]any, provider string) map[string]any {
+	if len(configs) == 0 {
+		return nil
+	}
+
+	subcharts := map[string]any{}
+	for chart, config := range configs {
+		if len(config) == 0 {
+			continue
+		}
+		stripped := stripUmbrellaManagedKeys(config)
+		if len(stripped) == 0 {
+			// Only umbrella-managed keys were present — skip rather than write a
+			// nil entry under <parent>.<chart>.
+			continue
+		}
+		subcharts[chart] = stripped
 	}
 	if len(subcharts) == 0 {
 		return nil

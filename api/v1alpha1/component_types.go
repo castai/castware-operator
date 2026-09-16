@@ -145,6 +145,49 @@ type ComponentStatus struct {
 	// a reason (phase) change. Cleared when the migration finalizes.
 	// +optional
 	MigrationPhaseStartedAt metav1.Time `json:"migrationPhaseStartedAt,omitempty"`
+
+	// MigrationDerivedTag is the umbrella tag mode derived from the full set of
+	// present standalone components at migration start (components.MinimalCoveringTag).
+	// Written in the MarkReadonly phase before any uninstall, so the InstallUmbrella
+	// phase derives the same tag even after the standalone releases are gone
+	// (post-uninstall probing cannot see them). Cleared when the migration
+	// finalizes or rolls back.
+	// +optional
+	MigrationDerivedTag string `json:"migrationDerivedTag,omitempty"`
+
+	// AbsorbedReleases is the durable snapshot of the umbrella-covered
+	// standalone releases the migration uninstalled (absorbed) during the
+	// UninstallIndividuals phase. Written before the uninstalls so the data
+	// survives both operator restarts and the uninstalls themselves; read by
+	// the umbrella install for value carry-over and by rollback for
+	// reinstall; cleared when the migration finalizes successfully.
+	// Empty for non-migrating components.
+	// +optional
+	AbsorbedReleases []AbsorbedRelease `json:"absorbedReleases,omitempty"`
+}
+
+// AbsorbedRelease is one umbrella-covered standalone release the migration
+// absorbed: uninstalled during the UninstallIndividuals phase so the umbrella
+// chart can re-render it under the derived tag mode. These releases have no
+// Component CRs, so the snapshot recorded here is the only record of how they
+// were installed — consumed by the umbrella install (user-value carry-over
+// into autoscaler.<chart>) and by migration rollback (reinstall by release
+// name, chart, version and user values).
+type AbsorbedRelease struct {
+	// ReleaseName is the helm release name the standalone was installed under
+	// (standalones are matched by chart identity, so the release name may be
+	// arbitrary).
+	ReleaseName string `json:"releaseName"`
+	// ChartName is the umbrella-covered sub-chart (chart) name, e.g. "castai-kvisor".
+	ChartName string `json:"chartName"`
+	// ChartVersion is the resolved version of the standalone chart at uninstall time.
+	ChartVersion string `json:"chartVersion,omitempty"`
+	// Values is the release's user-supplied config as installed (raw, NOT
+	// stripped): rollback reinstalls the release exactly as it was, and the
+	// umbrella install's carry-over path strips umbrella-managed keys itself
+	// (values.CarryOverCoveredReleaseValues). nil/empty when the release had
+	// no user values.
+	Values *apiextensionsv1.JSON `json:"values,omitempty"`
 }
 
 //+kubebuilder:object:root=true

@@ -738,8 +738,11 @@ func (r *ComponentReconciler) refuseUmbrellaIfIndividualsPresent(ctx context.Con
 func (r *ComponentReconciler) validateUmbrellaMigrationPermissions(ctx context.Context, log logrus.FieldLogger, castAiClient castai.CastAIClient, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster) (bool, error) {
 	// The gate sends the umbrella's user-supplied install values as
 	// component_params; see migrationgate.ValidateUmbrellaInstallPermissions
-	// for why the full values (not a tags-only whitelist) are required.
-	validation, err := migrationgate.ValidateUmbrellaInstallPermissions(ctx, castAiClient, cluster.Spec.Cluster.ClusterID, component.Spec.Version, component.Spec.Values)
+	// for why the full values (not a tags-only whitelist) are required. No
+	// derived tag on this path: the migration controller owns the tag
+	// derivation, and this reconciler never installs the umbrella during a
+	// migration, so the user-only surface is what it can honestly validate.
+	validation, err := migrationgate.ValidateUmbrellaInstallPermissions(ctx, castAiClient, cluster.Spec.Cluster.ClusterID, component.Spec.Version, "", component.Spec.Values)
 	if err != nil {
 		return false, fmt.Errorf("call validateInstall: %w", err)
 	}
