@@ -1112,6 +1112,58 @@ func TestMigrationReconciler_UmbrellaOnlyStandalone_DriftGuard_BlocksBeforeInsta
 // component_params must carry tags.node-autoscaler=true — not just the user's
 // spec.values — so the server permission-checks the install that will
 // actually render. With the gate allowing, the migration still proceeds.
+// TestMigrationReconciler_LostDerivedTag_DerivesFromSnapshot asserts the
+// empty-tag fallback in phaseInstallUmbrella cannot narrow below what was
+// already absorbed: when status.migrationDerivedTag is empty but the
+// absorbed-release snapshot is populated (an anomalous status — the tag is
+// written before anything is uninstalled — e.g. lost or edited externally),
+// the re-derived tag folds in the snapshot's chart names instead of trusting
+// only the post-uninstall live probe, which cannot see the absorbed releases.
+// Without the snapshot fold-in, this state would derive readonly and the
+// umbrella install would silently drop the absorbed workload-autoscaler.
+func TestMigrationReconciler_LostDerivedTag_DerivesFromSnapshot(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseInstallUmbrella)
+	// Anomalous status: the tag was lost, the snapshot survived.
+	umbrella.Status.MigrationDerivedTag = ""
+	umbrella.Status.AbsorbedReleases = []castwarev1alpha1.AbsorbedRelease{{
+		ReleaseName:  components.ComponentNameWorkloadAutoscaler,
+		ChartName:    components.ComponentNameWorkloadAutoscaler,
+		ChartVersion: "1.0.21",
+		ChartRepoURL: "https://castai.github.io/helm-charts",
+	}}
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		umbrella,
+		migIndividual(components.ComponentNameAgent),
+	)
+	expectAgentOnlyIndividual(ops)
+	// Umbrella not yet installed; the drift guard and the empty-tag fallback's
+	// present-set probe both see no covered releases.
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(nil, errors.New("no release found"))
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return(nil, nil).AnyTimes()
+	var captured helm.InstallOptions
+	ops.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, opts helm.InstallOptions) (*release.Release, error) {
+			captured = opts
+			return migRelease(components.ComponentNameUmbrella), nil
+		})
+
+	reconcileOnce(t, ops)
+
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseVerify, u.Status.MigrationPhase, "install completed")
+	r.Equal(components.UmbrellaTagWorkloadAutoscaler, u.Status.MigrationDerivedTag,
+		"re-derived tag covers the absorbed workload-autoscaler, not narrowed to readonly")
+	tags, ok := captured.ValuesOverrides["tags"].(map[string]any)
+	r.True(ok, "derived tags present in install values")
+	r.True(tags[components.UmbrellaTagWorkloadAutoscaler].(bool),
+		"install uses the snapshot-aware derived tag")
+}
+
 func TestMigrationReconciler_PermissionGate_ReceivesDerivedTag(t *testing.T) {
 	t.Parallel()
 	r := require.New(t)

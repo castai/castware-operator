@@ -579,10 +579,17 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 
 	// Tag mode: MarkReadonly derived it from the full present set and
 	// persisted it, because post-uninstall probing cannot see the absorbed
-	// covered releases — re-deriving here would narrow the tag. A legacy
-	// resume (field empty: the migration started under an operator version
-	// without it, and such a migration has no absorbed-release snapshot
-	// either) recomputes from what is still visible and persists the result.
+	// covered releases — re-deriving here would narrow the tag. The empty-tag
+	// fallback covers a legacy resume (migration started under an operator
+	// version without the field, which has no absorbed-release snapshot
+	// either): recompute from what is still visible and persist. When a
+	// snapshot IS present, the live probe cannot see those releases anymore
+	// (they were uninstalled), so their chart names are folded into the
+	// derivation — the re-derived tag can never be narrower than what was
+	// already absorbed. (The tag is written before anything is uninstalled,
+	// so tag-empty + snapshot-nonempty is an anomalous status — lost or
+	// edited externally — not a flow this migration produces; the
+	// reconstruction is best-effort and persisted like the legacy path.)
 	tag := component.Status.MigrationDerivedTag
 	if tag == "" {
 		present, _, err := r.presentComponents(ctx, castAiClient, cluster)
@@ -590,6 +597,9 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 			// See phaseMarkReadonly: returned (not swallowed) so the failure is
 			// observable in reconcile-error metrics and the Migrating condition.
 			return ctrl.Result{}, r.degradeMigration(ctx, log, component, fmt.Errorf("resolve present components for tag derivation: %w", err))
+		}
+		for _, ar := range component.Status.AbsorbedReleases {
+			present = append(present, ar.ChartName)
 		}
 		tag = components.MinimalCoveringTag(present)
 		if err := r.setMigrationDerivedTag(ctx, component, tag); err != nil {
