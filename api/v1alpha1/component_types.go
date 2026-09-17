@@ -50,13 +50,16 @@ const (
 	// guards use it: the Mothership permission gate
 	// (components:validateInstallation) refusing the umbrella install — e.g.
 	// because the operator's service account permissions are insufficient for
-	// the umbrella chart's broader RBAC surface — and the standalone-release
-	// conflict guard refusing while a release of an umbrella-managed chart the
-	// operator does not support (e.g. castai-kvisor, castai-evictor) is
-	// present, which the umbrella install would silently absorb or duplicate.
-	// No release has been touched in either case; the controller re-checks
-	// periodically and proceeds from the recorded phase once the block reason
-	// is lifted (permissions granted, standalone release removed).
+	// the umbrella chart's broader RBAC surface — and the install-phase drift
+	// guard refusing while a standalone release of an umbrella-covered chart
+	// the operator does not support (e.g. castai-kvisor, castai-evictor) is
+	// present AFTER the uninstall phase already absorbed the covered releases
+	// present at migration start: such a release appeared mid-migration and the
+	// umbrella install would silently absorb or duplicate it, so the migration
+	// waits until it is removed. No release has been touched in either case;
+	// the controller re-checks periodically and proceeds from the recorded
+	// phase once the block reason is lifted (permissions granted, drifted
+	// standalone release removed).
 	ReasonMigrationBlocked = "MigrationBlocked"
 )
 

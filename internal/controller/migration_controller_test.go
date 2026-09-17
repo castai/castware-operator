@@ -159,10 +159,11 @@ func expectResolveNamesPresent(ops *migrationTestOps) {
 	}
 }
 
-// expectNoUmbrellaOnlyCharts wires the helm listing expectation for the
-// pre-flight (phaseMarkReadonly) and pre-install (phaseInstallUmbrella) guard:
-// no standalone umbrella-managed releases present, so the migration proceeds.
-func expectNoUmbrellaOnlyCharts(ops *migrationTestOps) {
+// expectNoCoveredStandaloneReleases wires the helm listing expectation for
+// the covered-release probes (MarkReadonly's present-set derivation and
+// InstallUmbrella's drift guard): no standalone umbrella-covered releases
+// present, so the migration proceeds unobstructed.
+func expectNoCoveredStandaloneReleases(ops *migrationTestOps) {
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
 		Return(nil, nil).AnyTimes()
 }
@@ -274,7 +275,7 @@ func TestMigrationReconciler_MarkReadonly(t *testing.T) {
 			return &castai.ValidateComponentInstallResponse{Allowed: true}, nil
 		}).AnyTimes()
 	expectResolveNamesPresent(ops)
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 
 	reconcileOnce(t, ops)
 
@@ -325,7 +326,7 @@ func TestMigrationReconciler_PermissionGate_Blocked(t *testing.T) {
 	// Present-set probe (read-only): individuals resolve and no covered
 	// standalone releases. The tag it derives feeds the gate below.
 	expectResolveNamesPresent(ops)
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 	// Gate refuses with a block reason. No other Mothership/helm expectations:
 	// a blocked migration must not touch anything else.
 	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
@@ -359,7 +360,7 @@ func TestMigrationReconciler_PermissionGate_Blocked(t *testing.T) {
 	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
 		Return(&castai.ValidateComponentInstallResponse{Allowed: true}, nil).AnyTimes()
 	expectResolveNamesPresent(ops)
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 
 	reconcileOnce(t, ops)
 
@@ -386,7 +387,7 @@ func TestMigrationReconciler_PermissionGate_TransientError(t *testing.T) {
 	// Present-set probe (read-only): individuals resolve and no covered
 	// standalone releases; the derived tag feeds the gate.
 	expectResolveNamesPresent(ops)
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 	// The gate itself fails: the reconcile must stop there.
 	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
 		Return(nil, errors.New("connection refused")).Times(1)
@@ -426,7 +427,7 @@ func TestMigrationReconciler_MothershipUnreachable_Degraded(t *testing.T) {
 	// PermissionGate_TransientError for the gate itself degrading on an
 	// unreachable Mothership).
 	expectPermissionGatePass(ops)
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 	// Mothership lookup fails once (unknown error, not ErrNotFound — ResolveNames
 	// fails closed only when nothing resolves).
 	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
@@ -489,7 +490,7 @@ func TestMigrationReconciler_UninstallIndividuals_AgentExcluded(t *testing.T) {
 	expectResolveNamesPresent(ops)
 	// No covered standalone releases: the phase lists them before the
 	// individual uninstalls.
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 
 	// Agent is excluded: only cluster-controller + spot-handler are uninstalled,
 	// in reverse phase order (cluster-controller first, then spot-handler).
@@ -519,7 +520,7 @@ func TestMigrationReconciler_InstallUmbrella_AgentOnly_ReadonlyTag(t *testing.T)
 		migUmbrella(castwarev1alpha1.MigrationPhaseInstallUmbrella),
 		migIndividual(components.ComponentNameAgent),
 	)
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 	// ResolveNames probes all sub-components: agent is present, spot-handler and
 	// cluster-controller are absent on Mothership (ErrNotFound) so they are skipped.
 	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
@@ -558,7 +559,7 @@ func TestMigrationReconciler_InstallUmbrella_CarriesOverIndividualValues(t *test
 		migIndividualWithValues(components.ComponentNameAgent, agentValues),
 		migIndividualWithValues(components.ComponentNameSpotHandler, spotHandlerValues),
 	)
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 	// Agent + spot-handler present; cluster-controller absent on Mothership.
 	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
 		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).AnyTimes()
@@ -1600,7 +1601,7 @@ func TestMigrationReconciler_BothTriggersConverge(t *testing.T) {
 	ops := newMigrationTestOps(t, migCluster(), migUmbrella(""), migIndividual(components.ComponentNameAgent))
 	expectPermissionGatePass(ops)
 	expectResolveNamesPresent(ops)
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 
 	reconcileOnce(t, ops)
 	u := getUmbrella(t, ops)
@@ -1765,7 +1766,7 @@ func TestMigrationReconciler_LegacyReadonlyResume_ProceedsWithoutGuard(t *testin
 	)
 	expectPermissionGatePass(ops)
 	expectResolveNamesPresent(ops)
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 
 	reconcileOnce(t, ops)
 

@@ -277,105 +277,10 @@ func relWithChartDetails(releaseName, chartName, chartVersion string, config map
 }
 
 // relWithChart builds a release record identified by the given chart name,
-// with an arbitrary release name — InstalledUmbrellaOnlyCharts and
-// InstalledCoveredStandaloneReleases must match on chart identity, not
-// release name.
+// with an arbitrary release name — InstalledCoveredStandaloneReleases
+// must match on chart identity, not release name.
 func relWithChart(chartName string) *release.Release {
 	return relWithChartDetails("arbitrary-release-name", chartName, "1.0.0", nil)
-}
-
-func TestInstalledUmbrellaOnlyCharts(t *testing.T) {
-	t.Parallel()
-	ns := "castai-agent"
-
-	t.Run("returns matching charts in list order", func(t *testing.T) {
-		r := require.New(t)
-		ctrl := gomock.NewController(t)
-		hc := mock_helm.NewMockClient(ctrl)
-
-		// A kvisor and an evictor standalone under arbitrary release names,
-		// plus unrelated releases that must not match (including the
-		// operator-supported castai-agent, whose standalone release is the
-		// migration's normal starting point, not a conflict).
-		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return([]*release.Release{
-			relWithChart("castai-agent"),
-			relWithChart("castai-kvisor"),
-			relWithChart("metrics-server"),
-			relWithChart("castai-evictor"),
-		}, nil)
-
-		present, err := InstalledUmbrellaOnlyCharts(hc, ns)
-		r.NoError(err)
-		r.Equal([]string{"castai-kvisor", "castai-evictor"}, present)
-	})
-
-	t.Run("no standalone umbrella-managed releases present", func(t *testing.T) {
-		r := require.New(t)
-		ctrl := gomock.NewController(t)
-		hc := mock_helm.NewMockClient(ctrl)
-
-		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return([]*release.Release{
-			relWithChart("castai-agent"),
-			relWithChart("castai-spot-handler"),
-		}, nil)
-
-		present, err := InstalledUmbrellaOnlyCharts(hc, ns)
-		r.NoError(err)
-		r.Empty(present)
-	})
-
-	t.Run("detects gpu-metrics-exporter standalone", func(t *testing.T) {
-		r := require.New(t)
-		ctrl := gomock.NewController(t)
-		hc := mock_helm.NewMockClient(ctrl)
-
-		// Latent-gap fix: even the readonly umbrella mode renders
-		// gpu-metrics-exporter, so a standalone release of it must be detected
-		// before the umbrella install overlaps it.
-		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return([]*release.Release{
-			relWithChart("castai-agent"),
-			relWithChart(components.ComponentNameGPUMetricsExporter),
-		}, nil)
-
-		present, err := InstalledUmbrellaOnlyCharts(hc, ns)
-		r.NoError(err)
-		r.Equal([]string{components.ComponentNameGPUMetricsExporter}, present)
-	})
-
-	t.Run("result order follows UmbrellaCoveredCharts, not the release list", func(t *testing.T) {
-		r := require.New(t)
-		ctrl := gomock.NewController(t)
-		hc := mock_helm.NewMockClient(ctrl)
-
-		// Feed the matching releases in an order that is the reverse of the
-		// chart list order: the result must stay deterministic in
-		// UmbrellaCoveredCharts order so callers' messaging is stable.
-		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return([]*release.Release{
-			relWithChart("castai-live"),
-			relWithChart(components.ComponentNameEvictor),
-			relWithChart(components.ComponentNameGPUMetricsExporter),
-		}, nil)
-
-		present, err := InstalledUmbrellaOnlyCharts(hc, ns)
-		r.NoError(err)
-		r.Equal([]string{
-			components.ComponentNameGPUMetricsExporter,
-			components.ComponentNameEvictor,
-			components.ComponentNameLive,
-		}, present)
-	})
-
-	t.Run("helm listing error is returned so callers block (fail-safe)", func(t *testing.T) {
-		r := require.New(t)
-		ctrl := gomock.NewController(t)
-		hc := mock_helm.NewMockClient(ctrl)
-
-		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return(nil, errors.New("helm unreachable"))
-
-		present, err := InstalledUmbrellaOnlyCharts(hc, ns)
-		r.Error(err)
-		r.Nil(present)
-	})
 }
 
 func TestUmbrellaCoveredCharts(t *testing.T) {

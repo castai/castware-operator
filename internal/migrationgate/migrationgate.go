@@ -1,9 +1,16 @@
 // Package migrationgate implements the umbrella / individual charts mutual
-// exclusivity gate. The umbrella chart (castai-umbrella) renders the same
-// workloads as the individual component charts (castai-agent, spot-handler,
+// exclusivity gate and the umbrella-covered standalone release detection.
+// The umbrella chart (castai-umbrella) renders the same workloads as the
+// individual component charts (castai-agent, spot-handler,
 // cluster-controller). Running both produces duplicate Deployments, duplicate
 // CRDs and conflicting Helm ownership, so any ambiguity resolves to blocking
 // rather than double-installing.
+//
+// It also detects standalone releases of the umbrella-covered charts the
+// operator does not manage (UmbrellaCoveredCharts): the migration absorbs
+// those releases — uninstalls them and re-renders them under the umbrella —
+// so the detection returns the full release details (name, chart, version,
+// user config) rather than a bare presence signal.
 //
 // The gate is fail-safe: a helm lookup that returns driver.ErrReleaseNotFound
 // means "not present", while any other error (helm unreachable, permission
@@ -315,33 +322,4 @@ func InstalledCoveredStandaloneReleases(hc helm.Client, namespace string) ([]Cov
 		return matched[i].ReleaseName < matched[j].ReleaseName
 	})
 	return matched, nil
-}
-
-// InstalledUmbrellaOnlyCharts returns the UmbrellaCoveredCharts chart names
-// that have a standalone release present in the given namespace. Releases are
-// matched by chart identity (rel.Chart.Metadata.Name), not by release name —
-// a standalone may be installed under any release name. Fail-safe: a helm
-// listing error is returned so callers block rather than proceed on unknown
-// state, matching the mutual-exclusivity gate's posture.
-//
-// It is the name-only view over InstalledCoveredStandaloneReleases: a chart
-// counts as present once any of its standalone releases is present, and the
-// returned names keep UmbrellaCoveredCharts list order (not the detailed
-// result's ReleaseName order) so callers' messaging stays deterministic.
-func InstalledUmbrellaOnlyCharts(hc helm.Client, namespace string) ([]string, error) {
-	releases, err := InstalledCoveredStandaloneReleases(hc, namespace)
-	if err != nil {
-		return nil, err
-	}
-	present := make(map[string]bool, len(releases))
-	for _, rel := range releases {
-		present[rel.ChartName] = true
-	}
-	var names []string
-	for _, chart := range UmbrellaCoveredCharts {
-		if present[chart] {
-			names = append(names, chart)
-		}
-	}
-	return names, nil
 }
