@@ -165,19 +165,18 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 	}
 
 	// Components that require extended permissions are rejected at admission unless
-	// the operator was installed with extendedPermissions="true". The umbrella
-	// component is an exception: only the readonly profile is supported until
-	// the full (woop/autoscaler) modes are validated, so any umbrella with a
-	// non-readonly tag is rejected outright — extended permissions do not lift
-	// the restriction.
+	// the operator was installed with extendedPermissions="true". For the umbrella
+	// component this means: tags.readonly=true is satisfiable with the operator's
+	// minimal (base) permissions, while any non-readonly mode tag (node-autoscaler,
+	// workload-autoscaler, full) or an explicitly enabled cluster-controller
+	// sub-component requires extendedPermissions. The webhook is deliberately
+	// permissive about which tags exist — the umbrella chart itself enforces tag
+	// mutual-exclusivity — so only the permission posture is gated here.
 	values, err := utils.UnmarshalJSON(c.Spec.Values)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal component values: %w", err)
 	}
 	if components.RequiresExtendedPermissionsForValues(c.Spec.Component, values) {
-		if c.Spec.Component == components.ComponentNameUmbrella {
-			return nil, fmt.Errorf("component '%s' supports only the readonly tag for now; non-readonly umbrella modes (node-autoscaler, workload-autoscaler, full) are not supported yet", c.Spec.Component)
-		}
 		ok, err := rolebindings.CheckExtendedPermissionsExist(ctx, v.client, c.Namespace)
 		if err != nil {
 			return nil, fmt.Errorf("failed to check extended permissions: %w", err)
