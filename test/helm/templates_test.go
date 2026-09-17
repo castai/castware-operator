@@ -107,6 +107,61 @@ func TestUmbrellaPath_NodeAutoscalerTagAllowed(t *testing.T) {
 	}
 }
 
+func TestUmbrellaPath_LiveDisabledByDefault(t *testing.T) {
+	// castai-live must be disabled in the rendered Component CR by default.
+	rendered := renderChart(t,
+		"--set", "defaultComponents.umbrella.enabled=true",
+		"--set", "defaultComponents.umbrella.tags.full=true",
+	)
+	components := extractComponentManifests(t, rendered)
+	if len(components) != 1 {
+		t.Fatalf("expected 1 Component CR, got %d", len(components))
+	}
+	comp := components[0]
+	if !strings.Contains(comp, "castai-live:") || !strings.Contains(comp, "enabled: false") {
+		t.Errorf("expected autoscaler.castai-live.enabled=false by default, got:\n%s", comp)
+	}
+}
+
+func TestUmbrellaPath_LiveOptIn(t *testing.T) {
+	// defaultComponents.umbrella.live.enabled=true renders live enabled in the CR.
+	rendered := renderChart(t,
+		"--set", "defaultComponents.umbrella.enabled=true",
+		"--set", "defaultComponents.umbrella.tags.full=true",
+		"--set", "defaultComponents.umbrella.live.enabled=true",
+	)
+	components := extractComponentManifests(t, rendered)
+	if len(components) != 1 {
+		t.Fatalf("expected 1 Component CR, got %d", len(components))
+	}
+	comp := components[0]
+	if !strings.Contains(comp, "castai-live:") || !strings.Contains(comp, "enabled: true") {
+		t.Errorf("expected autoscaler.castai-live.enabled=true with the live opt-in, got:\n%s", comp)
+	}
+}
+
+func TestRbacExt_LivePermissionsGated(t *testing.T) {
+	// The live-specific RBAC (priorityclasses, validatingadmissionpolicies,
+	// cluster-scope secrets) must only render when the live opt-in is set.
+	base := renderChart(t,
+		"--set", "extendedPermissions=true",
+	)
+	if strings.Contains(base, "manager-role-live-ext") || strings.Contains(base, "validatingadmissionpolicies") {
+		t.Errorf("live-specific RBAC must not render without the live opt-in")
+	}
+
+	optIn := renderChart(t,
+		"--set", "extendedPermissions=true",
+		"--set", "defaultComponents.umbrella.live.enabled=true",
+	)
+	if !strings.Contains(optIn, "manager-role-live-ext") {
+		t.Errorf("expected the live ClusterRole to render when the live opt-in is set")
+	}
+	if !strings.Contains(optIn, "validatingadmissionpolicies") {
+		t.Errorf("expected live VAP permissions to render when the live opt-in is set")
+	}
+}
+
 func TestUmbrellaPath_DefaultExtendedPermissionsUnset(t *testing.T) {
 	// When extendedPermissions is not set at all, it defaults to false,
 	// so the umbrella should get tags.readonly=true.

@@ -159,6 +159,13 @@ defaultComponents:
     # Optional: override the auto-derived tags. Any single mode tag is allowed:
     # readonly, node-autoscaler, workload-autoscaler, full.
     # tags: {}
+    # castai-live (live migration/CLM components) is disabled by default: it
+    # requires extra cluster-scoped RBAC (cluster-scope secrets read,
+    # PriorityClasses, ValidatingAdmissionPolicies) that the operator's service
+    # account should not hold unless explicitly opted in. Enable it to install
+    # live alongside the umbrella and grant the live-specific permissions.
+    live:
+      enabled: false
     # Optional: extra umbrella-chart values merged into the Component CR's
     # spec.values (verbatim). Sub-component overrides must use the umbrella
     # chart's own paths, e.g. autoscaler.castai-agent.additionalEnv for the

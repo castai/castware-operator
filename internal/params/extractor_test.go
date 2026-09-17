@@ -237,6 +237,87 @@ func TestExtractUmbrellaParams_TagsFromConfig(t *testing.T) {
 	assert.Equal(t, false, tags["autoscaler-anywhere"])
 }
 
+func TestExtractUmbrellaParams_LiveEnabledFromConfig(t *testing.T) {
+	helmRelease := &release.Release{
+		Config: map[string]interface{}{
+			"autoscaler": map[string]interface{}{
+				"castai-live": map[string]interface{}{
+					"enabled": true,
+				},
+			},
+		},
+	}
+
+	params := extractUmbrellaParams(helmRelease)
+
+	assert.NotNil(t, params)
+	assert.Equal(t, true, params["live"], "live must be reported when enabled")
+}
+
+func TestExtractUmbrellaParams_LiveDisabledNotReported(t *testing.T) {
+	// The umbrella installs always carry autoscaler.castai-live.enabled (the
+	// builder defaults it to false); the param is only emitted when true.
+	helmRelease := &release.Release{
+		Config: map[string]interface{}{
+			"autoscaler": map[string]interface{}{
+				"castai-live": map[string]interface{}{
+					"enabled": false,
+				},
+			},
+		},
+	}
+
+	params := extractUmbrellaParams(helmRelease)
+
+	assert.NotNil(t, params)
+	assert.NotContains(t, params, "live")
+}
+
+func TestExtractUmbrellaParams_LiveChartDefaultOverriddenByConfig(t *testing.T) {
+	// Chart defaults (live disabled) are overridden when the release config
+	// opts in.
+	helmRelease := &release.Release{
+		Chart: &chart.Chart{
+			Values: map[string]interface{}{
+				"autoscaler": map[string]interface{}{
+					"castai-live": map[string]interface{}{
+						"enabled": false,
+					},
+				},
+			},
+		},
+		Config: map[string]interface{}{
+			"autoscaler": map[string]interface{}{
+				"castai-live": map[string]interface{}{
+					"enabled": true,
+				},
+			},
+		},
+	}
+
+	params := extractUmbrellaParams(helmRelease)
+
+	assert.NotNil(t, params)
+	assert.Equal(t, true, params["live"])
+}
+
+func TestExtractUmbrellaParams_LiveNonBoolIgnored(t *testing.T) {
+	helmRelease := &release.Release{
+		Config: map[string]interface{}{
+			"autoscaler": map[string]interface{}{
+				"castai-live": map[string]interface{}{
+					"enabled": "true", // string, not bool — must be ignored
+				},
+			},
+		},
+	}
+
+	params := extractUmbrellaParams(helmRelease)
+
+	assert.NotNil(t, params)
+	assert.NotContains(t, params, "live")
+}
+
 func TestExtractUmbrellaParams_TagsFromChartDefaults(t *testing.T) {
 	helmRelease := &release.Release{
 		Chart: &chart.Chart{

@@ -333,26 +333,6 @@ rules:
   - update
   - watch
 - apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - scheduling.k8s.io
-  resources:
-  - priorityclasses
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
   - admissionregistration.k8s.io
   resources:
   - mutatingwebhookconfigurations
@@ -360,19 +340,6 @@ rules:
   verbs:
   - create
   - delete
-- apiGroups:
-  - admissionregistration.k8s.io
-  resources:
-  - validatingadmissionpolicies
-  - validatingadmissionpolicybindings
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:
@@ -415,6 +382,66 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: castware-operator-manager-role-ext
+subjects:
+- kind: ServiceAccount
+  name: {{ include "castware-operator.fullname" . }}-controller-manager
+  namespace: castai-agent
+{{- end }}
+---
+{{- if and .Values.extendedPermissions .Values.defaultComponents.umbrella.live.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-manager-role-live-ext
+  labels:
+    castware.cast.ai/extended-permissions: "live"
+    {{- include "castware-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - scheduling.k8s.io
+  resources:
+  - priorityclasses
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - validatingadmissionpolicies
+  - validatingadmissionpolicybindings
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "castware-operator.fullname" . }}-manager-role-livebinding-ext
+  labels:
+    castware.cast.ai/extended-permissions: "live"
+    {{- include "castware-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: castware-operator-manager-role-live-ext
 subjects:
 - kind: ServiceAccount
   name: {{ include "castware-operator.fullname" . }}-controller-manager

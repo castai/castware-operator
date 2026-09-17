@@ -27,12 +27,11 @@ spec:
   component: {{ .Values.defaultComponents.umbrella.component | default "castai-umbrella" | quote }}
   cluster: {{ .Values.defaultComponents.umbrella.cluster | default "castai" | quote }}
   enabled: true
+{{- /* Build the umbrella CR values in one map so overrides merge instead of
+       emitting duplicate keys (e.g. two autoscaler blocks would drop one). */}}
+{{- $umbrellaValues := mergeOverwrite (dict "tags" $umbrellaTags "autoscaler" (dict "castai-live" (dict "enabled" (.Values.defaultComponents.umbrella.live.enabled)))) (.Values.defaultComponents.umbrella.overrides | default dict) }}
   values:
-    tags:
-      {{- toYaml $umbrellaTags | nindent 6 }}
-    {{- if .Values.defaultComponents.umbrella.overrides }}
-    {{- toYaml .Values.defaultComponents.umbrella.overrides | nindent 4 }}
-    {{- end }}
+    {{- toYaml $umbrellaValues | nindent 4 }}
 {{- else }}
 {{- range $name, $comp := .Values.defaultComponents.components }}
 ---

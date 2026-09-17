@@ -655,8 +655,11 @@ func TestComponentReconciler_ValueOverrides(t *testing.T) {
 		r.NoError(err)
 		castai := overrides["global"].(map[string]any)["castai"].(map[string]any)
 		r.NotContains(castai, "clusterID")
-		// No cluster ID injected means no kvisor ref neutralization either.
-		r.NotContains(overrides, "autoscaler")
+		// No cluster ID injected means no kvisor ref neutralization either;
+		// the autoscaler block still carries the castai-live opt-out default.
+		autoscaler := overrides["autoscaler"].(map[string]any)
+		r.NotContains(autoscaler, "castai-kvisor")
+		r.Equal(false, autoscaler["castai-live"].(map[string]any)["enabled"])
 	})
 
 	t.Run("when component.Spec.Component is unknown then add default overrides", func(t *testing.T) {
@@ -697,10 +700,11 @@ func TestComponentReconciler_ValueOverrides(t *testing.T) {
 		r.Equal(true, tags["readonly"])
 
 		// The builder does NOT translate tags into autoscaler enables: the only
-		// autoscaler content is the kvisor cluster-ID ref neutralization that
-		// accompanies the injected clusterID.
+		// autoscaler content beyond the default castai-live opt-out is the kvisor
+		// cluster-ID ref neutralization that accompanies the injected clusterID.
 		autoscaler := overrides["autoscaler"].(map[string]any)
-		r.Len(autoscaler, 1)
+		r.Len(autoscaler, 2)
+		r.Equal(false, autoscaler["castai-live"].(map[string]any)["enabled"])
 		kvisor := autoscaler["castai-kvisor"].(map[string]any)["castai"].(map[string]any)
 		r.Equal(map[string]any{"name": ""}, kvisor["clusterIdConfigMapKeyRef"])
 		r.Equal(map[string]any{"name": ""}, kvisor["clusterIdSecretKeyRef"])

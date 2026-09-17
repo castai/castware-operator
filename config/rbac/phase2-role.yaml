@@ -341,31 +341,8 @@ rules:
       - "list"
       - "update"
       - "watch"
-  # Cluster-scope secrets read (escalation requirement for the umbrella's
-  # castai-live-daemon ClusterRole, which grants secrets get/list/watch).
-  - apiGroups:
-      - ""
-    resources:
-      - "secrets"
-    verbs:
-      - "get"
-      - "list"
-      - "watch"
-  # PriorityClasses created by castai-live (node-autoscaler/full modes).
-  - apiGroups:
-      - "scheduling.k8s.io"
-    resources:
-      - "priorityclasses"
-    verbs:
-      - "create"
-      - "delete"
-      - "get"
-      - "list"
-      - "patch"
-      - "update"
-      - "watch"
   # Webhook configurations managed by umbrella sub-components (pod-mutator,
-  # pod-pinner, live, kvisor). get/list/patch/update/watch come from the base
+  # pod-pinner, kvisor). get/list/patch/update/watch come from the base
   # manager-role; the umbrella install additionally needs create/delete.
   - apiGroups:
       - "admissionregistration.k8s.io"
@@ -375,20 +352,6 @@ rules:
     verbs:
       - "create"
       - "delete"
-  # ValidatingAdmissionPolicies created by castai-live (ongoing-migration-policy).
-  - apiGroups:
-      - "admissionregistration.k8s.io"
-    resources:
-      - "validatingadmissionpolicies"
-      - "validatingadmissionpolicybindings"
-    verbs:
-      - "create"
-      - "delete"
-      - "get"
-      - "list"
-      - "patch"
-      - "update"
-      - "watch"
   # Update verb the umbrella's sub-chart ClusterRoles grant on roles/cluster-roles
   # (RBAC escalation requires the operator to hold what it installs).
   - apiGroups:

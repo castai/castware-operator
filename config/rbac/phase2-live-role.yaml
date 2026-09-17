@@ -1,0 +1,70 @@
+# Extra cluster-scoped permissions required ONLY when the umbrella installs
+# castai-live (opt-in via defaultComponents.umbrella.live.enabled).
+#
+# castai-live is disabled in umbrella installs by default, and these rules stay
+# out of the base extended-permissions role so the operator service account does
+# not hold cluster-scope secrets access (or PriorityClass / ValidatingAdmissionPolicy
+# management) unless live is explicitly enabled. They are gated by the same label
+# value ("live") that the chart_generator uses to emit the
+# `{{- if and .Values.extendedPermissions .Values.defaultComponents.umbrella.live.enabled }}`
+# conditional in templates/rbac-ext.yaml.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role-live-ext
+  labels:
+    castware.cast.ai/extended-permissions: "live"
+rules:
+  # Cluster-scope secrets read: RBAC-escalation requirement for the umbrella's
+  # castai-live-daemon ClusterRole, which grants secrets get/list/watch.
+  - apiGroups:
+      - ""
+    resources:
+      - "secrets"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
+  # PriorityClasses created by the castai-live daemon (castai-live-daemon-priority).
+  - apiGroups:
+      - "scheduling.k8s.io"
+    resources:
+      - "priorityclasses"
+    verbs:
+      - "create"
+      - "delete"
+      - "get"
+      - "list"
+      - "patch"
+      - "update"
+      - "watch"
+  # ValidatingAdmissionPolicies created by castai-live (ongoing-migration-policy).
+  - apiGroups:
+      - "admissionregistration.k8s.io"
+    resources:
+      - "validatingadmissionpolicies"
+      - "validatingadmissionpolicybindings"
+    verbs:
+      - "create"
+      - "delete"
+      - "get"
+      - "list"
+      - "patch"
+      - "update"
+      - "watch"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: manager-role-livebinding-ext
+  labels:
+    castware.cast.ai/extended-permissions: "live"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: manager-role-live-ext
+subjects:
+- kind: ServiceAccount
+  name: castware-operator-controller-manager
+  namespace: castai-agent

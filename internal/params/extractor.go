@@ -141,6 +141,7 @@ func extractUmbrellaParams(helmRelease *release.Release) map[string]interface{} 
 	}
 
 	tags := make(map[string]bool)
+	live := false
 	for _, helmParams := range paramsLookup {
 		tagsBlock, ok := helmParams["tags"].(map[string]interface{})
 		if !ok {
@@ -153,8 +154,28 @@ func extractUmbrellaParams(helmRelease *release.Release) map[string]interface{} 
 		}
 	}
 
+	// castai-live is opt-in (defaults to disabled); report it as a single bool
+	// param, only when enabled, so Mothership sees it like a mode tag. Chart
+	// defaults are checked first, then the release config overrides them.
+	for _, helmParams := range paramsLookup {
+		autoscaler, ok := helmParams["autoscaler"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		liveCfg, ok := autoscaler["castai-live"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if enabled, ok := liveCfg["enabled"].(bool); ok {
+			live = enabled
+		}
+	}
+
 	if len(tags) > 0 {
 		params["tags"] = tags
+	}
+	if live {
+		params["live"] = true
 	}
 
 	return params
