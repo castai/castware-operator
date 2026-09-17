@@ -309,6 +309,15 @@ rules:
       - "get"
       - "list"
       - "watch"
+  # For AKS node class discovery (castai-agent).
+  - apiGroups:
+      - "karpenter.azure.com"
+    resources:
+      - "aksnodeclasses"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
   # For karpenter nodeclaims deletion (evictor).
   - apiGroups:
       - "karpenter.sh"
