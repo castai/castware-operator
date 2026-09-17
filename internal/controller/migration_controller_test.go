@@ -1162,6 +1162,83 @@ func TestMigrationReconciler_PermissionGate_ReceivesDerivedTag(t *testing.T) {
 // snapshot was taken — uninstalling it would silently discard its user values
 // (no CR, no snapshot entry). Instead the drifted release is left for the
 // install-phase drift guard, which blocks the migration on it.
+// TestMigrationReconciler_SnapshotNormalizesYAMLTypedConfig asserts the
+// snapshot tolerates YAML-decoded value types in a covered release's config
+// (map[interface{}]interface{} — what SDK/third-party-written releases can
+// carry, unlike the JSON-decoded configs helm storage returns): the values
+// are normalized to string-keyed JSON rather than failing the marshal, and a
+// config that still cannot be represented in JSON degrades to a value-less
+// snapshot entry instead of hard-blocking the migration.
+func TestMigrationReconciler_SnapshotNormalizesYAMLTypedConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("yaml-typed config is snapshotted normalized", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseUninstallIndividuals)
+		umbrella.Status.MigrationDerivedTag = components.UmbrellaTagReadonly
+		ops := newMigrationTestOps(t,
+			migCluster(),
+			umbrella,
+			migIndividual(components.ComponentNameAgent),
+		)
+		expectAgentOnlyIndividual(ops)
+		// The kvisor standalone's config carries a nested
+		// map[interface{}]interface{} — json.Marshal alone would reject it.
+		kvisor := migRelease(components.ComponentNameKvisor)
+		kvisor.Config = map[string]any{
+			"plain":  "x",
+			"nested": map[any]any{"k": "v"},
+		}
+		ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+			Return([]*release.Release{kvisor}, nil)
+		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+			Namespace: migNamespace, ReleaseName: components.ComponentNameKvisor, Wait: true, IgnoreNotFound: true,
+		}).Return(nil, nil)
+
+		reconcileOnce(t, ops)
+
+		u := getUmbrella(t, ops)
+		r.Equal(castwarev1alpha1.MigrationPhaseInstallUmbrella, u.Status.MigrationPhase,
+			"the migration is not blocked by the yaml-typed config")
+		r.Len(u.Status.AbsorbedReleases, 1, "kvisor snapshotted")
+		r.JSONEq(`{"plain":"x","nested":{"k":"v"}}`, string(u.Status.AbsorbedReleases[0].Values.Raw),
+			"the interface-keyed map is snapshotted as string-keyed JSON")
+	})
+
+	t.Run("unrepresentable config degrades to a value-less snapshot entry", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseUninstallIndividuals)
+		umbrella.Status.MigrationDerivedTag = components.UmbrellaTagReadonly
+		ops := newMigrationTestOps(t,
+			migCluster(),
+			umbrella,
+			migIndividual(components.ComponentNameAgent),
+		)
+		expectAgentOnlyIndividual(ops)
+		// A value neither json.Marshal nor the normalizer can represent.
+		kvisor := migRelease(components.ComponentNameKvisor)
+		kvisor.Config = map[string]any{
+			"bad": make(chan int),
+		}
+		ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+			Return([]*release.Release{kvisor}, nil)
+		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+			Namespace: migNamespace, ReleaseName: components.ComponentNameKvisor, Wait: true, IgnoreNotFound: true,
+		}).Return(nil, nil)
+
+		reconcileOnce(t, ops)
+
+		u := getUmbrella(t, ops)
+		r.Equal(castwarev1alpha1.MigrationPhaseInstallUmbrella, u.Status.MigrationPhase,
+			"the migration is not hard-blocked by the unrepresentable config")
+		r.Len(u.Status.AbsorbedReleases, 1, "kvisor still snapshotted")
+		r.Nil(u.Status.AbsorbedReleases[0].Values,
+			"entry carries no values; rollback will reinstall with chart defaults")
+	})
+}
+
 func TestMigrationReconciler_SnapshotResume_DoesNotRecapture(t *testing.T) {
 	t.Parallel()
 	r := require.New(t)

@@ -61,7 +61,6 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -427,13 +426,19 @@ func (r *MigrationReconciler) phaseUninstallIndividuals(ctx context.Context, log
 			// stripped): rollback reinstalls the release exactly as it was,
 			// and the umbrella install's carry-over path strips the
 			// umbrella-managed keys itself (see AbsorbedRelease.Values). A
-			// nil/empty config omits Values entirely.
+			// nil/empty config omits Values entirely. YAML-decoded value types
+			// (e.g. map[interface{}]interface{}) are normalized by
+			// utils.MarshalReleaseConfig; a config that still cannot be
+			// represented in JSON degrades to a value-less snapshot entry —
+			// the migration must not hard-block on it (rollback then
+			// reinstalls with chart defaults, carry-over skips the chart).
 			if len(rel.Config) > 0 {
-				raw, err := json.Marshal(rel.Config)
+				raw, err := utils.MarshalReleaseConfig(rel.Config)
 				if err != nil {
-					return ctrl.Result{}, fmt.Errorf("marshal covered release %s config for snapshot: %w", rel.ReleaseName, err)
+					log.WithError(err).Warnf("Failed to marshal covered release %s config for snapshot; snapshotting without its user values", rel.ReleaseName)
+				} else if len(raw) > 0 {
+					entry.Values = &apiextensionsv1.JSON{Raw: raw}
 				}
-				entry.Values = &apiextensionsv1.JSON{Raw: raw}
 			}
 			snapshot = append(snapshot, entry)
 		}
