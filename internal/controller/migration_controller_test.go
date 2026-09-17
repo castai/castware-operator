@@ -852,6 +852,8 @@ func TestMigrationReconciler_UmbrellaOnlyStandalone_AbsorbedByMigration(t *testi
 	r.Equal(components.ComponentNameKvisor, ar.ChartName)
 	r.Equal("1.0.0", ar.ChartVersion)
 	r.NotNil(ar.Values, "release config snapshotted raw (not stripped)")
+	r.Equal("https://castai.github.io/helm-charts", ar.ChartRepoURL,
+		"rollback re-fetch source pinned at snapshot time from the cluster's component repo")
 
 	// InstallUmbrella: proceeds under the derived tag with the absorbed
 	// release's user config carried into the umbrella values.
@@ -1314,13 +1316,20 @@ func TestMigrationReconciler_Rollback_RestoresAbsorbedReleases(t *testing.T) {
 			ReleaseName:  "custom-kvisor",
 			ChartName:    components.ComponentNameKvisor,
 			ChartVersion: "1.2.3",
+			// The repo pinned at snapshot time: the rollback must re-fetch
+			// from HERE, even though it differs from the cluster's current
+			// component repo (exercises the pinned-repo path).
+			ChartRepoURL: "https://mirror.example.com/charts",
 			Values:       &apiextensionsv1.JSON{Raw: []byte(`{"k":"v"}`)},
 		},
 		{
 			ReleaseName:  components.ComponentNameEvictor,
 			ChartName:    components.ComponentNameEvictor,
 			ChartVersion: "0.9.0",
-			// no Values: the release was installed with chart defaults
+			// no Values: the release was installed with chart defaults; and no
+			// ChartRepoURL: a legacy snapshot entry written before the repo was
+			// pinned — the rollback must fall back to the cluster's current
+			// component repo (https://castai.github.io/helm-charts).
 		},
 	}
 	// Mid-migration state: finalizer armed, umbrella readonly, individuals
@@ -1342,15 +1351,17 @@ func TestMigrationReconciler_Rollback_RestoresAbsorbedReleases(t *testing.T) {
 		Return(failedRelease, nil)
 
 	// Rollback: uninstall the umbrella, then reinstall each absorbed release
-	// from the snapshot in snapshot order — exact chart source, release name
-	// and values (nil for the entry with no values).
+	// from the snapshot in snapshot order — exact chart source (the pinned
+	// repo for the first entry, the cluster-repo fallback for the legacy
+	// second entry), release name and values (nil for the entry with no
+	// values).
 	gomock.InOrder(
 		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
 			Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella, Wait: true, IgnoreNotFound: true,
 		}).Return(nil, nil),
 		ops.mockHelm.EXPECT().Install(gomock.Any(), helm.InstallOptions{
 			ChartSource: &helm.ChartSource{
-				RepoURL: "https://castai.github.io/helm-charts",
+				RepoURL: "https://mirror.example.com/charts",
 				Name:    components.ComponentNameKvisor,
 				Version: "1.2.3",
 			},

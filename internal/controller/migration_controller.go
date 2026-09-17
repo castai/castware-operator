@@ -416,6 +416,12 @@ func (r *MigrationReconciler) phaseUninstallIndividuals(ctx context.Context, log
 				ReleaseName:  rel.ReleaseName,
 				ChartName:    rel.ChartName,
 				ChartVersion: rel.ChartVersion,
+				// Pin the rollback's re-fetch source at snapshot time. Helm
+				// releases do not record the repository they were installed
+				// from, so the original source is unrecoverable; the cluster's
+				// component repo is the operator's best knowledge of where CAST
+				// charts come from for this cluster.
+				ChartRepoURL: cluster.Spec.HelmRepoURL,
 			}
 			// The release's user-supplied config AS INSTALLED (raw, NOT
 			// stripped): rollback reinstalls the release exactly as it was,
@@ -882,10 +888,15 @@ func (r *MigrationReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 	// installed (release name, chart, version, raw user config), BEFORE the
 	// individual CRs are re-enabled: the rollback must restore the full
 	// pre-migration regime, and nothing else reinstalls these releases — they
-	// have no Component CRs. BEST-EFFORT: the rollback must complete, so a
-	// failed reinstall is logged and surfaced on the failure status/report
-	// (via the wrapped cause below), not a hard error that would strand the
-	// rollback mid-way.
+	// have no Component CRs. The chart is re-fetched from the repo pinned in
+	// the snapshot (the cluster's component repo at migration start; helm
+	// releases do not record their original source, so that is the best
+	// available — see AbsorbedRelease.ChartRepoURL), falling back to the
+	// cluster's CURRENT repo for legacy snapshots without the field. BEST-
+	// EFFORT: the rollback must complete, so a failed reinstall is logged and
+	// surfaced on the failure status/report (via the wrapped cause below)
+	// with the exact source it attempted, not a hard error that would strand
+	// the rollback mid-way.
 	for _, ar := range component.Status.AbsorbedReleases {
 		var valuesOverrides map[string]any
 		if ar.Values != nil && len(ar.Values.Raw) > 0 {
@@ -899,10 +910,16 @@ func (r *MigrationReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 				valuesOverrides = parsed
 			}
 		}
-		log.Infof("Reinstalling absorbed standalone release %q (%s:%s)", ar.ReleaseName, ar.ChartName, ar.ChartVersion)
+		repoURL := ar.ChartRepoURL
+		if repoURL == "" {
+			// Legacy snapshot written before the repo was pinned: fall back to
+			// the cluster's current component repo.
+			repoURL = cluster.Spec.HelmRepoURL
+		}
+		log.Infof("Reinstalling absorbed standalone release %q (%s:%s from %s)", ar.ReleaseName, ar.ChartName, ar.ChartVersion, repoURL)
 		if _, err := r.HelmClient.Install(ctx, helm.InstallOptions{
 			ChartSource: &helm.ChartSource{
-				RepoURL: cluster.Spec.HelmRepoURL,
+				RepoURL: repoURL,
 				Name:    ar.ChartName,
 				Version: ar.ChartVersion,
 			},
@@ -912,7 +929,7 @@ func (r *MigrationReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 			ValuesOverrides: valuesOverrides,
 		}); err != nil {
 			log.WithError(err).Errorf("Failed to reinstall absorbed standalone release %q; continuing rollback", ar.ReleaseName)
-			cause = fmt.Errorf("%w; additionally, reinstalling absorbed standalone release %q failed: %v — it may need manual restoration", cause, ar.ReleaseName, err)
+			cause = fmt.Errorf("%w; additionally, reinstalling absorbed standalone release %q (chart %s:%s from repo %s) failed: %v — it may need manual restoration", cause, ar.ReleaseName, ar.ChartName, ar.ChartVersion, repoURL, err)
 		}
 	}
 

@@ -185,6 +185,16 @@ type AbsorbedRelease struct {
 	ChartName string `json:"chartName"`
 	// ChartVersion is the resolved version of the standalone chart at uninstall time.
 	ChartVersion string `json:"chartVersion,omitempty"`
+	// ChartRepoURL is the helm repository the rollback re-fetches the chart
+	// from, pinned at snapshot time from the cluster's component repo
+	// (spec.helmRepoURL). Helm releases do not record the repository they were
+	// installed from, so the standalone's ORIGINAL source cannot be recovered:
+	// if it was installed from a different repo or registry, the rollback
+	// re-fetches from this one at the snapshotted version — which may fail or
+	// fetch a different artifact; such a failure is surfaced on the migration
+	// failure condition for manual restoration. Empty on legacy snapshots
+	// (the rollback then falls back to the cluster's current spec.helmRepoURL).
+	ChartRepoURL string `json:"chartRepoURL,omitempty"`
 	// Values is the release's user-supplied config as installed (raw, NOT
 	// stripped): rollback reinstalls the release exactly as it was, and the
 	// umbrella install's carry-over path strips umbrella-managed keys itself
