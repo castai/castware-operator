@@ -337,8 +337,11 @@ spec:
                       type: string
                     values:
                       description: |-
-                        Values is the release's user-supplied config (umbrella-managed keys
-                        stripped), as raw JSON. nil/empty when the release had no user values.
+                        Values is the release's user-supplied config as installed (raw, NOT
+                        stripped): rollback reinstalls the release exactly as it was, and the
+                        umbrella install's carry-over path strips umbrella-managed keys itself
+                        (values.CarryOverCoveredReleaseValues). nil/empty when the release had
+                        no user values.
                       x-kubernetes-preserve-unknown-fields: true
                   required:
                   - chartName
