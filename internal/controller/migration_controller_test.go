@@ -159,10 +159,41 @@ func expectResolveNamesPresent(ops *migrationTestOps) {
 	}
 }
 
-// expectNoUmbrellaOnlyCharts wires the helm listing expectation for the
-// pre-flight (phaseMarkReadonly) and pre-install (phaseInstallUmbrella) guard:
-// no standalone umbrella-managed releases present, so the migration proceeds.
-func expectNoUmbrellaOnlyCharts(ops *migrationTestOps) {
+// expectNoCoveredStandaloneReleases wires the helm listing expectation for
+// the covered-release probes (MarkReadonly's present-set derivation and
+// InstallUmbrella's drift guard): no standalone umbrella-covered releases
+// present, so the migration proceeds unobstructed.
+func expectNoCoveredStandaloneReleases(ops *migrationTestOps) {
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return(nil, nil).AnyTimes()
+}
+
+// expectAgentOnlyIndividual wires the Mothership + helm expectations for the
+// present-set probe with only the agent installed as an operator individual:
+// the umbrella and agent resolve (release names equal to the component
+// names), spot-handler and cluster-controller are unknown to Mothership
+// (ErrNotFound, so nothing to probe), and the agent release is present.
+func expectAgentOnlyIndividual(ops *migrationTestOps) {
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).AnyTimes()
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameAgent).
+		Return(&castai.Component{Name: components.ComponentNameAgent, ReleaseName: components.ComponentNameAgent}, nil).AnyTimes()
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
+		Return(nil, castai.ErrNotFound).AnyTimes()
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameClusterController).
+		Return(nil, castai.ErrNotFound).AnyTimes()
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameAgent}).
+		Return(migRelease(components.ComponentNameAgent), nil).AnyTimes()
+}
+
+// expectCoveredReleasesAbsorbed wires the helm listing sequence for a full
+// absorb run: the covered standalone releases are present for the first two
+// reconciles (MarkReadonly's tag derivation and UninstallIndividuals'
+// snapshot + uninstall listing), then absent for the install-phase drift
+// guard.
+func expectCoveredReleasesAbsorbed(ops *migrationTestOps, rels ...*release.Release) {
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return(rels, nil).Times(2)
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
 		Return(nil, nil).AnyTimes()
 }
@@ -220,8 +251,9 @@ func TestMigrationReconciler_NoOpForNonUmbrella(t *testing.T) {
 
 // TestMigrationReconciler_MarkReadonly verifies the first phase sets readonly on
 // the umbrella and present individual CRs, then advances. The permission gate
-// must carry the umbrella's spec.values as component_params so the server
-// validates the RBAC surface the install will actually render.
+// must carry the umbrella's spec.values (with the migration's derived tag
+// folded in) as component_params so the server validates the RBAC surface
+// the install will actually render.
 func TestMigrationReconciler_MarkReadonly(t *testing.T) {
 	t.Parallel()
 	r := require.New(t)
@@ -243,7 +275,7 @@ func TestMigrationReconciler_MarkReadonly(t *testing.T) {
 			return &castai.ValidateComponentInstallResponse{Allowed: true}, nil
 		}).AnyTimes()
 	expectResolveNamesPresent(ops)
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 
 	reconcileOnce(t, ops)
 
@@ -261,16 +293,24 @@ func TestMigrationReconciler_MarkReadonly(t *testing.T) {
 	tags, ok := got.ComponentParams["tags"].(map[string]any)
 	r.True(ok, "component_params.tags should be an object, got %T", got.ComponentParams["tags"])
 	r.Equal(true, tags["readonly"])
+	// The tag was derived from the full present set (agent + spot-handler +
+	// cluster-controller → node-autoscaler, the narrowest tag covering
+	// cluster-controller), persisted, and folded into the gate payload next
+	// to the user's own tag.
+	r.Equal(true, tags[components.UmbrellaTagNodeAutoscaler], "derived tag folded into the gate payload")
+	r.Equal(components.UmbrellaTagNodeAutoscaler, u.Status.MigrationDerivedTag,
+		"derived tag persisted in MarkReadonly before any uninstall")
 }
 
 // TestMigrationReconciler_PermissionGate_Blocked asserts the pre-migration
 // permission gate: when Mothership's validateInstall refuses the umbrella
 // install (e.g. an under-permissioned operator service account for the
 // umbrella's broader RBAC surface), the migration is refused before ANY
-// release is touched — no helm interactions (no mock expectations are wired, so
-// any call fails the test), no finalizer armed, no readonly set, phase not
+// release is touched — no finalizer armed, no readonly set, phase not
 // advanced — and the CR carries Migrating=False / MigrationBlocked with the
-// Mothership block reason. A later allowed validation lets the migration
+// Mothership block reason. Before the refusal only read-only probing (the
+// present-set derivation feeding the gate) and status writes (derived tag +
+// blocked condition) happen. A later allowed validation lets the migration
 // proceed, so fixing the permissions auto-recovers.
 func TestMigrationReconciler_PermissionGate_Blocked(t *testing.T) {
 	t.Parallel()
@@ -283,6 +323,10 @@ func TestMigrationReconciler_PermissionGate_Blocked(t *testing.T) {
 		agent,
 		migIndividual(components.ComponentNameSpotHandler),
 	)
+	// Present-set probe (read-only): individuals resolve and no covered
+	// standalone releases. The tag it derives feeds the gate below.
+	expectResolveNamesPresent(ops)
+	expectNoCoveredStandaloneReleases(ops)
 	// Gate refuses with a block reason. No other Mothership/helm expectations:
 	// a blocked migration must not touch anything else.
 	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
@@ -304,7 +348,8 @@ func TestMigrationReconciler_PermissionGate_Blocked(t *testing.T) {
 	r.Equal(castwarev1alpha1.ReasonMigrationBlocked, cond.Reason)
 	r.Contains(cond.Message, "service account lacks permissions for the umbrella chart")
 
-	// The individuals are untouched (no readonly, releases not probed).
+	// The individuals are untouched (no readonly; their releases were only
+	// probed, never modified).
 	for _, sub := range []string{components.ComponentNameAgent, components.ComponentNameSpotHandler} {
 		ind := &castwarev1alpha1.Component{}
 		r.NoError(ops.client.Get(context.Background(), types.NamespacedName{Namespace: migNamespace, Name: sub}, ind))
@@ -315,7 +360,7 @@ func TestMigrationReconciler_PermissionGate_Blocked(t *testing.T) {
 	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
 		Return(&castai.ValidateComponentInstallResponse{Allowed: true}, nil).AnyTimes()
 	expectResolveNamesPresent(ops)
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 
 	reconcileOnce(t, ops)
 
@@ -339,7 +384,11 @@ func TestMigrationReconciler_PermissionGate_TransientError(t *testing.T) {
 		migUmbrella(""),
 		migIndividual(components.ComponentNameAgent),
 	)
-	// No other Mothership/helm expectations: the reconcile must stop at the gate.
+	// Present-set probe (read-only): individuals resolve and no covered
+	// standalone releases; the derived tag feeds the gate.
+	expectResolveNamesPresent(ops)
+	expectNoCoveredStandaloneReleases(ops)
+	// The gate itself fails: the reconcile must stop there.
 	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
 		Return(nil, errors.New("connection refused")).Times(1)
 
@@ -360,7 +409,7 @@ func TestMigrationReconciler_PermissionGate_TransientError(t *testing.T) {
 }
 
 // TestMigrationReconciler_MothershipUnreachable_Degraded asserts a persistent
-// presentIndividuals failure (Mothership/auth unreachable) is surfaced, not
+// presentComponents failure (Mothership/auth unreachable) is surfaced, not
 // swallowed: the reconcile returns an error (controller-runtime records it and
 // applies exponential backoff instead of a fixed 1-minute requeue) and the CR
 // carries Migrating=False / MigrationDegraded with the failure reason. A
@@ -373,11 +422,12 @@ func TestMigrationReconciler_MothershipUnreachable_Degraded(t *testing.T) {
 		migUmbrella(""),
 		migIndividual(components.ComponentNameAgent),
 	)
-	// Both pre-flight guards pass; the failure happens downstream in
-	// presentIndividuals (see PermissionGate_TransientError for the gate itself
-	// degrading on an unreachable Mothership).
+	// Both the permission gate and the present-set probe run before anything
+	// else; the failure happens in presentComponents' individuals half (see
+	// PermissionGate_TransientError for the gate itself degrading on an
+	// unreachable Mothership).
 	expectPermissionGatePass(ops)
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 	// Mothership lookup fails once (unknown error, not ErrNotFound — ResolveNames
 	// fails closed only when nothing resolves).
 	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
@@ -399,7 +449,7 @@ func TestMigrationReconciler_MothershipUnreachable_Degraded(t *testing.T) {
 		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
 	})
 	r.Error(err, "Mothership failure must surface as a reconcile error, not a silent requeue")
-	r.ErrorContains(err, "resolve present individuals")
+	r.ErrorContains(err, "resolve present standalone components")
 
 	u := getUmbrella(t, ops)
 	cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
@@ -438,6 +488,9 @@ func TestMigrationReconciler_UninstallIndividuals_AgentExcluded(t *testing.T) {
 		migIndividual(components.ComponentNameClusterController),
 	)
 	expectResolveNamesPresent(ops)
+	// No covered standalone releases: the phase lists them before the
+	// individual uninstalls.
+	expectNoCoveredStandaloneReleases(ops)
 
 	// Agent is excluded: only cluster-controller + spot-handler are uninstalled,
 	// in reverse phase order (cluster-controller first, then spot-handler).
@@ -467,7 +520,7 @@ func TestMigrationReconciler_InstallUmbrella_AgentOnly_ReadonlyTag(t *testing.T)
 		migUmbrella(castwarev1alpha1.MigrationPhaseInstallUmbrella),
 		migIndividual(components.ComponentNameAgent),
 	)
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 	// ResolveNames probes all sub-components: agent is present, spot-handler and
 	// cluster-controller are absent on Mothership (ErrNotFound) so they are skipped.
 	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
@@ -506,7 +559,7 @@ func TestMigrationReconciler_InstallUmbrella_CarriesOverIndividualValues(t *test
 		migIndividualWithValues(components.ComponentNameAgent, agentValues),
 		migIndividualWithValues(components.ComponentNameSpotHandler, spotHandlerValues),
 	)
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 	// Agent + spot-handler present; cluster-controller absent on Mothership.
 	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
 		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).AnyTimes()
@@ -723,14 +776,188 @@ func TestMigrationReconciler_VerifyDeadlineExceeded(t *testing.T) {
 		"fresh start (neither field nor condition) is not exceeded")
 }
 
-// TestMigrationReconciler_UmbrellaOnlyStandalone_BlocksMigration asserts a
-// standalone release of an umbrella-managed chart the operator does not
-// support (castai-kvisor) blocks the migration before any mutation: no
-// finalizer, no readonly, phase unchanged, Migrating=False with
-// ReasonMigrationBlocked. Once the standalone release is removed, the next
-// reconcile proceeds — the block is self-healing and needs no operator
-// intervention.
-func TestMigrationReconciler_UmbrellaOnlyStandalone_BlocksMigration(t *testing.T) {
+// TestMigrationReconciler_UmbrellaOnlyStandalone_AbsorbedByMigration asserts a
+// standalone release of an umbrella-covered chart the operator does not
+// manage (castai-kvisor) is ABSORBED, not blocked: MarkReadonly derives the
+// umbrella tag from the full present set (individuals + covered standalone)
+// and persists it before any uninstall; UninstallIndividuals snapshots the
+// covered release into status.absorbedReleases BEFORE uninstalling it;
+// InstallUmbrella proceeds under the derived tag and carries the absorbed
+// release's user config into the umbrella values.
+func TestMigrationReconciler_UmbrellaOnlyStandalone_AbsorbedByMigration(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	kvisor := migRelease(components.ComponentNameKvisor)
+	kvisor.Config = map[string]interface{}{"kvisorKey": "kvisorValue"}
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		migUmbrella(""),
+		migIndividual(components.ComponentNameAgent),
+	)
+	expectPermissionGatePass(ops)
+	// Agent present; spot-handler and cluster-controller absent on Mothership.
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).AnyTimes()
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameAgent).
+		Return(&castai.Component{Name: components.ComponentNameAgent, ReleaseName: components.ComponentNameAgent}, nil).AnyTimes()
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameSpotHandler).
+		Return(nil, castai.ErrNotFound).AnyTimes()
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameClusterController).
+		Return(nil, castai.ErrNotFound).AnyTimes()
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameAgent}).
+		Return(migRelease(components.ComponentNameAgent), nil).AnyTimes()
+	// The standalone castai-kvisor release is present for the first two
+	// reconciles (MarkReadonly's tag derivation and UninstallIndividuals'
+	// snapshot + uninstall); gone afterwards (the install-phase drift guard
+	// must see an empty list).
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return([]*release.Release{kvisor}, nil).Times(2)
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return(nil, nil).AnyTimes()
+	// UninstallIndividuals uninstalls the covered standalone release (the
+	// agent is never uninstalled; spot-handler/cluster-controller are absent).
+	ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+		Namespace: migNamespace, ReleaseName: components.ComponentNameKvisor, Wait: true, IgnoreNotFound: true,
+	}).Return(nil, nil)
+	// Umbrella not yet installed; the install succeeds.
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(nil, errors.New("no release found"))
+	var captured helm.InstallOptions
+	ops.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, opts helm.InstallOptions) (*release.Release, error) {
+			captured = opts
+			return migRelease(components.ComponentNameUmbrella), nil
+		})
+
+	// MarkReadonly: no blocking — the covered standalone release is migration
+	// input. The tag is derived from the full present set (agent + kvisor →
+	// readonly, the narrowest tag covering both) and persisted.
+	reconcileOnce(t, ops)
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase,
+		"migration proceeds with the covered standalone release present")
+	r.Equal(components.UmbrellaTagReadonly, u.Status.MigrationDerivedTag,
+		"tag derived from the full present set (agent + kvisor)")
+	r.True(u.Spec.Readonly, "umbrella readonly while migrating")
+	r.True(controllerutil.ContainsFinalizer(u, MigrationFinalizer), "finalizer armed")
+
+	// UninstallIndividuals: the covered release is snapshotted BEFORE being
+	// uninstalled, so the data survives both.
+	reconcileOnce(t, ops)
+	u = getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseInstallUmbrella, u.Status.MigrationPhase)
+	r.Len(u.Status.AbsorbedReleases, 1, "covered release snapshotted")
+	ar := u.Status.AbsorbedReleases[0]
+	r.Equal(components.ComponentNameKvisor, ar.ReleaseName)
+	r.Equal(components.ComponentNameKvisor, ar.ChartName)
+	r.Equal("1.0.0", ar.ChartVersion)
+	r.NotNil(ar.Values, "release config snapshotted raw (not stripped)")
+	r.Equal("https://castai.github.io/helm-charts", ar.ChartRepoURL,
+		"rollback re-fetch source pinned at snapshot time from the cluster's component repo")
+
+	// InstallUmbrella: proceeds under the derived tag with the absorbed
+	// release's user config carried into the umbrella values.
+	reconcileOnce(t, ops)
+	u = getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseVerify, u.Status.MigrationPhase)
+	tags, ok := captured.ValuesOverrides["tags"].(map[string]any)
+	r.True(ok, "derived tags present in install values")
+	r.True(tags[components.UmbrellaTagReadonly].(bool), "install uses the persisted derived tag")
+	as, ok := captured.ValuesOverrides["autoscaler"].(map[string]any)
+	r.True(ok, "autoscaler block present in install values")
+	kv, ok := as[components.ComponentNameKvisor].(map[string]any)
+	r.True(ok, "absorbed kvisor config carried under autoscaler.castai-kvisor")
+	r.Equal("kvisorValue", kv["kvisorKey"])
+}
+
+// TestMigrationReconciler_AbsorbsCoveredReleases_NodeAutoscalerTag asserts the
+// tag derivation across the full absorb sequence when a node-side covered
+// standalone (castai-evictor) is present next to a readonly-set one
+// (castai-kvisor) and the agent: the derived tag is node-autoscaler (the
+// narrowest tag covering the evictor), BOTH covered releases are snapshotted
+// and uninstalled, and the umbrella install runs under tags.node-autoscaler
+// with the evictor's user config carried into the umbrella values.
+func TestMigrationReconciler_AbsorbsCoveredReleases_NodeAutoscalerTag(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	evictor := migRelease(components.ComponentNameEvictor)
+	evictor.Config = map[string]interface{}{"evictorKey": "evictorValue"}
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		migUmbrella(""),
+		migIndividual(components.ComponentNameAgent),
+	)
+	expectPermissionGatePass(ops)
+	expectAgentOnlyIndividual(ops)
+	expectCoveredReleasesAbsorbed(ops, migRelease(components.ComponentNameKvisor), evictor)
+	// Both covered releases are uninstalled, in the covered listing's
+	// release-name order (castai-evictor sorts before castai-kvisor).
+	gomock.InOrder(
+		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+			Namespace: migNamespace, ReleaseName: components.ComponentNameEvictor, Wait: true, IgnoreNotFound: true,
+		}).Return(nil, nil),
+		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+			Namespace: migNamespace, ReleaseName: components.ComponentNameKvisor, Wait: true, IgnoreNotFound: true,
+		}).Return(nil, nil),
+	)
+	// Umbrella not yet installed; the install succeeds.
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(nil, errors.New("no release found"))
+	var captured helm.InstallOptions
+	ops.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, opts helm.InstallOptions) (*release.Release, error) {
+			captured = opts
+			return migRelease(components.ComponentNameUmbrella), nil
+		})
+
+	// MarkReadonly: the tag is derived from the full present set (agent +
+	// kvisor + evictor → node-autoscaler, the narrowest tag covering the
+	// node-side evictor) and persisted before any uninstall.
+	reconcileOnce(t, ops)
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase,
+		"migration proceeds with the covered standalone releases present")
+	r.Equal(components.UmbrellaTagNodeAutoscaler, u.Status.MigrationDerivedTag,
+		"tag derived from the full present set (agent + kvisor + evictor)")
+
+	// UninstallIndividuals: both covered releases snapshotted BEFORE being
+	// uninstalled.
+	reconcileOnce(t, ops)
+	u = getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseInstallUmbrella, u.Status.MigrationPhase)
+	r.Len(u.Status.AbsorbedReleases, 2, "both covered releases snapshotted")
+	// Snapshot entries keep the covered listing's release-name order.
+	r.Equal(components.ComponentNameEvictor, u.Status.AbsorbedReleases[0].ReleaseName)
+	r.Equal(components.ComponentNameEvictor, u.Status.AbsorbedReleases[0].ChartName)
+	r.Equal("1.0.0", u.Status.AbsorbedReleases[0].ChartVersion)
+	r.NotNil(u.Status.AbsorbedReleases[0].Values, "evictor config snapshotted raw")
+	r.JSONEq(`{"evictorKey":"evictorValue"}`, string(u.Status.AbsorbedReleases[0].Values.Raw))
+	r.Equal(components.ComponentNameKvisor, u.Status.AbsorbedReleases[1].ReleaseName)
+	r.Nil(u.Status.AbsorbedReleases[1].Values, "kvisor had no user config: no snapshot values")
+
+	// InstallUmbrella: proceeds under the derived node-autoscaler tag with
+	// the evictor's user config carried into the umbrella values.
+	reconcileOnce(t, ops)
+	u = getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseVerify, u.Status.MigrationPhase)
+	tags, ok := captured.ValuesOverrides["tags"].(map[string]any)
+	r.True(ok, "derived tags present in install values")
+	r.True(tags[components.UmbrellaTagNodeAutoscaler].(bool), "install uses the node-autoscaler tag")
+	as, ok := captured.ValuesOverrides["autoscaler"].(map[string]any)
+	r.True(ok, "autoscaler block present in install values")
+	ev, ok := as[components.ComponentNameEvictor].(map[string]any)
+	r.True(ok, "absorbed evictor config carried under autoscaler.castai-evictor")
+	r.Equal("evictorValue", ev["evictorKey"])
+}
+
+// TestMigrationReconciler_AbsorbsCoveredReleases_WorkloadAutoscalerTag asserts
+// the workload side of the tag matrix: a standalone castai-workload-autoscaler
+// release is exclusive to the workload-autoscaler tag (the node-autoscaler tag
+// does not cover it), so the migration derives workload-autoscaler and runs
+// the full absorb sequence — snapshot, uninstall, install with
+// tags.workload-autoscaler=true — rather than narrowing the tag and losing
+// the component.
+func TestMigrationReconciler_AbsorbsCoveredReleases_WorkloadAutoscalerTag(t *testing.T) {
 	t.Parallel()
 	r := require.New(t)
 	ops := newMigrationTestOps(t,
@@ -738,54 +965,116 @@ func TestMigrationReconciler_UmbrellaOnlyStandalone_BlocksMigration(t *testing.T
 		migUmbrella(""),
 		migIndividual(components.ComponentNameAgent),
 	)
-	expectResolveNamesPresent(ops)
-	// The permission gate passes; the standalone-release guard blocks.
 	expectPermissionGatePass(ops)
-	// A standalone castai-kvisor release is present; after the user removes
-	// it, subsequent reconciles see an empty list.
-	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
-		Return([]*release.Release{migRelease("castai-kvisor")}, nil).Times(1)
-	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
-		Return(nil, nil).AnyTimes()
+	expectAgentOnlyIndividual(ops)
+	expectCoveredReleasesAbsorbed(ops, migRelease(components.ComponentNameWorkloadAutoscaler))
+	ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+		Namespace: migNamespace, ReleaseName: components.ComponentNameWorkloadAutoscaler, Wait: true, IgnoreNotFound: true,
+	}).Return(nil, nil)
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(nil, errors.New("no release found"))
+	var captured helm.InstallOptions
+	ops.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, opts helm.InstallOptions) (*release.Release, error) {
+			captured = opts
+			return migRelease(components.ComponentNameUmbrella), nil
+		})
 
-	// First reconcile: blocked, surfaced as a reconcile error (backoff +
-	// metrics) with the offending chart named.
-	_, err := ops.sut.Reconcile(context.Background(), reconcile.Request{
-		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
-	})
-	r.Error(err)
-	r.ErrorContains(err, "castai-kvisor")
-
+	// MarkReadonly: workload-autoscaler is exclusive to the workload side, so
+	// it forces the workload-autoscaler tag over readonly.
+	reconcileOnce(t, ops)
 	u := getUmbrella(t, ops)
-	r.Equal("", u.Status.MigrationPhase, "phase unchanged while blocked")
-	r.False(u.Spec.Readonly, "umbrella untouched while blocked")
-	r.False(controllerutil.ContainsFinalizer(u, MigrationFinalizer), "finalizer not armed while blocked")
-	cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
-	r.NotNil(cond, "Migrating condition present while blocked")
-	r.Equal(metav1.ConditionFalse, cond.Status)
-	r.Equal(castwarev1alpha1.ReasonMigrationBlocked, cond.Reason)
-	r.Contains(cond.Message, "castai-kvisor")
+	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase)
+	r.Equal(components.UmbrellaTagWorkloadAutoscaler, u.Status.MigrationDerivedTag,
+		"workload-exclusive covered release forces the workload-autoscaler tag")
 
-	// Standalone removed: the migration proceeds on the next reconcile and the
-	// blocked condition is replaced by the next phase.
-	_, err = ops.sut.Reconcile(context.Background(), reconcile.Request{
-		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
-	})
-	r.NoError(err)
+	// UninstallIndividuals: snapshotted, then uninstalled.
+	reconcileOnce(t, ops)
 	u = getUmbrella(t, ops)
-	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase,
-		"migration proceeds after the block clears")
-	cond = meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
-	r.NotNil(cond)
-	r.Equal(metav1.ConditionTrue, cond.Status, "blocked condition replaced by the in-progress phase")
+	r.Equal(castwarev1alpha1.MigrationPhaseInstallUmbrella, u.Status.MigrationPhase)
+	r.Len(u.Status.AbsorbedReleases, 1, "covered release snapshotted")
+	r.Equal(components.ComponentNameWorkloadAutoscaler, u.Status.AbsorbedReleases[0].ReleaseName)
+	r.Equal(components.ComponentNameWorkloadAutoscaler, u.Status.AbsorbedReleases[0].ChartName)
+
+	// InstallUmbrella: the derived tag reaches the install values.
+	reconcileOnce(t, ops)
+	u = getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseVerify, u.Status.MigrationPhase)
+	tags, ok := captured.ValuesOverrides["tags"].(map[string]any)
+	r.True(ok, "derived tags present in install values")
+	r.True(tags[components.UmbrellaTagWorkloadAutoscaler].(bool), "install uses the workload-autoscaler tag")
 }
 
-// TestMigrationReconciler_UmbrellaOnlyStandalone_BlocksBeforeInstall asserts
-// the same guard re-runs before the umbrella install for a migration already
-// at the InstallUmbrella phase (resumed migration, or a standalone release
-// that appeared mid-flight): the install is not attempted while the conflict
-// exists. No Install mock is wired — an attempted install fails the test.
-func TestMigrationReconciler_UmbrellaOnlyStandalone_BlocksBeforeInstall(t *testing.T) {
+// TestMigrationReconciler_AbsorbsCoveredReleases_FullTag asserts the
+// both-sides corner of the tag matrix: a node-autoscaler-exclusive covered
+// standalone (castai-pod-pinner) together with a workload-autoscaler-exclusive
+// one (castai-workload-autoscaler-exporter) is covered only by the full tag;
+// deriving anything narrower would silently drop one side once the umbrella
+// renders. Both releases are absorbed and the install sets tags.full.
+func TestMigrationReconciler_AbsorbsCoveredReleases_FullTag(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		migUmbrella(""),
+		migIndividual(components.ComponentNameAgent),
+	)
+	expectPermissionGatePass(ops)
+	expectAgentOnlyIndividual(ops)
+	expectCoveredReleasesAbsorbed(ops,
+		migRelease(components.ComponentNamePodPinner),
+		migRelease(components.ComponentNameWorkloadAutoscalerExporter))
+	// Uninstalled in the covered listing's release-name order (castai-pod-pinner
+	// sorts before castai-workload-autoscaler-exporter).
+	gomock.InOrder(
+		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+			Namespace: migNamespace, ReleaseName: components.ComponentNamePodPinner, Wait: true, IgnoreNotFound: true,
+		}).Return(nil, nil),
+		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+			Namespace: migNamespace, ReleaseName: components.ComponentNameWorkloadAutoscalerExporter, Wait: true, IgnoreNotFound: true,
+		}).Return(nil, nil),
+	)
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(nil, errors.New("no release found"))
+	var captured helm.InstallOptions
+	ops.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, opts helm.InstallOptions) (*release.Release, error) {
+			captured = opts
+			return migRelease(components.ComponentNameUmbrella), nil
+		})
+
+	// MarkReadonly: node-only + workload-only present → full, the only tag
+	// covering both sides.
+	reconcileOnce(t, ops)
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase)
+	r.Equal(components.UmbrellaTagFull, u.Status.MigrationDerivedTag,
+		"node-only + workload-only covered releases force the full tag")
+
+	// UninstallIndividuals: both snapshotted, then uninstalled.
+	reconcileOnce(t, ops)
+	u = getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseInstallUmbrella, u.Status.MigrationPhase)
+	r.Len(u.Status.AbsorbedReleases, 2, "both covered releases snapshotted")
+	r.Equal(components.ComponentNamePodPinner, u.Status.AbsorbedReleases[0].ReleaseName)
+	r.Equal(components.ComponentNameWorkloadAutoscalerExporter, u.Status.AbsorbedReleases[1].ReleaseName)
+
+	// InstallUmbrella: the full tag reaches the install values.
+	reconcileOnce(t, ops)
+	u = getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseVerify, u.Status.MigrationPhase)
+	tags, ok := captured.ValuesOverrides["tags"].(map[string]any)
+	r.True(ok, "derived tags present in install values")
+	r.True(tags[components.UmbrellaTagFull].(bool), "install uses the full tag")
+}
+
+// TestMigrationReconciler_UmbrellaOnlyStandalone_DriftGuard_BlocksBeforeInstall
+// asserts the install-phase drift-safety guard: a covered standalone release
+// present at InstallUmbrella time means it appeared AFTER the uninstall phase
+// ran (mid-migration drift), and the install is not attempted while it exists
+// — the umbrella would silently absorb or duplicate it. No Install mock is
+// wired — an attempted install fails the test.
+func TestMigrationReconciler_UmbrellaOnlyStandalone_DriftGuard_BlocksBeforeInstall(t *testing.T) {
 	t.Parallel()
 	r := require.New(t)
 	ops := newMigrationTestOps(t,
@@ -806,8 +1095,263 @@ func TestMigrationReconciler_UmbrellaOnlyStandalone_BlocksBeforeInstall(t *testi
 	})
 	r.Error(err)
 	r.ErrorContains(err, "castai-kvisor")
+	r.ErrorContains(err, "mid-migration drift")
 
 	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseInstallUmbrella, u.Status.MigrationPhase,
+		"phase unchanged while blocked")
+	cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.NotNil(cond, "Migrating condition present while blocked")
+	r.Equal(castwarev1alpha1.ReasonMigrationBlocked, cond.Reason)
+}
+
+// TestMigrationReconciler_PermissionGate_ReceivesDerivedTag asserts the gate
+// validates the EFFECTIVE surface when the tag derivation is broadened by a
+// covered standalone: with castai-live (node-side) present at MarkReadonly the
+// derived tag is node-autoscaler, and the validateInstall request's
+// component_params must carry tags.node-autoscaler=true — not just the user's
+// spec.values — so the server permission-checks the install that will
+// actually render. With the gate allowing, the migration still proceeds.
+// TestMigrationReconciler_LostDerivedTag_DerivesFromSnapshot asserts the
+// empty-tag fallback in phaseInstallUmbrella cannot narrow below what was
+// already absorbed: when status.migrationDerivedTag is empty but the
+// absorbed-release snapshot is populated (an anomalous status — the tag is
+// written before anything is uninstalled — e.g. lost or edited externally),
+// the re-derived tag folds in the snapshot's chart names instead of trusting
+// only the post-uninstall live probe, which cannot see the absorbed releases.
+// Without the snapshot fold-in, this state would derive readonly and the
+// umbrella install would silently drop the absorbed workload-autoscaler.
+func TestMigrationReconciler_LostDerivedTag_DerivesFromSnapshot(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseInstallUmbrella)
+	// Anomalous status: the tag was lost, the snapshot survived.
+	umbrella.Status.MigrationDerivedTag = ""
+	umbrella.Status.AbsorbedReleases = []castwarev1alpha1.AbsorbedRelease{{
+		ReleaseName:  components.ComponentNameWorkloadAutoscaler,
+		ChartName:    components.ComponentNameWorkloadAutoscaler,
+		ChartVersion: "1.0.21",
+		ChartRepoURL: "https://castai.github.io/helm-charts",
+	}}
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		umbrella,
+		migIndividual(components.ComponentNameAgent),
+	)
+	expectAgentOnlyIndividual(ops)
+	// Umbrella not yet installed; the drift guard and the empty-tag fallback's
+	// present-set probe both see no covered releases.
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(nil, errors.New("no release found"))
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return(nil, nil).AnyTimes()
+	var captured helm.InstallOptions
+	ops.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, opts helm.InstallOptions) (*release.Release, error) {
+			captured = opts
+			return migRelease(components.ComponentNameUmbrella), nil
+		})
+
+	reconcileOnce(t, ops)
+
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseVerify, u.Status.MigrationPhase, "install completed")
+	r.Equal(components.UmbrellaTagWorkloadAutoscaler, u.Status.MigrationDerivedTag,
+		"re-derived tag covers the absorbed workload-autoscaler, not narrowed to readonly")
+	tags, ok := captured.ValuesOverrides["tags"].(map[string]any)
+	r.True(ok, "derived tags present in install values")
+	r.True(tags[components.UmbrellaTagWorkloadAutoscaler].(bool),
+		"install uses the snapshot-aware derived tag")
+}
+
+func TestMigrationReconciler_PermissionGate_ReceivesDerivedTag(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		migUmbrella(""),
+		migIndividual(components.ComponentNameAgent),
+	)
+	expectAgentOnlyIndividual(ops)
+	// The covered castai-live release is present for MarkReadonly's tag
+	// derivation (presentComponents lists covered releases once per reconcile).
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return([]*release.Release{migRelease(components.ComponentNameLive)}, nil).Times(1)
+	// Capture the permission-gate request (expectPermissionGatePass's capturing
+	// variant): the derived tag must be folded into its component_params.
+	var gateReq *castai.ValidateComponentInstallRequest
+	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, req *castai.ValidateComponentInstallRequest) (*castai.ValidateComponentInstallResponse, error) {
+			gateReq = req
+			return &castai.ValidateComponentInstallResponse{Allowed: true}, nil
+		}).Times(1)
+
+	reconcileOnce(t, ops)
+
+	// The gate validated the effective surface: the user's spec.values (none
+	// here) with the derived node-autoscaler tag folded under tags.
+	r.NotNil(gateReq, "permission gate was called")
+	r.Equal(migClusterID, gateReq.ClusterID)
+	r.Equal(components.ComponentNameUmbrella, gateReq.ComponentName)
+	r.Equal("1.0.0", gateReq.TargetVersion)
+	tags, ok := gateReq.ComponentParams["tags"].(map[string]any)
+	r.True(ok, "component_params.tags should be an object, got %T", gateReq.ComponentParams["tags"])
+	r.Equal(true, tags[components.UmbrellaTagNodeAutoscaler],
+		"the derived tag folded into the gate payload")
+
+	// With the gate allowing, the migration proceeds.
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase,
+		"migration proceeds when the gate allows")
+	r.Equal(components.UmbrellaTagNodeAutoscaler, u.Status.MigrationDerivedTag)
+}
+
+// TestMigrationReconciler_SnapshotResume_DoesNotRecapture asserts the resume
+// semantics of the absorbed-release snapshot: a migration resumed at
+// UninstallIndividuals with the snapshot already populated must NOT recapture
+// (the snapshot is the only record of how the covered releases were
+// installed) and must NOT uninstall a covered release that appeared after the
+// snapshot was taken — uninstalling it would silently discard its user values
+// (no CR, no snapshot entry). Instead the drifted release is left for the
+// install-phase drift guard, which blocks the migration on it.
+// TestMigrationReconciler_SnapshotNormalizesYAMLTypedConfig asserts the
+// snapshot tolerates YAML-decoded value types in a covered release's config
+// (map[interface{}]interface{} — what SDK/third-party-written releases can
+// carry, unlike the JSON-decoded configs helm storage returns): the values
+// are normalized to string-keyed JSON rather than failing the marshal, and a
+// config that still cannot be represented in JSON degrades to a value-less
+// snapshot entry instead of hard-blocking the migration.
+func TestMigrationReconciler_SnapshotNormalizesYAMLTypedConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("yaml-typed config is snapshotted normalized", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseUninstallIndividuals)
+		umbrella.Status.MigrationDerivedTag = components.UmbrellaTagReadonly
+		ops := newMigrationTestOps(t,
+			migCluster(),
+			umbrella,
+			migIndividual(components.ComponentNameAgent),
+		)
+		expectAgentOnlyIndividual(ops)
+		// The kvisor standalone's config carries a nested
+		// map[interface{}]interface{} — json.Marshal alone would reject it.
+		kvisor := migRelease(components.ComponentNameKvisor)
+		kvisor.Config = map[string]any{
+			"plain":  "x",
+			"nested": map[any]any{"k": "v"},
+		}
+		ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+			Return([]*release.Release{kvisor}, nil)
+		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+			Namespace: migNamespace, ReleaseName: components.ComponentNameKvisor, Wait: true, IgnoreNotFound: true,
+		}).Return(nil, nil)
+
+		reconcileOnce(t, ops)
+
+		u := getUmbrella(t, ops)
+		r.Equal(castwarev1alpha1.MigrationPhaseInstallUmbrella, u.Status.MigrationPhase,
+			"the migration is not blocked by the yaml-typed config")
+		r.Len(u.Status.AbsorbedReleases, 1, "kvisor snapshotted")
+		r.JSONEq(`{"plain":"x","nested":{"k":"v"}}`, string(u.Status.AbsorbedReleases[0].Values.Raw),
+			"the interface-keyed map is snapshotted as string-keyed JSON")
+	})
+
+	t.Run("unrepresentable config degrades to a value-less snapshot entry", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseUninstallIndividuals)
+		umbrella.Status.MigrationDerivedTag = components.UmbrellaTagReadonly
+		ops := newMigrationTestOps(t,
+			migCluster(),
+			umbrella,
+			migIndividual(components.ComponentNameAgent),
+		)
+		expectAgentOnlyIndividual(ops)
+		// A value neither json.Marshal nor the normalizer can represent.
+		kvisor := migRelease(components.ComponentNameKvisor)
+		kvisor.Config = map[string]any{
+			"bad": make(chan int),
+		}
+		ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+			Return([]*release.Release{kvisor}, nil)
+		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+			Namespace: migNamespace, ReleaseName: components.ComponentNameKvisor, Wait: true, IgnoreNotFound: true,
+		}).Return(nil, nil)
+
+		reconcileOnce(t, ops)
+
+		u := getUmbrella(t, ops)
+		r.Equal(castwarev1alpha1.MigrationPhaseInstallUmbrella, u.Status.MigrationPhase,
+			"the migration is not hard-blocked by the unrepresentable config")
+		r.Len(u.Status.AbsorbedReleases, 1, "kvisor still snapshotted")
+		r.Nil(u.Status.AbsorbedReleases[0].Values,
+			"entry carries no values; rollback will reinstall with chart defaults")
+	})
+}
+
+func TestMigrationReconciler_SnapshotResume_DoesNotRecapture(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseUninstallIndividuals)
+	// A prior pass snapshotted castai-kvisor and was interrupted before (or
+	// during) the uninstalls.
+	umbrella.Status.MigrationDerivedTag = components.UmbrellaTagReadonly
+	umbrella.Status.AbsorbedReleases = []castwarev1alpha1.AbsorbedRelease{{
+		ReleaseName:  components.ComponentNameKvisor,
+		ChartName:    components.ComponentNameKvisor,
+		ChartVersion: "1.0.0",
+		Values:       &apiextensionsv1.JSON{Raw: []byte(`{"k":"v"}`)},
+	}}
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		umbrella,
+		migIndividual(components.ComponentNameAgent),
+	)
+	expectAgentOnlyIndividual(ops)
+	// The live namespace still holds the snapshotted kvisor release AND a NEW
+	// castai-evictor standalone that appeared after the snapshot was taken.
+	// The second listing is the install-phase drift guard: the evictor is
+	// still there, so the migration must block on it.
+	gomock.InOrder(
+		ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+			Return([]*release.Release{migRelease(components.ComponentNameKvisor), migRelease(components.ComponentNameEvictor)}, nil),
+		ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+			Return([]*release.Release{migRelease(components.ComponentNameEvictor)}, nil),
+	)
+	// Only the snapshotted kvisor is uninstalled — by snapshot membership.
+	// There is deliberately NO Uninstall expectation for castai-evictor.
+	ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+		Namespace: migNamespace, ReleaseName: components.ComponentNameKvisor, Wait: true, IgnoreNotFound: true,
+	}).Return(nil, nil)
+	// Install phase: umbrella release not yet present, so the drift guard runs.
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(nil, errors.New("no release found"))
+
+	// UninstallIndividuals (resumed): no recapture, only the snapshotted
+	// release is uninstalled, and the phase still advances.
+	reconcileOnce(t, ops)
+
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseInstallUmbrella, u.Status.MigrationPhase,
+		"uninstall phase completes with only the snapshotted release")
+	r.Len(u.Status.AbsorbedReleases, 1, "snapshot not recaptured on resume")
+	r.Equal(components.ComponentNameKvisor, u.Status.AbsorbedReleases[0].ReleaseName,
+		"the drifted evictor is not snapshotted")
+	r.JSONEq(`{"k":"v"}`, string(u.Status.AbsorbedReleases[0].Values.Raw),
+		"existing snapshot entry unchanged")
+
+	// InstallUmbrella: the drifted evictor blocks the install (mid-migration
+	// drift), mirroring the drift-guard test's blocking posture.
+	_, err := ops.sut.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
+	})
+	r.Error(err)
+	r.ErrorContains(err, components.ComponentNameEvictor)
+	r.ErrorContains(err, "mid-migration drift")
+
+	u = getUmbrella(t, ops)
 	r.Equal(castwarev1alpha1.MigrationPhaseInstallUmbrella, u.Status.MigrationPhase,
 		"phase unchanged while blocked")
 	cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
@@ -866,6 +1410,117 @@ func TestMigrationReconciler_VerifyFailure_Rollback(t *testing.T) {
 
 	u := getUmbrella(t, ops)
 	r.Equal(castwarev1alpha1.MigrationPhaseRolledBack, u.Status.MigrationPhase)
+	r.False(u.Spec.Migrate, "migrate cleared on rollback")
+	r.False(u.Spec.Readonly, "readonly cleared on rollback")
+	r.False(controllerutil.ContainsFinalizer(u, MigrationFinalizer), "migration finalizer released on rollback")
+
+	// Individuals re-enabled (readonly=false) so the component reconciler can
+	// reinstall them from their stored spec.values.
+	for _, sub := range []string{components.ComponentNameAgent, components.ComponentNameClusterController} {
+		ind := &castwarev1alpha1.Component{}
+		r.NoError(ops.client.Get(context.Background(), types.NamespacedName{Namespace: migNamespace, Name: sub}, ind))
+		r.False(ind.Spec.Readonly, "individual %s re-enabled for rollback", sub)
+	}
+}
+
+// TestMigrationReconciler_Rollback_RestoresAbsorbedReleases asserts the
+// rollback half of the covered-release absorption: an induced verify failure
+// (Failed umbrella release past the verify deadline) uninstalls the umbrella
+// AND reinstalls each absorbed standalone release from the status snapshot
+// exactly as it was installed — chart source from the cluster's helm repo,
+// release name and version from the snapshot, user values parsed from the
+// snapshot (nil for a release that had none) — before re-enabling the
+// individuals. The terminal status clears the migration-scoped fields
+// (absorbed-release snapshot + derived tag).
+func TestMigrationReconciler_Rollback_RestoresAbsorbedReleases(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseVerify)
+	// Seed a phase-start timestamp that predates verifyTimeout so the
+	// not-deployed release triggers immediate rollback rather than requeue.
+	umbrella.Status.MigrationPhaseStartedAt = metav1.NewTime(time.Now().Add(-2 * verifyTimeout))
+	umbrella.Status.MigrationDerivedTag = components.UmbrellaTagNodeAutoscaler
+	umbrella.Status.AbsorbedReleases = []castwarev1alpha1.AbsorbedRelease{
+		{
+			ReleaseName:  "custom-kvisor",
+			ChartName:    components.ComponentNameKvisor,
+			ChartVersion: "1.2.3",
+			// The repo pinned at snapshot time: the rollback must re-fetch
+			// from HERE, even though it differs from the cluster's current
+			// component repo (exercises the pinned-repo path).
+			ChartRepoURL: "https://mirror.example.com/charts",
+			Values:       &apiextensionsv1.JSON{Raw: []byte(`{"k":"v"}`)},
+		},
+		{
+			ReleaseName:  components.ComponentNameEvictor,
+			ChartName:    components.ComponentNameEvictor,
+			ChartVersion: "0.9.0",
+			// no Values: the release was installed with chart defaults; and no
+			// ChartRepoURL: a legacy snapshot entry written before the repo was
+			// pinned — the rollback must fall back to the cluster's current
+			// component repo (https://castai.github.io/helm-charts).
+		},
+	}
+	// Mid-migration state: finalizer armed, umbrella readonly, individuals
+	// readonly (all set by MarkReadonly).
+	umbrella.Spec.Readonly = true
+	controllerutil.AddFinalizer(umbrella, MigrationFinalizer)
+	agent := migIndividual(components.ComponentNameAgent)
+	agent.Spec.Readonly = true
+	clusterController := migIndividual(components.ComponentNameClusterController)
+	clusterController.Spec.Readonly = true
+
+	ops := newMigrationTestOps(t, migCluster(), umbrella, agent, clusterController)
+	// Umbrella release exists but is Failed — not Deployed.
+	failedRelease := migRelease(components.ComponentNameUmbrella)
+	failedRelease.Info.Status = release.StatusFailed
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).AnyTimes()
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(failedRelease, nil)
+
+	// Rollback: uninstall the umbrella, then reinstall each absorbed release
+	// from the snapshot in snapshot order — exact chart source (the pinned
+	// repo for the first entry, the cluster-repo fallback for the legacy
+	// second entry), release name and values (nil for the entry with no
+	// values).
+	gomock.InOrder(
+		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+			Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella, Wait: true, IgnoreNotFound: true,
+		}).Return(nil, nil),
+		ops.mockHelm.EXPECT().Install(gomock.Any(), helm.InstallOptions{
+			ChartSource: &helm.ChartSource{
+				RepoURL: "https://mirror.example.com/charts",
+				Name:    components.ComponentNameKvisor,
+				Version: "1.2.3",
+			},
+			Namespace:       migNamespace,
+			CreateNamespace: false,
+			ReleaseName:     "custom-kvisor",
+			ValuesOverrides: map[string]any{"k": "v"},
+		}).Return(migRelease("custom-kvisor"), nil),
+		ops.mockHelm.EXPECT().Install(gomock.Any(), helm.InstallOptions{
+			ChartSource: &helm.ChartSource{
+				RepoURL: "https://castai.github.io/helm-charts",
+				Name:    components.ComponentNameEvictor,
+				Version: "0.9.0",
+			},
+			Namespace:       migNamespace,
+			CreateNamespace: false,
+			ReleaseName:     components.ComponentNameEvictor,
+			ValuesOverrides: nil,
+		}).Return(migRelease(components.ComponentNameEvictor), nil),
+	)
+	// Rollback reports the failure to Mothership (best-effort).
+	ops.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), migClusterID, gomock.Any()).
+		Return(nil)
+
+	reconcileOnce(t, ops)
+
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseRolledBack, u.Status.MigrationPhase)
+	r.Empty(u.Status.AbsorbedReleases, "absorbed-release snapshot cleared after the rollback reinstalled them")
+	r.Empty(u.Status.MigrationDerivedTag, "derived tag cleared on rollback")
 	r.False(u.Spec.Migrate, "migrate cleared on rollback")
 	r.False(u.Spec.Readonly, "readonly cleared on rollback")
 	r.False(controllerutil.ContainsFinalizer(u, MigrationFinalizer), "migration finalizer released on rollback")
@@ -1086,7 +1741,7 @@ func TestMigrationReconciler_BothTriggersConverge(t *testing.T) {
 	ops := newMigrationTestOps(t, migCluster(), migUmbrella(""), migIndividual(components.ComponentNameAgent))
 	expectPermissionGatePass(ops)
 	expectResolveNamesPresent(ops)
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 
 	reconcileOnce(t, ops)
 	u := getUmbrella(t, ops)
@@ -1251,7 +1906,7 @@ func TestMigrationReconciler_LegacyReadonlyResume_ProceedsWithoutGuard(t *testin
 	)
 	expectPermissionGatePass(ops)
 	expectResolveNamesPresent(ops)
-	expectNoUmbrellaOnlyCharts(ops)
+	expectNoCoveredStandaloneReleases(ops)
 
 	reconcileOnce(t, ops)
 

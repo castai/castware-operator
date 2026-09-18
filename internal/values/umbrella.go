@@ -12,6 +12,7 @@ import (
 	"fmt"
 
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
+	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/internal/utils"
 )
 
@@ -60,7 +61,7 @@ func UmbrellaValues(component *castwarev1alpha1.Component, cluster *castwarev1al
 
 	if len(kvisorCastai) > 0 {
 		values["autoscaler"] = map[string]any{
-			"castai-kvisor": map[string]any{
+			components.ComponentNameKvisor: map[string]any{
 				"castai": kvisorCastai,
 			},
 		}

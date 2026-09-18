@@ -67,7 +67,7 @@ func RequiresExtendedPermissionsForValues(name string, values map[string]any) bo
 // node-autoscaler, workload-autoscaler and full tags enable it.
 func umbrellaClusterControllerEnabled(values map[string]any) bool {
 	autoscaler, _ := values["autoscaler"].(map[string]any)
-	cc, _ := autoscaler["castai-cluster-controller"].(map[string]any)
+	cc, _ := autoscaler[UmbrellaSubchartClusterController].(map[string]any)
 	if enabled, ok := cc["enabled"].(bool); ok {
 		return enabled
 	}
@@ -75,7 +75,7 @@ func umbrellaClusterControllerEnabled(values map[string]any) bool {
 	if tags == nil {
 		return false
 	}
-	for _, tag := range []string{"node-autoscaler", "workload-autoscaler", "full"} {
+	for _, tag := range []string{UmbrellaTagNodeAutoscaler, UmbrellaTagWorkloadAutoscaler, UmbrellaTagFull} {
 		if v, _ := tags[tag].(bool); v {
 			return true
 		}
