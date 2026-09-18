@@ -55,9 +55,9 @@ import (
 // anywhere clusters). Mirrors castctl installer.StandaloneToUmbrellaSubchart
 // for the three components the operator's migration gate covers.
 var standaloneToUmbrellaSubchart = map[string]string{
-	components.ComponentNameAgent:             "castai-agent",
-	components.ComponentNameSpotHandler:       "castai-spot-handler",
-	components.ComponentNameClusterController: "castai-cluster-controller",
+	components.ComponentNameAgent:             components.ComponentNameAgent,
+	components.ComponentNameSpotHandler:       components.UmbrellaSubchartSpotHandler,
+	components.ComponentNameClusterController: components.UmbrellaSubchartClusterController,
 }
 
 // umbrellaManagedKeys is the set of keys the umbrella chart provisions itself

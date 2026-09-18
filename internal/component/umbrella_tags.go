@@ -8,7 +8,7 @@ package components
 // castai-umbrella chart's autoscaler sub-chart Chart.yaml dependencies, not
 // necessarily the operator's own component names (e.g. the operator calls the
 // spot handler "spot-handler" while its umbrella sub-chart is
-// "castai-spot-handler").
+// UmbrellaSubchartSpotHandler).
 //
 // ComponentNameAgent, ComponentNameSpotHandler and
 // ComponentNameClusterController already exist in component.go and are
@@ -21,6 +21,18 @@ const (
 	ComponentNameLive                       = "castai-live"
 	ComponentNameWorkloadAutoscaler         = "castai-workload-autoscaler"
 	ComponentNameWorkloadAutoscalerExporter = "castai-workload-autoscaler-exporter"
+)
+
+// Umbrella sub-chart names for the two operator components whose own names
+// differ from their chart names: the operator (and Mothership) call them
+// ComponentNameSpotHandler ("spot-handler") and ComponentNameClusterController
+// ("cluster-controller"), while the umbrella chart mounts their sub-charts as
+// UmbrellaSubchartSpotHandler and UmbrellaSubchartClusterController.
+// ComponentNameAgent already equals its sub-chart name, so no constant is
+// needed for it.
+const (
+	UmbrellaSubchartSpotHandler       = "castai-spot-handler"
+	UmbrellaSubchartClusterController = "castai-cluster-controller"
 )
 
 // Umbrella tag name constants: the mutually exclusive autoscaler profile tags
@@ -45,8 +57,8 @@ const (
 // order (readonly three first, then the mode-specific components) rather than
 // alphabetical, so the incremental difference between tags is easy to read.
 //
-// Values use the umbrella SUB-CHART names ("castai-spot-handler",
-// "castai-cluster-controller"), not the operator's short component names.
+// Values use the umbrella SUB-CHART names (UmbrellaSubchartSpotHandler,
+// UmbrellaSubchartClusterController), not the operator's short component names.
 //
 // NOTE: update this map when the umbrella chart's autoscaler sub-chart
 // dependencies change (the integration test enforces this against the
@@ -54,14 +66,14 @@ const (
 var UmbrellaTagComponents = map[string][]string{
 	UmbrellaTagReadonly: {
 		ComponentNameAgent,
-		"castai-spot-handler",
+		UmbrellaSubchartSpotHandler,
 		ComponentNameKvisor,
 	},
 	UmbrellaTagNodeAutoscaler: {
 		ComponentNameAgent,
-		"castai-spot-handler",
+		UmbrellaSubchartSpotHandler,
 		ComponentNameKvisor,
-		"castai-cluster-controller",
+		UmbrellaSubchartClusterController,
 		ComponentNameEvictor,
 		ComponentNamePodMutator,
 		ComponentNamePodPinner,
@@ -69,9 +81,9 @@ var UmbrellaTagComponents = map[string][]string{
 	},
 	UmbrellaTagWorkloadAutoscaler: {
 		ComponentNameAgent,
-		"castai-spot-handler",
+		UmbrellaSubchartSpotHandler,
 		ComponentNameKvisor,
-		"castai-cluster-controller",
+		UmbrellaSubchartClusterController,
 		ComponentNameEvictor,
 		ComponentNamePodMutator,
 		ComponentNameWorkloadAutoscaler,
@@ -79,9 +91,9 @@ var UmbrellaTagComponents = map[string][]string{
 	},
 	UmbrellaTagFull: {
 		ComponentNameAgent,
-		"castai-spot-handler",
+		UmbrellaSubchartSpotHandler,
 		ComponentNameKvisor,
-		"castai-cluster-controller",
+		UmbrellaSubchartClusterController,
 		ComponentNameEvictor,
 		ComponentNamePodMutator,
 		ComponentNamePodPinner,
@@ -104,10 +116,10 @@ var UmbrellaTagComponents = map[string][]string{
 var UmbrellaCoveredComponents = []string{
 	// readonly
 	ComponentNameAgent,
-	"castai-spot-handler",
+	UmbrellaSubchartSpotHandler,
 	ComponentNameKvisor,
 	// + node-autoscaler
-	"castai-cluster-controller",
+	UmbrellaSubchartClusterController,
 	ComponentNameEvictor,
 	ComponentNamePodMutator,
 	ComponentNamePodPinner,
@@ -140,7 +152,7 @@ var umbrellaWorkloadOnlySet = toSet([]string{
 // readonly. castai-cluster-controller, castai-evictor and castai-pod-mutator
 // are shared with the workload side.
 var umbrellaNodeSideSet = toSet([]string{
-	"castai-cluster-controller",
+	UmbrellaSubchartClusterController,
 	ComponentNameEvictor,
 	ComponentNamePodMutator,
 	ComponentNamePodPinner,
@@ -152,7 +164,7 @@ var umbrellaNodeSideSet = toSet([]string{
 // of readonly. castai-cluster-controller, castai-evictor and
 // castai-pod-mutator are shared with the node side.
 var umbrellaWorkloadSideSet = toSet([]string{
-	"castai-cluster-controller",
+	UmbrellaSubchartClusterController,
 	ComponentNameEvictor,
 	ComponentNamePodMutator,
 	ComponentNameWorkloadAutoscaler,
@@ -164,8 +176,8 @@ var umbrellaWorkloadSideSet = toSet([]string{
 //
 // Both naming forms are accepted, because names reach the operator from two
 // sources: helm chart matching yields the umbrella sub-chart names (e.g.
-// "castai-spot-handler", "castai-kvisor") while the Mothership uses the
-// operator's short component names (e.g. "spot-handler",
+// UmbrellaSubchartSpotHandler, ComponentNameKvisor) while the Mothership uses
+// the operator's short component names (e.g. "spot-handler",
 // "cluster-controller"). Unknown names report false.
 func IsUmbrellaCoveredComponent(name string) bool {
 	_, ok := canonicalUmbrellaComponent(name)
@@ -251,16 +263,16 @@ func MinimalCoveringTag(present []string) string {
 // whether the result is one of the covered components.
 //
 // Only the two historical operator short names differ from their sub-chart
-// names: "spot-handler" → "castai-spot-handler" and "cluster-controller" →
-// "castai-cluster-controller". Every other name maps to itself; names outside
+// names: "spot-handler" → UmbrellaSubchartSpotHandler and "cluster-controller" →
+// UmbrellaSubchartClusterController. Every other name maps to itself; names outside
 // the covered set return ("", false).
 func canonicalUmbrellaComponent(name string) (string, bool) {
 	canonical := name
 	switch name {
 	case ComponentNameSpotHandler:
-		canonical = "castai-spot-handler"
+		canonical = UmbrellaSubchartSpotHandler
 	case ComponentNameClusterController:
-		canonical = "castai-cluster-controller"
+		canonical = UmbrellaSubchartClusterController
 	}
 	if umbrellaCoveredSet[canonical] {
 		return canonical, true
