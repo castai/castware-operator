@@ -15,7 +15,6 @@ package components
 // intentionally not redefined here.
 const (
 	ComponentNameKvisor                     = "castai-kvisor"
-	ComponentNameGPUMetricsExporter         = "gpu-metrics-exporter"
 	ComponentNameEvictor                    = "castai-evictor"
 	ComponentNamePodMutator                 = "castai-pod-mutator"
 	ComponentNamePodPinner                  = "castai-pod-pinner"
@@ -39,29 +38,29 @@ const (
 
 // UmbrellaTagComponents maps each autoscaler profile tag to the exact set of
 // sub-component (sub-chart) names that tag installs under the castai-umbrella
-// chart (verified against castai-umbrella v0.35.2).
+// chart (verified against the published castai chart, 0.43.227 at the time
+// of writing — see umbrella_chart_integration_test.go, which fails on drift).
 //
 // The modes are supersets of readonly; the entries keep the chart's grouping
-// order (readonly four first, then the mode-specific components) rather than
+// order (readonly three first, then the mode-specific components) rather than
 // alphabetical, so the incremental difference between tags is easy to read.
 //
 // Values use the umbrella SUB-CHART names ("castai-spot-handler",
 // "castai-cluster-controller"), not the operator's short component names.
 //
 // NOTE: update this map when the umbrella chart's autoscaler sub-chart
-// dependencies change.
+// dependencies change (the integration test enforces this against the
+// published chart).
 var UmbrellaTagComponents = map[string][]string{
 	UmbrellaTagReadonly: {
 		ComponentNameAgent,
 		"castai-spot-handler",
 		ComponentNameKvisor,
-		ComponentNameGPUMetricsExporter,
 	},
 	UmbrellaTagNodeAutoscaler: {
 		ComponentNameAgent,
 		"castai-spot-handler",
 		ComponentNameKvisor,
-		ComponentNameGPUMetricsExporter,
 		"castai-cluster-controller",
 		ComponentNameEvictor,
 		ComponentNamePodMutator,
@@ -72,7 +71,6 @@ var UmbrellaTagComponents = map[string][]string{
 		ComponentNameAgent,
 		"castai-spot-handler",
 		ComponentNameKvisor,
-		ComponentNameGPUMetricsExporter,
 		"castai-cluster-controller",
 		ComponentNameEvictor,
 		ComponentNamePodMutator,
@@ -83,7 +81,6 @@ var UmbrellaTagComponents = map[string][]string{
 		ComponentNameAgent,
 		"castai-spot-handler",
 		ComponentNameKvisor,
-		ComponentNameGPUMetricsExporter,
 		"castai-cluster-controller",
 		ComponentNameEvictor,
 		ComponentNamePodMutator,
@@ -95,8 +92,8 @@ var UmbrellaTagComponents = map[string][]string{
 }
 
 // UmbrellaCoveredComponents lists every sub-component any autoscaler tag of
-// the castai-umbrella chart can install (the union of all tag sets, 11 in
-// castai-umbrella v0.35.2).
+// the castai-umbrella chart can install (the union of all tag sets, 10 in
+// the published castai chart at the time of writing).
 //
 // The order is not alphabetical: it keeps the tag grouping (readonly four,
 // then the node-autoscaler additions, then the workload-autoscaler-only
@@ -109,7 +106,6 @@ var UmbrellaCoveredComponents = []string{
 	ComponentNameAgent,
 	"castai-spot-handler",
 	ComponentNameKvisor,
-	ComponentNameGPUMetricsExporter,
 	// + node-autoscaler
 	"castai-cluster-controller",
 	ComponentNameEvictor,

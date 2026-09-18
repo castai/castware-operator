@@ -292,7 +292,7 @@ func TestUmbrellaCoveredCharts(t *testing.T) {
 		r.False(covered[chart], "duplicate chart %q", chart)
 		covered[chart] = true
 	}
-	r.Len(covered, 8, "expected the 8 non-operator covered charts")
+	r.Len(covered, 7, "expected the 7 non-operator covered charts")
 
 	// Operator-managed components are detected through Mothership-resolved
 	// release names instead, so their presence here would make the covered-set
@@ -300,10 +300,6 @@ func TestUmbrellaCoveredCharts(t *testing.T) {
 	for _, op := range []string{components.ComponentNameAgent, components.ComponentNameSpotHandler, components.ComponentNameClusterController} {
 		r.False(covered[op], "%s must not be in UmbrellaCoveredCharts", op)
 	}
-
-	// gpu-metrics-exporter is rendered even in readonly umbrella mode, so its
-	// standalone release must be covered (CID-1053 latent-gap fix).
-	r.True(covered[components.ComponentNameGPUMetricsExporter], "gpu-metrics-exporter must be covered")
 
 	// Every entry must be a chart the umbrella's autoscaler tags can render —
 	// anything else is drift against components.UmbrellaCoveredComponents.

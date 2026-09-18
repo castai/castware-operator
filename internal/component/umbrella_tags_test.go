@@ -19,22 +19,20 @@ func TestTagComponentSets(t *testing.T) {
 	}{
 		{
 			name:    "readonly",
-			wantLen: 4,
+			wantLen: 3,
 			expect: []string{
 				"castai-agent",
 				"castai-spot-handler",
 				"castai-kvisor",
-				"gpu-metrics-exporter",
 			},
 		},
 		{
 			name:    "node-autoscaler",
-			wantLen: 9,
+			wantLen: 8,
 			expect: []string{
 				"castai-agent",
 				"castai-spot-handler",
 				"castai-kvisor",
-				"gpu-metrics-exporter",
 				"castai-cluster-controller",
 				"castai-evictor",
 				"castai-pod-mutator",
@@ -44,12 +42,11 @@ func TestTagComponentSets(t *testing.T) {
 		},
 		{
 			name:    "workload-autoscaler",
-			wantLen: 9,
+			wantLen: 8,
 			expect: []string{
 				"castai-agent",
 				"castai-spot-handler",
 				"castai-kvisor",
-				"gpu-metrics-exporter",
 				"castai-cluster-controller",
 				"castai-evictor",
 				"castai-pod-mutator",
@@ -59,12 +56,11 @@ func TestTagComponentSets(t *testing.T) {
 		},
 		{
 			name:    "full",
-			wantLen: 11,
+			wantLen: 10,
 			expect: []string{
 				"castai-agent",
 				"castai-spot-handler",
 				"castai-kvisor",
-				"gpu-metrics-exporter",
 				"castai-cluster-controller",
 				"castai-evictor",
 				"castai-pod-mutator",
@@ -109,7 +105,7 @@ func TestTagComponentSets(t *testing.T) {
 	})
 	t.Run("umbrella covered components equal the full set", func(t *testing.T) {
 		t.Parallel()
-		require.Len(t, UmbrellaCoveredComponents, 11)
+		require.Len(t, UmbrellaCoveredComponents, 10)
 		require.ElementsMatch(t, UmbrellaTagComponents["full"], UmbrellaCoveredComponents)
 	})
 }
@@ -130,7 +126,7 @@ func TestMinimalCoveringTag(t *testing.T) {
 
 		// Readonly-level components only: nothing beyond the baseline.
 		{name: "agent only", present: []string{"castai-agent"}, want: "readonly"},
-		{name: "readonly subset", present: []string{"castai-agent", "castai-kvisor", "gpu-metrics-exporter"}, want: "readonly"},
+		{name: "readonly subset", present: []string{"castai-agent", "castai-kvisor"}, want: "readonly"},
 		{name: "spot-handler sub-chart name", present: []string{"castai-spot-handler"}, want: "readonly"},
 
 		// Mothership short-form names are accepted and canonicalized.
@@ -162,7 +158,6 @@ func TestMinimalCoveringTag(t *testing.T) {
 				"castai-agent",
 				"castai-spot-handler",
 				"castai-kvisor",
-				"gpu-metrics-exporter",
 				"castai-cluster-controller",
 				"castai-evictor",
 				"castai-pod-mutator",
@@ -193,7 +188,6 @@ func TestIsUmbrellaCoveredComponent(t *testing.T) {
 		{"castai-agent", true},
 		{"castai-spot-handler", true},
 		{"castai-kvisor", true},
-		{"gpu-metrics-exporter", true},
 		{"castai-cluster-controller", true},
 		{"castai-evictor", true},
 		{"castai-pod-mutator", true},
@@ -226,12 +220,12 @@ func TestIsUmbrellaCoveredComponent(t *testing.T) {
 func TestUmbrellaCoveredComponentsOrderIsDeterministic(t *testing.T) {
 	t.Parallel()
 
-	// 11 entries, none duplicated: the list must match its own
+	// 10 entries, none duplicated: the list must match its own
 	// deduplicated copy.
-	require.Len(t, UmbrellaCoveredComponents, 11)
+	require.Len(t, UmbrellaCoveredComponents, 10)
 	require.ElementsMatch(t, uniqueNames(UmbrellaCoveredComponents), UmbrellaCoveredComponents)
 
-	// The documented grouping order: readonly four first, then the
+	// The documented grouping order: readonly three first, then the
 	// node-autoscaler additions, then the workload-autoscaler-only
 	// additions.
 	require.Equal(t, []string{
@@ -239,7 +233,6 @@ func TestUmbrellaCoveredComponentsOrderIsDeterministic(t *testing.T) {
 		"castai-agent",
 		"castai-spot-handler",
 		"castai-kvisor",
-		"gpu-metrics-exporter",
 		// + node-autoscaler
 		"castai-cluster-controller",
 		"castai-evictor",

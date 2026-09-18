@@ -11,7 +11,7 @@ package values
 //     directly from their Component CRs' spec.values.
 //   - release-config-based carry-over (CID-1053): CarryOverCoveredReleaseValues
 //     reads the user config of absorbed covered standalone releases the
-//     operator does not manage (castai-kvisor, gpu-metrics-exporter,
+//     operator does not manage (castai-kvisor, castai-evictor,
 //     castai-evictor, castai-pod-mutator, castai-pod-pinner, castai-live,
 //     castai-workload-autoscaler, castai-workload-autoscaler-exporter) —
 //     releases that are uninstalled and re-rendered under the umbrella chart.

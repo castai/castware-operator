@@ -53,7 +53,9 @@ var Subcomponents = []string{
 // CID-1053 migration rather than merely blocked.
 //
 // Sourced from the umbrella chart's autoscaler profile subchart list minus the
-// operator's SupportedComponents. kent-profile charts (castai-kentroller,
+// operator's SupportedComponents (see components.UmbrellaCoveredComponents;
+// the umbrella_chart_integration_test enforces it against the published
+// chart). kent-profile charts (castai-kentroller,
 // castai-chart-upgrader, metrics-server) are excluded: the migration never
 // enables the kent profile. The set must NOT include castai-agent,
 // castai-spot-handler or castai-cluster-controller — those are operator
@@ -61,7 +63,6 @@ var Subcomponents = []string{
 // when the umbrella chart's tag sets change.
 var UmbrellaCoveredCharts = []string{
 	components.ComponentNameKvisor,                     // readonly + full
-	components.ComponentNameGPUMetricsExporter,         // readonly + full
 	components.ComponentNameEvictor,                    // full
 	components.ComponentNamePodMutator,                 // full
 	components.ComponentNamePodPinner,                  // full
