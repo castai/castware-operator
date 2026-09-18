@@ -28,6 +28,9 @@ jobs:
     name: Build
     if: github.event_name != 'release' || !contains(github.event.release.tag_name, '-rc')
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
     outputs:
       rc_version: ${{ steps.rc_version.outputs.rc_version }}
       release_tag: ${{ steps.set_version.outputs.release_tag }}
@@ -54,6 +57,7 @@ jobs:
             echo "RELEASE_TAG=$VERSION" >> $GITHUB_ENV
             echo "release_tag=$VERSION" >> $GITHUB_OUTPUT
           fi
+          echo "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
 
       - name: Generate Helm charts
         run: make helm
@@ -105,6 +109,14 @@ jobs:
           platforms: linux/arm64,linux/amd64
           tags: us-docker.pkg.dev/castai-hub/library/castware-operator:${{ github.sha }}
 
+      - name: Login to GitHub Container Registry
+        if: github.event_name == 'release'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build and push release
         if: github.event_name == 'release'
         uses: docker/build-push-action@v6
@@ -115,6 +127,24 @@ jobs:
           tags: |
             us-docker.pkg.dev/castai-hub/library/castware-operator:${{ env.RELEASE_TAG }}
             us-docker.pkg.dev/castai-hub/library/castware-operator:latest
+            ghcr.io/castai/images/castware-operator:${{ env.RELEASE_TAG }}
+            ghcr.io/castai/images/castware-operator:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/castai/castware-operator
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.RELEASE_TAG }}
+            org.opencontainers.image.created=${{ env.CREATED }}
+            org.opencontainers.image.title=castware-operator
+            org.opencontainers.image.vendor=CAST AI
+            distribution-scope=public
+            ai.cast.image.canonical-registry=us-docker.pkg.dev/castai-hub/library
+          annotations: |
+            index,manifest:org.opencontainers.image.source=https://github.com/castai/castware-operator
+            index,manifest:org.opencontainers.image.revision=${{ github.sha }}
+            index,manifest:org.opencontainers.image.created=${{ env.CREATED }}
+            index,manifest:org.opencontainers.image.title=castware-operator
+            index,manifest:distribution-scope=public
+            index,manifest:ai.cast.image.canonical-registry=us-docker.pkg.dev/castai-hub/library
 
       - name: Determine RC version
         id: rc_version
