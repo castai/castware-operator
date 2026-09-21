@@ -192,11 +192,6 @@ func extractUmbrellaParams(ctx context.Context, log logrus.FieldLogger, helmRele
 		params["tags"] = tags
 	}
 
-	if iSLiveEnabled(coalesced) {
-		params["live"] = true
-	}
-
-
 	// Actual view: live workload versions of the umbrella's sub-components.
 	live := liveUmbrellaWorkloadVersions(ctx, log, k8sClient, namespace, helmRelease.Name)
 
@@ -205,6 +200,9 @@ func extractUmbrellaParams(ctx context.Context, log logrus.FieldLogger, helmRele
 
 	// Flat flags for existing consumers, read from the coalesced (nested)
 	// sub-chart values.
+	if v, ok := lookupBool(coalesced, "autoscaler.castai-live.enabled"); ok && v {
+		params["live"] = v
+	}
 	if v, ok := lookupBool(coalesced, "autoscaler.castai-spot-handler.phase2Permissions"); ok {
 		params["phase2Permissions"] = v
 	}
@@ -227,7 +225,6 @@ func extractUmbrellaParams(ctx context.Context, log logrus.FieldLogger, helmRele
 func getInstallationTags(params map[string]interface{}) map[string]bool {
 	tags := make(map[string]bool)
 	if raw, ok := params["tags"].(map[string]interface{}); ok {
-
 		for name, value := range raw {
 			if b, ok := value.(bool); ok {
 				tags[name] = b
@@ -236,20 +233,6 @@ func getInstallationTags(params map[string]interface{}) map[string]bool {
 	}
 
 	return tags
-}
-
-func iSLiveEnabled(params map[string]interface{}) bool {
-	autoscaler, ok := params["autoscaler"].(map[string]interface{})
-	if !ok {
-		return false
-	}
-	liveCfg, ok := autoscaler["castai-live"].(map[string]interface{})
-	if !ok {
-		return false
-	}
-	if enabled, ok := liveCfg["enabled"].(bool); ok {
-		return enabled
-	}
 }
 
 // umbrellaInventory walks the release chart's dependency tree and resolves, per
