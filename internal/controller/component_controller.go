@@ -869,19 +869,30 @@ func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.F
 		r.recordActionResult(ctx, log, component, castai.Action_INSTALL, nil, withDefaultStatus(castai.Status_PROGRESSING))
 	}
 
-	_, err = r.HelmClient.GetRelease(helm.GetReleaseOptions{
+	existingRelease, err := r.HelmClient.GetRelease(helm.GetReleaseOptions{
 		Namespace:   component.Namespace,
 		ReleaseName: getReleaseName(component),
 	})
-	// If release is not found we install it, otherwise we just set status as progressing and wait for completion.
-	// This could happen if we start to install but fail to set progressing
-	// status condition (for example because the operator is restarted).
-	if err != nil {
-		if !errors.Is(err, driver.ErrReleaseNotFound) {
+	// If the release is not found we install it; otherwise we just set status as
+	// progressing and wait for completion (this could happen if we start to
+	// install but fail to set the progressing status condition, e.g. because
+	// the operator is restarted).
+	//
+	// A release left in failed state (e.g. a transient RBAC or API-server
+	// error during the first install) also triggers a reinstall: without this
+	// the "release not found" branch is never taken again and the component
+	// wedges on the stored failure forever. helm's Install action uninstalls
+	// the failed release and reinstalls it from scratch.
+	if err != nil || (existingRelease != nil && existingRelease.Info != nil && existingRelease.Info.Status == release.StatusFailed) {
+		if err != nil && !errors.Is(err, driver.ErrReleaseNotFound) {
 			log.WithError(err).Error("Failed to get release")
 			return ctrl.Result{}, err
 		}
-		log.WithField("helm_chart", component.HelmChartName()).Info("Helm release not found, installing component")
+		if existingRelease != nil && existingRelease.Info != nil && existingRelease.Info.Status == release.StatusFailed {
+			log.WithField("helm_chart", component.HelmChartName()).Warn("Previous install failed, reinstalling component")
+		} else {
+			log.WithField("helm_chart", component.HelmChartName()).Info("Helm release not found, installing component")
+		}
 		_, err = r.HelmClient.Install(ctx, helm.InstallOptions{
 			ChartSource: &helm.ChartSource{
 				RepoURL: cluster.Spec.HelmRepoURL,
@@ -1039,6 +1050,13 @@ func (r *ComponentReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 		ReleaseName: getReleaseName(component),
 	})
 	if err != nil {
+		if errors.Is(err, driver.ErrReleaseNotFound) {
+			// The release was never created (e.g. a failed first install or a
+			// deleted release): there is no previous state to roll back to.
+			// Let the caller clear the Progressing condition so the next
+			// reconcile can re-attempt the install instead of wedging forever.
+			return ctrl.Result{}, ErrNothingToRollback
+		}
 		log.WithError(err).Error("Failed to get helm release")
 		return ctrl.Result{}, err
 	}
