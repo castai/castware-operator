@@ -48,8 +48,8 @@ const (
 	UmbrellaTagFull               = "full"
 )
 
-// UmbrellaTagComponents maps each autoscaler profile tag to the exact set of
-// sub-component (sub-chart) names that tag installs under the castai-umbrella
+// UmbrellaTagComponents maps each tag to the exact set of sub-component
+// (sub-chart) names that tag installs under the castai-umbrella
 // chart (verified against the published castai chart, 0.43.227 at the time
 // of writing — see umbrella_chart_integration_test.go, which fails on drift).
 //
@@ -103,8 +103,8 @@ var UmbrellaTagComponents = map[string][]string{
 	},
 }
 
-// UmbrellaCoveredComponents lists every sub-component any autoscaler tag of
-// the castai-umbrella chart can install (the union of all tag sets, 10 in
+// UmbrellaCoveredComponents lists every sub-component any tag of  the
+// castai-umbrella chart can install (the union of all tag sets, 10 in
 // the published castai chart at the time of writing).
 //
 // The order is not alphabetical: it keeps the tag grouping (readonly four,

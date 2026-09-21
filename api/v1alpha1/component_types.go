@@ -150,10 +150,7 @@ type ComponentStatus struct {
 	MigrationPhaseStartedAt metav1.Time `json:"migrationPhaseStartedAt,omitempty"`
 
 	// MigrationDerivedTag is the umbrella tag mode derived from the full set of
-	// present standalone components at migration start (components.MinimalCoveringTag).
-	// Written in the MarkReadonly phase before any uninstall, so the InstallUmbrella
-	// phase derives the same tag even after the standalone releases are gone
-	// (post-uninstall probing cannot see them). Cleared when the migration
+	// present standalone components at migration start. Cleared when the migration
 	// finalizes or rolls back.
 	// +optional
 	MigrationDerivedTag string `json:"migrationDerivedTag,omitempty"`
