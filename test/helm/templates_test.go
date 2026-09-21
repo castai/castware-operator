@@ -29,27 +29,6 @@ func renderChart(t *testing.T, sets ...string) string {
 	return string(out)
 }
 
-// renderChartExpectFailure asserts that `helm template` fails with the given
-// substring in the error output (used for guard rules that must abort the
-// install).
-func renderChartExpectFailure(t *testing.T, want string, sets ...string) {
-	t.Helper()
-	abs, err := filepath.Abs(chartPath)
-	if err != nil {
-		t.Fatalf("resolve chart path: %v", err)
-	}
-	args := []string{"template", abs, "--set", "apiKeySecret.apiKey=test"} //nolint:prealloc
-	args = append(args, sets...)
-	cmd := exec.Command("helm", args...)
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatalf("expected helm template to fail, but it succeeded:\n%s", out)
-	}
-	if !strings.Contains(string(out), want) {
-		t.Fatalf("expected error containing %q, got:\n%s", want, out)
-	}
-}
-
 // extractComponentManifests pulls out the post-install Component CRs (hook-weight "10")
 // from a full helm template render.
 func extractComponentManifests(t *testing.T, rendered string) []string {
@@ -90,21 +69,97 @@ func TestUmbrellaPath_MinimalPermissions(t *testing.T) {
 	}
 }
 
-func TestUmbrellaPath_ExtendedPermissionsRefused(t *testing.T) {
-	// Non-readonly umbrella modes are not supported yet: extendedPermissions
-	// would derive tags.full=true, which the guard refuses at install time.
-	renderChartExpectFailure(t, "supports only the readonly tag",
+func TestUmbrellaPath_ExtendedPermissionsDerivesFull(t *testing.T) {
+	// extendedPermissions=true without an explicit tags block derives
+	// tags.full=true (the umbrella renders every mode component).
+	rendered := renderChart(t,
 		"--set", "defaultComponents.umbrella.enabled=true",
 		"--set", "extendedPermissions=true",
 	)
+
+	components := extractComponentManifests(t, rendered)
+	if len(components) != 1 {
+		t.Fatalf("expected 1 Component CR, got %d", len(components))
+	}
+	comp := components[0]
+	if !strings.Contains(comp, "full: true") {
+		t.Errorf("expected tags.full=true when extendedPermissions=true, got:\n%s", comp)
+	}
 }
 
-func TestUmbrellaPath_NonReadonlyTagRefused(t *testing.T) {
-	// An explicit non-readonly mode tag is refused at install time.
-	renderChartExpectFailure(t, "supports only the readonly tag",
+func TestUmbrellaPath_NodeAutoscalerTagAllowed(t *testing.T) {
+	// An explicit non-readonly mode tag renders as-is.
+	rendered := renderChart(t,
 		"--set", "defaultComponents.umbrella.enabled=true",
 		"--set", "defaultComponents.umbrella.tags.node-autoscaler=true",
 	)
+
+	components := extractComponentManifests(t, rendered)
+	if len(components) != 1 {
+		t.Fatalf("expected 1 Component CR, got %d", len(components))
+	}
+	comp := components[0]
+	if !strings.Contains(comp, "node-autoscaler: true") {
+		t.Errorf("expected tags.node-autoscaler=true, got:\n%s", comp)
+	}
+	if strings.Contains(comp, "readonly: true") {
+		t.Errorf("tags.readonly should not appear when an explicit tag is set")
+	}
+}
+
+func TestUmbrellaPath_LiveDisabledByDefault(t *testing.T) {
+	// castai-live must be disabled in the rendered Component CR by default.
+	rendered := renderChart(t,
+		"--set", "defaultComponents.umbrella.enabled=true",
+		"--set", "defaultComponents.umbrella.tags.full=true",
+	)
+	components := extractComponentManifests(t, rendered)
+	if len(components) != 1 {
+		t.Fatalf("expected 1 Component CR, got %d", len(components))
+	}
+	comp := components[0]
+	if !strings.Contains(comp, "castai-live:") || !strings.Contains(comp, "enabled: false") {
+		t.Errorf("expected autoscaler.castai-live.enabled=false by default, got:\n%s", comp)
+	}
+}
+
+func TestUmbrellaPath_LiveOptIn(t *testing.T) {
+	// defaultComponents.umbrella.live.enabled=true renders live enabled in the CR.
+	rendered := renderChart(t,
+		"--set", "defaultComponents.umbrella.enabled=true",
+		"--set", "defaultComponents.umbrella.tags.full=true",
+		"--set", "defaultComponents.umbrella.live.enabled=true",
+	)
+	components := extractComponentManifests(t, rendered)
+	if len(components) != 1 {
+		t.Fatalf("expected 1 Component CR, got %d", len(components))
+	}
+	comp := components[0]
+	if !strings.Contains(comp, "castai-live:") || !strings.Contains(comp, "enabled: true") {
+		t.Errorf("expected autoscaler.castai-live.enabled=true with the live opt-in, got:\n%s", comp)
+	}
+}
+
+func TestRbacExt_LivePermissionsGated(t *testing.T) {
+	// The live-specific RBAC (priorityclasses, validatingadmissionpolicies,
+	// cluster-scope secrets) must only render when the live opt-in is set.
+	base := renderChart(t,
+		"--set", "extendedPermissions=true",
+	)
+	if strings.Contains(base, "manager-role-live-ext") || strings.Contains(base, "validatingadmissionpolicies") {
+		t.Errorf("live-specific RBAC must not render without the live opt-in")
+	}
+
+	optIn := renderChart(t,
+		"--set", "extendedPermissions=true",
+		"--set", "defaultComponents.umbrella.live.enabled=true",
+	)
+	if !strings.Contains(optIn, "manager-role-live-ext") {
+		t.Errorf("expected the live ClusterRole to render when the live opt-in is set")
+	}
+	if !strings.Contains(optIn, "validatingadmissionpolicies") {
+		t.Errorf("expected live VAP permissions to render when the live opt-in is set")
+	}
 }
 
 func TestUmbrellaPath_DefaultExtendedPermissionsUnset(t *testing.T) {

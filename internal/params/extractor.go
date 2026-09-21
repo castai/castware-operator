@@ -188,19 +188,8 @@ func extractUmbrellaParams(ctx context.Context, log logrus.FieldLogger, helmRele
 		coalesced = c
 	}
 
-	// Active tag modes, sanitized to bools only: Mothership flattens tags
-	// into umbrella conditions, so non-bool entries (strings, nil, nested
-	// maps) are dropped to keep the map[string]bool contract.
-	if raw, ok := coalesced["tags"].(map[string]interface{}); ok {
-		tags := make(map[string]bool, len(raw))
-		for name, value := range raw {
-			if b, ok := value.(bool); ok {
-				tags[name] = b
-			}
-		}
-		if len(tags) > 0 {
-			params["tags"] = tags
-		}
+	if tags := getInstallationTags(coalesced); len(tags) > 0 {
+		params["tags"] = tags
 	}
 
 	// Actual view: live workload versions of the umbrella's sub-components.
@@ -211,6 +200,9 @@ func extractUmbrellaParams(ctx context.Context, log logrus.FieldLogger, helmRele
 
 	// Flat flags for existing consumers, read from the coalesced (nested)
 	// sub-chart values.
+	if v, ok := lookupBool(coalesced, "autoscaler.castai-live.enabled"); ok && v {
+		params["live"] = v
+	}
 	if v, ok := lookupBool(coalesced, "autoscaler.castai-spot-handler.phase2Permissions"); ok {
 		params["phase2Permissions"] = v
 	}
@@ -225,6 +217,22 @@ func extractUmbrellaParams(ctx context.Context, log logrus.FieldLogger, helmRele
 	params["extendedPermissions"] = components.RequiresExtendedPermissionsForValues(components.ComponentNameUmbrella, coalesced)
 
 	return params
+}
+
+// Active tag modes, sanitized to bools only: Mothership flattens tags
+// into umbrella conditions, so non-bool entries (strings, nil, nested
+// maps) are dropped to keep the map[string]bool contract.
+func getInstallationTags(params map[string]interface{}) map[string]bool {
+	tags := make(map[string]bool)
+	if raw, ok := params["tags"].(map[string]interface{}); ok {
+		for name, value := range raw {
+			if b, ok := value.(bool); ok {
+				tags[name] = b
+			}
+		}
+	}
+
+	return tags
 }
 
 // umbrellaInventory walks the release chart's dependency tree and resolves, per

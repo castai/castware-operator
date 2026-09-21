@@ -325,12 +325,19 @@ rules:
       - "nodeclaims"
     verbs:
       - "delete"
-  # For waiting on CRDs to be established (workload-autoscaler).
+  # For managing CRDs of umbrella sub-components (kvisor, live, pod-mutator,
+  # workload-autoscaler) and waiting on them to be established.
   - apiGroups:
       - "apiextensions.k8s.io"
     resources:
       - "customresourcedefinitions"
     verbs:
+      - "create"
+      - "delete"
+      - "get"
+      - "list"
+      - "patch"
+      - "update"
       - "watch"
   # For leader election leases of castware components installed with tags.full=true.
   - apiGroups:
@@ -343,3 +350,29 @@ rules:
       - "list"
       - "update"
       - "watch"
+  # Webhook configurations managed by umbrella sub-components (pod-mutator,
+  # pod-pinner, kvisor). get/list/patch/update/watch come from the base
+  # manager-role; the umbrella install additionally needs create/delete.
+  - apiGroups:
+      - "admissionregistration.k8s.io"
+    resources:
+      - "mutatingwebhookconfigurations"
+      - "validatingwebhookconfigurations"
+    verbs:
+      - "create"
+      - "delete"
+  # Update verb the umbrella's sub-chart ClusterRoles grant on roles/cluster-roles
+  # (RBAC escalation requires the operator to hold what it installs).
+  - apiGroups:
+      - "rbac.authorization.k8s.io"
+    resources:
+      - "clusterroles"
+      - "clusterrolebindings"
+    verbs:
+      - "update"
+  - apiGroups:
+      - "rbac.authorization.k8s.io"
+    resources:
+      - "roles"
+    verbs:
+      - "delete"

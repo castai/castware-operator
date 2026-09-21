@@ -316,24 +316,24 @@ var _ = Describe("Component Webhook", func() {
 			Expect(err).Error().To(MatchError("component 'cluster-controller' requires extended permissions, please run `helm upgrade castware-operator -n castai-agent --set extendedPermissions=\"true\" --reuse-values castai-helm/castware-operator`"))
 		})
 
-		It("Should deny umbrella creation when a non-readonly tag is set — only readonly is supported", func() {
-			By("umbrella with tags.full is not supported yet")
+		It("Should deny umbrella creation with a non-readonly tag when extended permissions are missing", func() {
+			By("umbrella with tags.full pulls in the cluster-controller, which needs extended permissions")
 			obj.Spec.Component = components.ComponentNameUmbrella
 			obj.Spec.Cluster = clusterName
 			obj.SetNamespace("default")
 			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"full":true}}`)}
 			_, err := validator.ValidateCreate(ctx, obj)
-			Expect(err).Error().To(MatchError("component 'castai-umbrella' supports only the readonly tag for now; non-readonly umbrella modes (node-autoscaler, workload-autoscaler, full) are not supported yet"))
+			Expect(err).Error().To(MatchError("component 'castai-umbrella' requires extended permissions, please run `helm upgrade castware-operator -n castai-agent --set extendedPermissions=\"true\" --reuse-values castai-helm/castware-operator`"))
 		})
 
-		It("Should deny umbrella creation with no tags — only readonly is supported", func() {
-			By("umbrella with empty values does not enable readonly")
+		It("Should deny umbrella creation with no tags when extended permissions are missing", func() {
+			By("umbrella with empty values does not enable readonly, so it needs extended permissions")
 			obj.Spec.Component = components.ComponentNameUmbrella
 			obj.Spec.Cluster = clusterName
 			obj.SetNamespace("default")
 			obj.Spec.Values = nil
 			_, err := validator.ValidateCreate(ctx, obj)
-			Expect(err).Error().To(MatchError("component 'castai-umbrella' supports only the readonly tag for now; non-readonly umbrella modes (node-autoscaler, workload-autoscaler, full) are not supported yet"))
+			Expect(err).Error().To(MatchError("component 'castai-umbrella' requires extended permissions, please run `helm upgrade castware-operator -n castai-agent --set extendedPermissions=\"true\" --reuse-values castai-helm/castware-operator`"))
 		})
 
 		It("Should admit umbrella creation with tags.readonly=true without extended permissions", func() {
@@ -350,14 +350,14 @@ var _ = Describe("Component Webhook", func() {
 			Expect(validator.ValidateCreate(ctx, obj)).To(BeNil())
 		})
 
-		It("Should deny umbrella creation when readonly tag and cluster-controller are both enabled", func() {
-			By("an explicitly enabled cluster-controller is a non-readonly profile and is not supported yet")
+		It("Should deny umbrella creation when readonly tag and cluster-controller are both enabled and extended permissions are missing", func() {
+			By("an explicitly enabled cluster-controller is a non-readonly profile and requires extended permissions")
 			obj.Spec.Component = components.ComponentNameUmbrella
 			obj.Spec.Cluster = clusterName
 			obj.SetNamespace("default")
 			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"readonly":true},"autoscaler":{"castai-cluster-controller":{"enabled":true}}}`)}
 			_, err := validator.ValidateCreate(ctx, obj)
-			Expect(err).Error().To(MatchError("component 'castai-umbrella' supports only the readonly tag for now; non-readonly umbrella modes (node-autoscaler, workload-autoscaler, full) are not supported yet"))
+			Expect(err).Error().To(MatchError("component 'castai-umbrella' requires extended permissions, please run `helm upgrade castware-operator -n castai-agent --set extendedPermissions=\"true\" --reuse-values castai-helm/castware-operator`"))
 		})
 
 		It("Should admit creation", func() {
@@ -543,6 +543,65 @@ var _ = Describe("Component Webhook", func() {
 			}
 			Expect(k8sClient.Create(ctx, extendedRoleBinding)).To(Succeed())
 			Expect(k8sClient.Create(ctx, extendedClusterRoleBinding)).To(Succeed())
+
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: "",
+			})
+			Expect(validator.ValidateCreate(ctx, obj)).To(BeNil())
+		})
+
+		It("Should admit umbrella creation with tags.node-autoscaler=true when extended permissions are present", func() {
+			By("node-autoscaler pulls in the cluster-controller; extended permissions lift the gate")
+			obj.Spec.Component = components.ComponentNameUmbrella
+			obj.Spec.Cluster = clusterName
+			obj.SetNamespace("default")
+			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"node-autoscaler":true}}`)}
+
+			extendedRoleBinding := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "umbrella-extended-permissions-rolebinding",
+					Namespace: obj.Namespace,
+					Labels: map[string]string{
+						"castware.cast.ai/extended-permissions": "true",
+					},
+				},
+				Subjects: []rbacv1.Subject{{
+					Kind:      "ServiceAccount",
+					Name:      "test-service-account",
+					Namespace: obj.Namespace,
+				}},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: "rbac.authorization.k8s.io",
+					Kind:     "Role",
+					Name:     "test-role",
+				},
+			}
+			extendedClusterRoleBinding := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "umbrella-extended-permissions-clusterrolebinding",
+					Labels: map[string]string{
+						"castware.cast.ai/extended-permissions": "true",
+					},
+				},
+				Subjects: []rbacv1.Subject{{
+					Kind:      "ServiceAccount",
+					Name:      "test-service-account",
+					Namespace: obj.Namespace,
+				}},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: "rbac.authorization.k8s.io",
+					Kind:     "ClusterRole",
+					Name:     "test-cluster-role",
+				},
+			}
+			Expect(k8sClient.Create(ctx, extendedRoleBinding)).To(Succeed())
+			Expect(k8sClient.Create(ctx, extendedClusterRoleBinding)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, extendedRoleBinding)
+				_ = k8sClient.Delete(ctx, extendedClusterRoleBinding)
+			})
 
 			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
 				RepoURL: "",

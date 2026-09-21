@@ -103,6 +103,7 @@ var ErrNothingToRollback = errors.New("nothing to rollback")
 // +kubebuilder:rbac:groups=karpenter.azure.com,resources=aksnodeclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=live.cast.ai,resources=migrations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=karpenter.sh,resources=machines;nodeclaims;nodepools;provisioners;nodeoverlays,verbs=get;list;watch
+// +kubebuilder:rbac:groups=karpenter.azure.com,resources=aksnodeclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=metrics.k8s.io,resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses;networkpolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch
