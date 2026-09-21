@@ -53,10 +53,6 @@ func UmbrellaValues(component *castwarev1alpha1.Component, cluster *castwarev1al
 		kvisorCastai["clusterIdSecretKeyRef"] = map[string]any{"name": ""}
 	}
 
-	// The autoscaler block is built as one map so the builder defaults and
-	// the conditional kvisor wiring coexist: the kvisor cluster-ID ref
-	// neutralization must not replace the map (dropping the castai-live
-	// opt-out with it).
 	autoscaler := map[string]any{
 		// castai-live is opt-in: the live chart requires extra cluster-scoped
 		// RBAC (cluster-scope secrets read, PriorityClasses, ValidatingAdmission-
