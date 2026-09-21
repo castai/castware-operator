@@ -242,13 +242,7 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 	return nil, nil
 }
 
-// validateMutualExclusivity enforces the umbrella / individual charts mutual-
-// exclusivity gate at admission, at the Component-CR level. Creating an
-// umbrella CR is rejected when individual sub-component CRs exist and
-// spec.migrate is not set; creating an individual (non-umbrella) CR is rejected
-// when an umbrella CR exists. Release-level conflicts (e.g. a helm release
-// installed without a CR) are enforced by the reconcilers.
-// validateUmbrellaKent rejects the kent profile — not supported yet.
+// validateUmbrellaKent rejects the kent profile - not supported yet.
 func validateUmbrellaKent(c *castwarev1alpha1.Component) error {
 	if c.Spec.Component != components.ComponentNameUmbrella {
 		return nil
@@ -265,6 +259,12 @@ func validateUmbrellaKent(c *castwarev1alpha1.Component) error {
 	return nil
 }
 
+// validateMutualExclusivity enforces the umbrella / individual charts mutual-
+// exclusivity gate at admission, at the Component-CR level. Creating an
+// umbrella CR is rejected when individual sub-component CRs exist and
+// spec.migrate is not set; creating an individual (non-umbrella) CR is rejected
+// when an umbrella CR exists. Release-level conflicts (e.g. a helm release
+// installed without a CR) are enforced by the reconcilers.
 func (v *ComponentCustomValidator) validateMutualExclusivity(ctx context.Context, c *castwarev1alpha1.Component) error {
 	if c.Spec.Component == components.ComponentNameUmbrella {
 		for _, sub := range migrationgate.Subcomponents {
