@@ -45,10 +45,27 @@ func RequiresExtendedPermissions(name string) bool {
 // combination, so the gate treats the cluster-controller as authoritative:
 // whenever it is enabled — by explicit opt-in or by a non-readonly tag — the
 // umbrella requires extended permissions, even if tags.readonly is also set.
+//
+// The kent profile is the same hazard one level up: it is enabled by the
+// kent.enabled condition (not a tag) and renders a broader surface than any
+// autoscaler tag — cluster-controller, kentroller, pod-mutator, live,
+// workload-autoscaler, metrics-server, chart-upgrader. An explicitly enabled
+// kent profile therefore also requires extended permissions regardless of
+// the readonly tag, closing the gap where kent.enabled=true combined with
+// tags.readonly=true would be misclassified as minimal-permission.
 // All non-umbrella components delegate to RequiresExtendedPermissions.
 func RequiresExtendedPermissionsForValues(name string, values map[string]any) bool {
 	if name != ComponentNameUmbrella {
 		return RequiresExtendedPermissions(name)
+	}
+	// An explicitly enabled kent profile always requires extended permissions:
+	// it renders the kent stack (cluster-controller, kentroller, pod-mutator,
+	// live, workload-autoscaler, metrics-server, chart-upgrader) regardless of
+	// the readonly tag.
+	if kent, ok := values["kent"].(map[string]any); ok {
+		if enabled, _ := kent["enabled"].(bool); enabled {
+			return true
+		}
 	}
 	// An explicitly enabled cluster-controller always requires extended
 	// permissions, regardless of the readonly tag.
