@@ -205,6 +205,14 @@ rules:
   - list
   - watch
 - apiGroups:
+  - live.cast.ai
+  resources:
+  - migrations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - metrics.k8s.io
   resources:
   - pods

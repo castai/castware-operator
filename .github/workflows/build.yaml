@@ -23,11 +23,20 @@ on:
         options:
           - components
 
+# Every image push goes to BOTH registries
+# GHCR_IMAGE is our default one
+env:
+  GAR_IMAGE: us-docker.pkg.dev/castai-hub/library/castware-operator
+  GHCR_IMAGE: ghcr.io/castai/images/castware-operator
+
 jobs:
   build:
     name: Build
     if: github.event_name != 'release' || !contains(github.event.release.tag_name, '-rc')
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
     outputs:
       rc_version: ${{ steps.rc_version.outputs.rc_version }}
       release_tag: ${{ steps.set_version.outputs.release_tag }}
@@ -54,6 +63,7 @@ jobs:
             echo "RELEASE_TAG=$VERSION" >> $GITHUB_ENV
             echo "release_tag=$VERSION" >> $GITHUB_OUTPUT
           fi
+          echo "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
 
       - name: Generate Helm charts
         run: make helm
@@ -96,6 +106,13 @@ jobs:
           username: _json_key
           password: ${{ secrets.ARTIFACT_BUILDER_JSON_KEY }}
 
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build and push pr
         if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
         uses: docker/build-push-action@v6
@@ -103,7 +120,25 @@ jobs:
           context: .
           push: true
           platforms: linux/arm64,linux/amd64
-          tags: us-docker.pkg.dev/castai-hub/library/castware-operator:${{ github.sha }}
+          tags: |
+            ${{ env.GAR_IMAGE }}:${{ github.sha }}
+            ${{ env.GHCR_IMAGE }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/castai/castware-operator
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.sha }}
+            org.opencontainers.image.created=${{ env.CREATED }}
+            org.opencontainers.image.title=castware-operator
+            org.opencontainers.image.vendor=CAST AI
+            distribution-scope=public
+            ai.cast.image.canonical-registry=us-docker.pkg.dev/castai-hub/library
+          annotations: |
+            index,manifest:org.opencontainers.image.source=https://github.com/castai/castware-operator
+            index,manifest:org.opencontainers.image.revision=${{ github.sha }}
+            index,manifest:org.opencontainers.image.created=${{ env.CREATED }}
+            index,manifest:org.opencontainers.image.title=castware-operator
+            index,manifest:distribution-scope=public
+            index,manifest:ai.cast.image.canonical-registry=us-docker.pkg.dev/castai-hub/library
 
       - name: Build and push release
         if: github.event_name == 'release'
@@ -113,8 +148,26 @@ jobs:
           push: true
           platforms: linux/arm64,linux/amd64
           tags: |
-            us-docker.pkg.dev/castai-hub/library/castware-operator:${{ env.RELEASE_TAG }}
-            us-docker.pkg.dev/castai-hub/library/castware-operator:latest
+            ${{ env.GAR_IMAGE }}:${{ env.RELEASE_TAG }}
+            ${{ env.GAR_IMAGE }}:latest
+            ${{ env.GHCR_IMAGE }}:${{ env.RELEASE_TAG }}
+            ${{ env.GHCR_IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/castai/castware-operator
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.RELEASE_TAG }}
+            org.opencontainers.image.created=${{ env.CREATED }}
+            org.opencontainers.image.title=castware-operator
+            org.opencontainers.image.vendor=CAST AI
+            distribution-scope=public
+            ai.cast.image.canonical-registry=us-docker.pkg.dev/castai-hub/library
+          annotations: |
+            index,manifest:org.opencontainers.image.source=https://github.com/castai/castware-operator
+            index,manifest:org.opencontainers.image.revision=${{ github.sha }}
+            index,manifest:org.opencontainers.image.created=${{ env.CREATED }}
+            index,manifest:org.opencontainers.image.title=castware-operator
+            index,manifest:distribution-scope=public
+            index,manifest:ai.cast.image.canonical-registry=us-docker.pkg.dev/castai-hub/library
 
       - name: Determine RC version
         id: rc_version
@@ -158,11 +211,29 @@ jobs:
           context: .
           push: true
           platforms: linux/arm64,linux/amd64
-          tags: us-docker.pkg.dev/castai-hub/library/castware-operator:${{ env.RC_VERSION }}
+          tags: |
+            ${{ env.GAR_IMAGE }}:${{ env.RC_VERSION }}
+            ${{ env.GHCR_IMAGE }}:${{ env.RC_VERSION }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/castai/castware-operator
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.RC_VERSION }}
+            org.opencontainers.image.created=${{ env.CREATED }}
+            org.opencontainers.image.title=castware-operator
+            org.opencontainers.image.vendor=CAST AI
+            distribution-scope=public
+            ai.cast.image.canonical-registry=us-docker.pkg.dev/castai-hub/library
+          annotations: |
+            index,manifest:org.opencontainers.image.source=https://github.com/castai/castware-operator
+            index,manifest:org.opencontainers.image.revision=${{ github.sha }}
+            index,manifest:org.opencontainers.image.created=${{ env.CREATED }}
+            index,manifest:org.opencontainers.image.title=castware-operator
+            index,manifest:distribution-scope=public
+            index,manifest:ai.cast.image.canonical-registry=us-docker.pkg.dev/castai-hub/library
 
       - name: Docker pull for fossa main
         if: github.event_name == 'release'
-        run: docker pull us-docker.pkg.dev/castai-hub/library/castware-operator:${{ env.RELEASE_TAG }}
+        run: docker pull ${{ env.GAR_IMAGE }}:${{ env.RELEASE_TAG }}
 
       - name: FOSSA scan docker image
         if: github.event_name == 'release'
@@ -170,7 +241,7 @@ jobs:
         uses: fossas/fossa-action@v1
         with:
           api-key: ${{ secrets.FOSSA_API_KEY }}
-          container: us-docker.pkg.dev/castai-hub/library/castware-operator:${{ env.RELEASE_TAG }}
+          container: ${{ env.GAR_IMAGE }}:${{ env.RELEASE_TAG }}
 
   release_chart_rc:
     name: Release Helm Chart RC
@@ -264,8 +335,8 @@ jobs:
           E2E_OPERATOR_IMAGE: >-
             ${{
               github.event_name == 'release'
-              && format('us-docker.pkg.dev/castai-hub/library/castware-operator:{0}', needs.build.outputs.rc_version)
-              || format('us-docker.pkg.dev/castai-hub/library/castware-operator:{0}', github.sha)
+              && format('{0}:{1}', env.GHCR_IMAGE, needs.build.outputs.rc_version)
+              || format('{0}:{1}', env.GHCR_IMAGE, github.sha)
             }}
           E2E_OPERATOR_VERSION: >-
             ${{

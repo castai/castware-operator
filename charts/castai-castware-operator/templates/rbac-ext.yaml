@@ -305,6 +305,14 @@ rules:
   - list
   - watch
 - apiGroups:
+  - karpenter.azure.com
+  resources:
+  - aksnodeclasses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - karpenter.sh
   resources:
   - nodeclaims

@@ -1,5 +1,5 @@
 image:
-  repository: us-docker.pkg.dev/castai-hub/library/castware-operator
+  repository: ghcr.io/castai/images/castware-operator
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
