@@ -147,28 +147,15 @@ var umbrellaWorkloadOnlySet = toSet([]string{
 	ComponentNameWorkloadAutoscalerExporter,
 })
 
-// umbrellaNodeSideSet holds the components that count as "node side" for
-// MinimalCoveringTag: everything the node-autoscaler tag adds on top of
-// readonly. castai-cluster-controller, castai-evictor and castai-pod-mutator
-// are shared with the workload side.
+// umbrellaNodeSideSet holds the components the node-autoscaler tag adds on
+// top of readonly: the workload-shared trio (cluster-controller, evictor,
+// pod-mutator) plus the node-exclusive pair (pod-pinner, live).
 var umbrellaNodeSideSet = toSet([]string{
 	UmbrellaSubchartClusterController,
 	ComponentNameEvictor,
 	ComponentNamePodMutator,
 	ComponentNamePodPinner,
 	ComponentNameLive,
-})
-
-// umbrellaWorkloadSideSet holds the components that count as "workload side"
-// for MinimalCoveringTag: everything the workload-autoscaler tag adds on top
-// of readonly. castai-cluster-controller, castai-evictor and
-// castai-pod-mutator are shared with the node side.
-var umbrellaWorkloadSideSet = toSet([]string{
-	UmbrellaSubchartClusterController,
-	ComponentNameEvictor,
-	ComponentNamePodMutator,
-	ComponentNameWorkloadAutoscaler,
-	ComponentNameWorkloadAutoscalerExporter,
 })
 
 // IsUmbrellaCoveredComponent reports whether name is one of the sub-components
@@ -210,18 +197,14 @@ func IsUmbrellaCoveredComponent(name string) bool {
 //     components are also present);
 //   - else any node-side component (cluster-controller, evictor,
 //     pod-mutator, pod-pinner, castai-live) → node-autoscaler;
-//   - else any workload-side component (cluster-controller, evictor,
-//     pod-mutator, workload-autoscaler, workload-autoscaler-exporter) →
-//     workload-autoscaler;
 //   - else → readonly.
 //
-// cluster-controller, evictor and pod-mutator count for both the node and
-// the workload side: with only those shared components present the node
-// side wins (its check comes first), but they lose to the
-// workload-autoscaler-exclusive components, which the node-autoscaler tag
-// would not cover.
+// cluster-controller, evictor and pod-mutator are shared between the node and
+// workload modes: with only those present the tie resolves to node-autoscaler
+// (its check comes first), but they lose to workload-autoscaler-exclusive
+// components, which the node tag would not cover.
 func MinimalCoveringTag(present []string) string {
-	var nodeOnly, workloadOnly, nodeSide, workloadSide bool
+	var nodeOnly, workloadOnly, nodeSide bool
 	for _, name := range present {
 		canonical, ok := canonicalUmbrellaComponent(name)
 		if !ok {
@@ -236,9 +219,6 @@ func MinimalCoveringTag(present []string) string {
 		if umbrellaNodeSideSet[canonical] {
 			nodeSide = true
 		}
-		if umbrellaWorkloadSideSet[canonical] {
-			workloadSide = true
-		}
 	}
 
 	switch {
@@ -251,8 +231,6 @@ func MinimalCoveringTag(present []string) string {
 		return UmbrellaTagWorkloadAutoscaler
 	case nodeSide:
 		return UmbrellaTagNodeAutoscaler
-	case workloadSide:
-		return UmbrellaTagWorkloadAutoscaler
 	default:
 		return UmbrellaTagReadonly
 	}
