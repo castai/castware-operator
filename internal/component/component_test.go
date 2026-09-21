@@ -59,6 +59,16 @@ func TestRequiresExtendedPermissionsForValues(t *testing.T) {
 		{name: ComponentNameUmbrella, values: map[string]any{"tags": map[string]any{"readonly": true}, "autoscaler": map[string]any{"castai-cluster-controller": map[string]any{"enabled": true}}}, want: true, comment: "umbrella readonly + cluster-controller enabled requires extended"},
 		{name: ComponentNameUmbrella, values: map[string]any{"tags": map[string]any{"readonly": true}, "autoscaler": map[string]any{"castai-cluster-controller": map[string]any{"enabled": false}}}, want: false, comment: "umbrella readonly + cluster-controller explicitly disabled is minimal-perm"},
 		{name: ComponentNameUmbrella, values: map[string]any{"autoscaler": map[string]any{"castai-cluster-controller": map[string]any{"enabled": true}}}, want: true, comment: "umbrella cluster-controller enabled with no tags requires extended"},
+
+		// The kent profile is enabled by condition, not a tag, and renders a
+		// broader surface than any autoscaler tag — it is authoritative like the
+		// cluster-controller: enabled kent requires extended permissions even
+		// when tags.readonly is also set.
+		{name: ComponentNameUmbrella, values: map[string]any{"kent": map[string]any{"enabled": true}}, want: true, comment: "umbrella kent enabled requires extended"},
+		{name: ComponentNameUmbrella, values: map[string]any{"kent": map[string]any{"enabled": true}, "tags": map[string]any{"readonly": true}}, want: true, comment: "umbrella kent enabled + readonly tag still requires extended (misclassification fixed)"},
+		{name: ComponentNameUmbrella, values: map[string]any{"kent": map[string]any{"enabled": false}, "tags": map[string]any{"readonly": true}}, want: false, comment: "umbrella kent explicitly disabled with readonly tag is minimal-perm"},
+		{name: ComponentNameUmbrella, values: map[string]any{"kent": "not-a-map", "tags": map[string]any{"readonly": true}}, want: false, comment: "umbrella malformed kent block is ignored (readonly still minimal-perm)"},
+		{name: ComponentNameUmbrella, values: map[string]any{"kent": map[string]any{"enabled": "true"}, "tags": map[string]any{"readonly": true}}, want: false, comment: "umbrella kent enabled as string (not bool) is ignored"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.comment, func(t *testing.T) {

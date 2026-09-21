@@ -50,6 +50,15 @@ func RequiresExtendedPermissionsForValues(name string, values map[string]any) bo
 	if name != ComponentNameUmbrella {
 		return RequiresExtendedPermissions(name)
 	}
+	// An explicitly enabled kent profile always requires extended permissions:
+	// it renders the kent stack (cluster-controller, kentroller, pod-mutator,
+	// live, workload-autoscaler, metrics-server, chart-upgrader) regardless of
+	// the readonly tag.
+	if kent, ok := values["kent"].(map[string]any); ok {
+		if enabled, _ := kent["enabled"].(bool); enabled {
+			return true
+		}
+	}
 	// An explicitly enabled cluster-controller always requires extended
 	// permissions, regardless of the readonly tag.
 	if umbrellaClusterControllerEnabled(values) {
@@ -67,7 +76,7 @@ func RequiresExtendedPermissionsForValues(name string, values map[string]any) bo
 // node-autoscaler, workload-autoscaler and full tags enable it.
 func umbrellaClusterControllerEnabled(values map[string]any) bool {
 	autoscaler, _ := values["autoscaler"].(map[string]any)
-	cc, _ := autoscaler["castai-cluster-controller"].(map[string]any)
+	cc, _ := autoscaler[UmbrellaSubchartClusterController].(map[string]any)
 	if enabled, ok := cc["enabled"].(bool); ok {
 		return enabled
 	}
@@ -75,7 +84,7 @@ func umbrellaClusterControllerEnabled(values map[string]any) bool {
 	if tags == nil {
 		return false
 	}
-	for _, tag := range []string{"node-autoscaler", "workload-autoscaler", "full"} {
+	for _, tag := range []string{UmbrellaTagNodeAutoscaler, UmbrellaTagWorkloadAutoscaler, UmbrellaTagFull} {
 		if v, _ := tags[tag].(bool); v {
 			return true
 		}

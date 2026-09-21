@@ -12,6 +12,7 @@ import (
 	"fmt"
 
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
+	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/internal/utils"
 )
 
@@ -52,25 +53,26 @@ func UmbrellaValues(component *castwarev1alpha1.Component, cluster *castwarev1al
 		kvisorCastai["clusterIdSecretKeyRef"] = map[string]any{"name": ""}
 	}
 
+	autoscaler := map[string]any{
+		// castai-live is opt-in: the live chart requires extra cluster-scoped
+		// RBAC (cluster-scope secrets read, PriorityClasses, ValidatingAdmission-
+		// Policies), so it is disabled unless the Component's own values
+		// (merged on top below) explicitly enable it.
+		components.ComponentNameLive: map[string]any{
+			"enabled": false,
+		},
+	}
+	if len(kvisorCastai) > 0 {
+		autoscaler[components.ComponentNameKvisor] = map[string]any{
+			"castai": kvisorCastai,
+		}
+	}
+
 	values := map[string]any{
 		"global": map[string]any{
 			"castai": globalCastai,
 		},
-		"autoscaler": map[string]any{
-			// castai-live is opt-in: the live chart requires extra cluster-scoped
-			// RBAC (cluster-scope secrets read, PriorityClasses, ValidatingAdmission-
-			// Policies), so it is disabled unless the Component's own values
-			// (merged on top below) explicitly enable it.
-			"castai-live": map[string]any{
-				"enabled": false,
-			},
-		},
-	}
-
-	if len(kvisorCastai) > 0 {
-		values["autoscaler"].(map[string]any)["castai-kvisor"] = map[string]any{
-			"castai": kvisorCastai,
-		}
+		"autoscaler": autoscaler,
 	}
 
 	// Caller-provided derived overrides (e.g. tag mode from present individuals)

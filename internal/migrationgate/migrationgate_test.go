@@ -264,54 +264,128 @@ func TestResolveNames(t *testing.T) {
 	})
 }
 
-// relWithChart builds a release record identified by the given chart name,
-// with an arbitrary release name — InstalledUmbrellaOnlyCharts must match on
-// chart identity, not release name.
-func relWithChart(chartName string) *release.Release {
+// relWithChartDetails builds a release record with an explicit release name,
+// chart name, chart version and release config (user-supplied values), for
+// tests that exercise the detailed covered-release detection. A nil config
+// stays nil: the migration keeps it rather than substituting an empty map.
+func relWithChartDetails(releaseName, chartName, chartVersion string, config map[string]any) *release.Release {
 	return &release.Release{
-		Name:  "arbitrary-release-name",
-		Chart: &chart.Chart{Metadata: &chart.Metadata{Name: chartName, Version: "1.0.0"}},
+		Name:   releaseName,
+		Chart:  &chart.Chart{Metadata: &chart.Metadata{Name: chartName, Version: chartVersion}},
+		Config: config,
 	}
 }
 
-func TestInstalledUmbrellaOnlyCharts(t *testing.T) {
+// relWithChart builds a release record identified by the given chart name,
+// with an arbitrary release name — InstalledCoveredStandaloneReleases
+// must match on chart identity, not release name.
+func relWithChart(chartName string) *release.Release {
+	return relWithChartDetails("arbitrary-release-name", chartName, "1.0.0", nil)
+}
+
+func TestUmbrellaCoveredCharts(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+
+	covered := map[string]bool{}
+	for _, chart := range UmbrellaCoveredCharts {
+		r.False(covered[chart], "duplicate chart %q", chart)
+		covered[chart] = true
+	}
+	r.Len(covered, 7, "expected the 7 non-operator covered charts")
+
+	// Operator-managed components are detected through Mothership-resolved
+	// release names instead, so their presence here would make the covered-set
+	// detection double-count them.
+	for _, op := range []string{components.ComponentNameAgent, components.ComponentNameSpotHandler, components.ComponentNameClusterController} {
+		r.False(covered[op], "%s must not be in UmbrellaCoveredCharts", op)
+	}
+
+	// Every entry must be a chart the umbrella's autoscaler tags can render —
+	// anything else is drift against components.UmbrellaCoveredComponents.
+	for _, chart := range UmbrellaCoveredCharts {
+		r.True(components.IsUmbrellaCoveredComponent(chart), "%s is not umbrella-covered", chart)
+	}
+}
+
+func TestInstalledCoveredStandaloneReleases(t *testing.T) {
 	t.Parallel()
 	ns := "castai-agent"
 
-	t.Run("returns matching charts in list order", func(t *testing.T) {
+	t.Run("returns full details for matching releases under arbitrary names", func(t *testing.T) {
 		r := require.New(t)
 		ctrl := gomock.NewController(t)
 		hc := mock_helm.NewMockClient(ctrl)
 
-		// A kvisor and an evictor standalone under arbitrary release names,
-		// plus unrelated releases that must not match (including the
-		// operator-supported castai-agent, whose standalone release is the
-		// migration's normal starting point, not a conflict).
+		kvisorConfig := map[string]any{"kvisor": map[string]any{"scanJobsEnabled": true}}
 		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return([]*release.Release{
-			relWithChart("castai-agent"),
-			relWithChart("castai-kvisor"),
-			relWithChart("metrics-server"),
-			relWithChart("castai-evictor"),
+			relWithChartDetails("alpha-kvisor", components.ComponentNameKvisor, "1.2.3", kvisorConfig),
+			relWithChartDetails("zulu-exporter", components.ComponentNameWorkloadAutoscalerExporter, "0.9.1", nil),
 		}, nil)
 
-		present, err := InstalledUmbrellaOnlyCharts(hc, ns)
+		releases, err := InstalledCoveredStandaloneReleases(hc, ns)
 		r.NoError(err)
-		r.Equal([]string{"castai-kvisor", "castai-evictor"}, present)
+		r.Len(releases, 2)
+		r.Equal(CoveredStandaloneRelease{
+			ReleaseName:  "alpha-kvisor",
+			ChartName:    components.ComponentNameKvisor,
+			ChartVersion: "1.2.3",
+			Config:       kvisorConfig,
+		}, releases[0])
+		r.Equal(CoveredStandaloneRelease{
+			ReleaseName:  "zulu-exporter",
+			ChartName:    components.ComponentNameWorkloadAutoscalerExporter,
+			ChartVersion: "0.9.1",
+			Config:       nil, // nil release config stays nil, no empty-map substitution
+		}, releases[1])
 	})
 
-	t.Run("no standalone umbrella-managed releases present", func(t *testing.T) {
+	t.Run("skips unrelated charts", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		hc := mock_helm.NewMockClient(ctrl)
+
+		// castai-agent is operator-managed (probed via Mothership-resolved
+		// release names); metrics-server is a kent-profile chart the migration
+		// never enables; something-else is not umbrella-covered at all.
+		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return([]*release.Release{
+			relWithChart("castai-agent"),
+			relWithChart("metrics-server"),
+			relWithChart("something-else"),
+		}, nil)
+
+		releases, err := InstalledCoveredStandaloneReleases(hc, ns)
+		r.NoError(err)
+		r.Empty(releases)
+	})
+
+	t.Run("tolerates nil Chart and nil Chart.Metadata entries", func(t *testing.T) {
 		r := require.New(t)
 		ctrl := gomock.NewController(t)
 		hc := mock_helm.NewMockClient(ctrl)
 
 		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return([]*release.Release{
-			relWithChart("castai-agent"),
-			relWithChart("castai-spot-handler"),
+			{Name: "no-chart"},
+			{Name: "no-metadata", Chart: &chart.Chart{}},
+			relWithChartDetails("kvisor-rel", components.ComponentNameKvisor, "1.2.3", nil),
 		}, nil)
 
-		present, err := InstalledUmbrellaOnlyCharts(hc, ns)
+		releases, err := InstalledCoveredStandaloneReleases(hc, ns)
 		r.NoError(err)
-		r.Empty(present)
+		r.Len(releases, 1)
+		r.Equal("kvisor-rel", releases[0].ReleaseName)
+	})
+
+	t.Run("empty result when no releases exist", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		hc := mock_helm.NewMockClient(ctrl)
+
+		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return([]*release.Release{}, nil)
+
+		releases, err := InstalledCoveredStandaloneReleases(hc, ns)
+		r.NoError(err)
+		r.Empty(releases)
 	})
 
 	t.Run("helm listing error is returned so callers block (fail-safe)", func(t *testing.T) {
@@ -321,9 +395,36 @@ func TestInstalledUmbrellaOnlyCharts(t *testing.T) {
 
 		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return(nil, errors.New("helm unreachable"))
 
-		present, err := InstalledUmbrellaOnlyCharts(hc, ns)
+		releases, err := InstalledCoveredStandaloneReleases(hc, ns)
 		r.Error(err)
-		r.Nil(present)
+		r.Nil(releases)
+	})
+
+	t.Run("returns all releases of a chart, sorted by release name", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		hc := mock_helm.NewMockClient(ctrl)
+
+		// One chart with several standalone releases plus another covered chart:
+		// every matching release is returned, deterministically ordered by
+		// ReleaseName regardless of the helm list order.
+		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return([]*release.Release{
+			relWithChartDetails("zebra-kvisor", components.ComponentNameKvisor, "1.1.0", nil),
+			relWithChartDetails("alpha-kvisor", components.ComponentNameKvisor, "1.0.0", nil),
+			relWithChartDetails("mid-evictor", components.ComponentNameEvictor, "2.0.0", nil),
+			relWithChartDetails("beta-kvisor", components.ComponentNameKvisor, "1.2.0", nil),
+		}, nil)
+
+		releases, err := InstalledCoveredStandaloneReleases(hc, ns)
+		r.NoError(err)
+		r.Equal([]string{"alpha-kvisor", "beta-kvisor", "mid-evictor", "zebra-kvisor"},
+			[]string{
+				releases[0].ReleaseName,
+				releases[1].ReleaseName,
+				releases[2].ReleaseName,
+				releases[3].ReleaseName,
+			})
+		r.Len(releases, 4)
 	})
 }
 
@@ -342,11 +443,48 @@ func TestValidateUmbrellaInstallPermissions(t *testing.T) {
 			ComponentParams: map[string]any{"tags": map[string]any{"readonly": true}},
 		}).Return(&castai.ValidateComponentInstallResponse{Allowed: true}, nil)
 
-		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3",
+		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", "",
 			&apiextensionsv1.JSON{Raw: []byte(`{"tags":{"readonly":true}}`)})
 		r.NoError(err)
 		r.True(resp.Allowed)
 		r.Empty(resp.BlockReason)
+	})
+
+	t.Run("derived tag is merged under the user values as the effective surface", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mc := mock_castai.NewMockCastAIClient(ctrl)
+		// User keeps its own tag; the migration's derived tag adds its key
+		// alongside it — the surface UmbrellaValues will actually install.
+		mc.EXPECT().ValidateComponentInstall(ctx, &castai.ValidateComponentInstallRequest{
+			ClusterID:     "cluster-id",
+			ComponentName: components.ComponentNameUmbrella,
+			TargetVersion: "1.2.3",
+			ComponentParams: map[string]any{
+				"tags": map[string]any{"readonly": true, "node-autoscaler": true},
+			},
+		}).Return(&castai.ValidateComponentInstallResponse{Allowed: true}, nil)
+
+		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", "node-autoscaler",
+			&apiextensionsv1.JSON{Raw: []byte(`{"tags":{"readonly":true}}`)})
+		r.NoError(err)
+		r.True(resp.Allowed)
+	})
+
+	t.Run("derived tag with no user values sends the tag alone", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mc := mock_castai.NewMockCastAIClient(ctrl)
+		mc.EXPECT().ValidateComponentInstall(ctx, &castai.ValidateComponentInstallRequest{
+			ClusterID:       "cluster-id",
+			ComponentName:   components.ComponentNameUmbrella,
+			TargetVersion:   "1.2.3",
+			ComponentParams: map[string]any{"tags": map[string]any{"full": true}},
+		}).Return(&castai.ValidateComponentInstallResponse{Allowed: true}, nil)
+
+		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", "full", nil)
+		r.NoError(err)
+		r.True(resp.Allowed)
 	})
 
 	t.Run("nil values are sent as no params", func(t *testing.T) {
@@ -360,7 +498,7 @@ func TestValidateUmbrellaInstallPermissions(t *testing.T) {
 			ComponentParams: map[string]any{},
 		}).Return(&castai.ValidateComponentInstallResponse{Allowed: true}, nil)
 
-		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", nil)
+		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", "", nil)
 		r.NoError(err)
 		r.True(resp.Allowed)
 	})
@@ -372,7 +510,7 @@ func TestValidateUmbrellaInstallPermissions(t *testing.T) {
 		mc.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
 			Return(&castai.ValidateComponentInstallResponse{Allowed: false}, nil)
 
-		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", nil)
+		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", "", nil)
 		r.NoError(err)
 		r.False(resp.Allowed)
 		r.Equal("missing permissions", resp.BlockReason)
@@ -388,7 +526,7 @@ func TestValidateUmbrellaInstallPermissions(t *testing.T) {
 				BlockReason: "service account lacks permissions for the umbrella chart",
 			}, nil)
 
-		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", nil)
+		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", "", nil)
 		r.NoError(err)
 		r.False(resp.Allowed)
 		r.Equal("service account lacks permissions for the umbrella chart", resp.BlockReason)
@@ -399,7 +537,7 @@ func TestValidateUmbrellaInstallPermissions(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		mc := mock_castai.NewMockCastAIClient(ctrl)
 
-		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3",
+		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", "",
 			&apiextensionsv1.JSON{Raw: []byte(`not-json`)})
 		r.Error(err)
 		r.ErrorContains(err, "unmarshal umbrella values for permission gate")
@@ -413,7 +551,7 @@ func TestValidateUmbrellaInstallPermissions(t *testing.T) {
 		mc.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
 			Return(nil, errors.New("connection refused"))
 
-		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", nil)
+		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", "", nil)
 		r.EqualError(err, "connection refused")
 		r.Nil(resp)
 	})

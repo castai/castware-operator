@@ -164,6 +164,11 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 		return nil, fmt.Errorf("component '%s' is not supported", c.Spec.Component)
 	}
 
+	// Kent is not supported yet — reject install and migration arming at admission.
+	if err := validateUmbrellaKent(c); err != nil {
+		return nil, err
+	}
+
 	// Components that require extended permissions are rejected at admission unless
 	// the operator was installed with extendedPermissions="true". For the umbrella
 	// component this means: tags.readonly=true is satisfiable with the operator's
@@ -235,6 +240,23 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 	}
 
 	return nil, nil
+}
+
+// validateUmbrellaKent rejects the kent profile - not supported yet.
+func validateUmbrellaKent(c *castwarev1alpha1.Component) error {
+	if c.Spec.Component != components.ComponentNameUmbrella {
+		return nil
+	}
+	values, err := utils.UnmarshalJSON(c.Spec.Values)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal component values: %w", err)
+	}
+	if kent, ok := values["kent"].(map[string]any); ok {
+		if enabled, _ := kent["enabled"].(bool); enabled {
+			return fmt.Errorf("component '%s' does not support the kent profile yet (kent.enabled)", c.Spec.Component)
+		}
+	}
+	return nil
 }
 
 // validateMutualExclusivity enforces the umbrella / individual charts mutual-
@@ -312,6 +334,11 @@ func (v *ComponentCustomValidator) ValidateUpdate(ctx context.Context, oldObj, n
 	}
 	if component.Spec.Migration != "" && oldComponent.Spec.Migration != component.Spec.Migration {
 		return nil, fmt.Errorf("components can be migrated only during resource creation")
+	}
+
+	// Kent is not supported yet — reject install and migration arming at admission.
+	if err := validateUmbrellaKent(component); err != nil {
+		return nil, err
 	}
 
 	cluster := &castwarev1alpha1.Cluster{}
