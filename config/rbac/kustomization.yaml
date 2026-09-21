@@ -26,3 +26,4 @@ resources:
 - phase2-namespace_role_binding.yaml
 - phase2-role.yaml
 - phase2-role_binding.yaml
+- phase2-live-role.yaml

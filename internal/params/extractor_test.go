@@ -25,22 +25,18 @@ func TestExtractOperatorParams_WithExtendedPermissions(t *testing.T) {
 
 	// Create RoleBinding with extended permissions label
 	roleBinding := &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-rolebinding",
-			Namespace: "test-namespace",
-			Labels: map[string]string{
-				"castware.cast.ai/extended-permissions": "true",
-			},
+		Name:      "test-rolebinding",
+		Namespace: "test-namespace",
+		Labels: map[string]string{
+			"castware.cast.ai/extended-permissions": "true",
 		},
 	}
 
 	// Create ClusterRoleBinding with extended permissions label
 	clusterRoleBinding := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-clusterrolebinding",
-			Labels: map[string]string{
-				"castware.cast.ai/extended-permissions": "true",
-			},
+		Name: "test-clusterrolebinding",
+		Labels: map[string]string{
+			"castware.cast.ai/extended-permissions": "true",
 		},
 	}
 
@@ -81,11 +77,11 @@ func TestExtractOperatorParams_WithoutExtendedPermissions(t *testing.T) {
 }
 
 func TestExtractSpotHandlerParams_Phase2Enabled(t *testing.T) {
-	helmRelease := &release.Release{
-		Config: map[string]interface{}{
+	helmRelease := umbrellaTestRelease(
+		map[string]interface{}{
 			"phase2Permissions": true,
 		},
-	}
+	)
 
 	params := extractSpotHandlerParams(helmRelease)
 
@@ -94,11 +90,11 @@ func TestExtractSpotHandlerParams_Phase2Enabled(t *testing.T) {
 }
 
 func TestExtractSpotHandlerParams_Phase2Disabled(t *testing.T) {
-	helmRelease := &release.Release{
-		Config: map[string]interface{}{
+	helmRelease := umbrellaTestRelease(
+		map[string]interface{}{
 			"phase2Permissions": false,
 		},
-	}
+	)
 
 	params := extractSpotHandlerParams(helmRelease)
 
@@ -114,11 +110,9 @@ func TestExtractSpotHandlerParams_NilHelmRelease(t *testing.T) {
 }
 
 func TestExtractSpotHandlerParams_MissingPhase2(t *testing.T) {
-	helmRelease := &release.Release{
-		Config: map[string]interface{}{
-			"someOtherConfig": "value",
-		},
-	}
+	helmRelease := umbrellaTestRelease(map[string]interface{}{
+		"someOtherConfig": "value",
+	})
 
 	params := extractSpotHandlerParams(helmRelease)
 
@@ -127,13 +121,10 @@ func TestExtractSpotHandlerParams_MissingPhase2(t *testing.T) {
 }
 
 func TestExtractClusterControllerParams_WithAutoscalingFromChart(t *testing.T) {
-	helmRelease := &release.Release{
-		Chart: &chart.Chart{
-			Values: map[string]interface{}{
-				"autoscaling": map[string]interface{}{
-					"enabled": true,
-				},
-			},
+	helmRelease := umbrellaTestRelease(nil)
+	helmRelease.Chart.Values = map[string]interface{}{
+		"autoscaling": map[string]interface{}{
+			"enabled": true,
 		},
 	}
 
@@ -147,13 +138,11 @@ func TestExtractClusterControllerParams_WithAutoscalingFromChart(t *testing.T) {
 }
 
 func TestExtractClusterControllerParams_WithAutoscalingFromConfig(t *testing.T) {
-	helmRelease := &release.Release{
-		Config: map[string]interface{}{
-			"autoscaling": map[string]interface{}{
-				"enabled": true,
-			},
+	helmRelease := umbrellaTestRelease(map[string]interface{}{
+		"autoscaling": map[string]interface{}{
+			"enabled": true,
 		},
-	}
+	})
 
 	params := extractClusterControllerParams(helmRelease)
 
@@ -165,18 +154,15 @@ func TestExtractClusterControllerParams_WithAutoscalingFromConfig(t *testing.T) 
 }
 
 func TestExtractClusterControllerParams_WithAutoscalingOverrides(t *testing.T) {
-	helmRelease := &release.Release{
-		Chart: &chart.Chart{
-			Values: map[string]interface{}{
-				"autoscaling": map[string]interface{}{
-					"enabled": false,
-				},
-			},
+	helmRelease := umbrellaTestRelease(map[string]interface{}{
+		"autoscaling": map[string]interface{}{
+			"enabled": true,
 		},
-		Config: map[string]interface{}{
-			"autoscaling": map[string]interface{}{
-				"enabled": true,
-			},
+	})
+
+	helmRelease.Chart.Values = map[string]interface{}{
+		"autoscaling": map[string]interface{}{
+			"enabled": false,
 		},
 	}
 
@@ -190,13 +176,11 @@ func TestExtractClusterControllerParams_WithAutoscalingOverrides(t *testing.T) {
 }
 
 func TestExtractClusterControllerParams_WithWorkloadAutoscaling(t *testing.T) {
-	helmRelease := &release.Release{
-		Config: map[string]interface{}{
-			"workloadAutoscaling": map[string]interface{}{
-				"enabled": true,
-			},
+	helmRelease := umbrellaTestRelease(map[string]interface{}{
+		"workloadAutoscaling": map[string]interface{}{
+			"enabled": true,
 		},
-	}
+	})
 
 	params := extractClusterControllerParams(helmRelease)
 
@@ -209,6 +193,177 @@ func TestExtractClusterControllerParams_WithWorkloadAutoscaling(t *testing.T) {
 
 func TestExtractClusterControllerParams_NilHelmRelease(t *testing.T) {
 	params := extractClusterControllerParams(nil)
+
+	assert.NotNil(t, params)
+	assert.Empty(t, params)
+}
+
+func TestExtractUmbrellaParams_TagsFromConfig(t *testing.T) {
+	log := logrus.New()
+	helmRelease := umbrellaTestRelease(map[string]interface{}{
+		"tags": map[string]interface{}{
+			"readonly":            false,
+			"node-autoscaler":     true,
+			"workload-autoscaler": false,
+			"full":                false,
+			"autoscaler-anywhere": false,
+		},
+	})
+
+	params := extractUmbrellaParams(context.Background(), log, helmRelease, nil, "test-namespace")
+
+	assert.NotNil(t, params)
+	assert.Contains(t, params, "tags")
+
+	tags := params["tags"].(map[string]bool)
+	assert.Equal(t, false, tags["readonly"])
+	assert.Equal(t, true, tags["node-autoscaler"])
+	assert.Equal(t, false, tags["workload-autoscaler"])
+	assert.Equal(t, false, tags["full"])
+	assert.Equal(t, false, tags["autoscaler-anywhere"])
+}
+
+func TestExtractUmbrellaParams_LiveEnabledFromConfig(t *testing.T) {
+	log := logrus.New()
+	helmRelease := umbrellaTestRelease(map[string]interface{}{
+		"autoscaler": map[string]interface{}{
+			"castai-live": map[string]interface{}{
+				"enabled": true,
+			},
+		},
+	})
+
+	params := extractUmbrellaParams(context.Background(), log, helmRelease, nil, "test-namespace")
+
+	assert.NotNil(t, params)
+	assert.Equal(t, true, params["live"], "live must be reported when enabled")
+}
+
+func TestExtractUmbrellaParams_LiveDisabledNotReported(t *testing.T) {
+	// The umbrella installs always carry autoscaler.castai-live.enabled (the
+	// builder defaults it to false); the param is only emitted when true.
+	helmRelease := umbrellaTestRelease(map[string]interface{}{
+		"autoscaler": map[string]interface{}{
+			"castai-live": map[string]interface{}{
+				"enabled": false,
+			},
+		},
+	})
+
+	log := logrus.New()
+	params := extractUmbrellaParams(context.Background(), log, helmRelease, nil, "test-namespace")
+
+	assert.NotNil(t, params)
+	assert.NotContains(t, params, "live")
+}
+
+func TestExtractUmbrellaParams_LiveChartDefaultOverriddenByConfig(t *testing.T) {
+	// Chart defaults (live disabled) are overridden when the release config
+	// opts in.
+	helmRelease := umbrellaTestRelease(map[string]interface{}{
+		"autoscaler": map[string]interface{}{
+			"castai-live": map[string]interface{}{
+				"enabled": true,
+			},
+		},
+	})
+
+	helmRelease.Chart.Values = map[string]interface{}{
+		"autoscaler": map[string]interface{}{
+			"castai-live": map[string]interface{}{
+				"enabled": false,
+			},
+		},
+	}
+
+	log := logrus.New()
+	params := extractUmbrellaParams(context.Background(), log, helmRelease, nil, "test-namespace")
+
+	assert.NotNil(t, params)
+	assert.Equal(t, true, params["live"])
+}
+
+func TestExtractUmbrellaParams_LiveNonBoolIgnored(t *testing.T) {
+	helmRelease := umbrellaTestRelease(map[string]interface{}{
+		"autoscaler": map[string]interface{}{
+			"castai-live": map[string]interface{}{
+				"enabled": "true", // string, not bool — must be ignored
+			},
+		},
+	})
+
+	log := logrus.New()
+	params := extractUmbrellaParams(context.Background(), log, helmRelease, nil, "test-namespace")
+
+	assert.NotNil(t, params)
+	assert.NotContains(t, params, "live")
+}
+
+func TestExtractUmbrellaParams_TagsFromChartDefaults(t *testing.T) {
+
+	helmRelease := umbrellaTestRelease(nil)
+	helmRelease.Chart.Values = map[string]interface{}{
+		"tags": map[string]interface{}{
+			"readonly": true,
+		},
+	}
+
+	log := logrus.New()
+	params := extractUmbrellaParams(context.Background(), log, helmRelease, nil, "test-namespace")
+
+	assert.NotNil(t, params)
+	assert.Contains(t, params, "tags")
+
+	tags := params["tags"].(map[string]bool)
+	assert.Equal(t, true, tags["readonly"])
+}
+
+func TestExtractUmbrellaParams_TagsOverrideChartDefaults(t *testing.T) {
+	helmRelease := umbrellaTestRelease(map[string]interface{}{
+		"tags": map[string]interface{}{
+			"readonly":        false,
+			"node-autoscaler": true,
+		},
+	})
+
+	log := logrus.New()
+	params := extractUmbrellaParams(context.Background(), log, helmRelease, nil, "test-namespace")
+
+	assert.NotNil(t, params)
+	assert.Contains(t, params, "tags")
+
+	// Config (overrides) win over chart defaults.
+	tags := params["tags"].(map[string]bool)
+	assert.Equal(t, false, tags["readonly"])
+	assert.Equal(t, true, tags["node-autoscaler"])
+	// Untouched chart default survives.
+	assert.Equal(t, false, tags["full"])
+}
+
+func TestExtractUmbrellaParams_IgnoresNonBoolTags(t *testing.T) {
+	helmRelease := umbrellaTestRelease(map[string]interface{}{
+		"tags": map[string]interface{}{
+			"readonly":        true,
+			"node-autoscaler": "true", // string, not bool — must be ignored
+			"full":            nil,    // nil — must be ignored
+		},
+	})
+
+	log := logrus.New()
+	params := extractUmbrellaParams(context.Background(), log, helmRelease, nil, "test-namespace")
+
+	assert.NotNil(t, params)
+	assert.Contains(t, params, "tags")
+
+	tags := params["tags"].(map[string]bool)
+	assert.Equal(t, true, tags["readonly"])
+	assert.NotContains(t, tags, "node-autoscaler")
+	assert.NotContains(t, tags, "full")
+}
+
+func TestExtractUmbrellaParams_NilHelmRelease(t *testing.T) {
+	log := logrus.New()
+	params := extractUmbrellaParams(context.Background(), log, nil, nil, "test-namespace")
 
 	assert.NotNil(t, params)
 	assert.Empty(t, params)
@@ -288,11 +443,9 @@ func TestExtractComponentParams_SpotHandler(t *testing.T) {
 		WithScheme(scheme).
 		Build()
 
-	helmRelease := &release.Release{
-		Config: map[string]interface{}{
-			"phase2Permissions": true,
-		},
-	}
+	helmRelease := umbrellaTestRelease(map[string]interface{}{
+		"phase2Permissions": true,
+	})
 
 	log := logrus.New()
 	params := ExtractComponentParams(
@@ -316,15 +469,13 @@ func TestExtractComponentParams_Agent(t *testing.T) {
 		WithScheme(scheme).
 		Build()
 
-	helmRelease := &release.Release{
-		Config: map[string]interface{}{
-			"autoscaling": map[string]interface{}{
-				"enabled":     true,
-				"minReplicas": float64(3),
-				"maxReplicas": float64(5),
-			},
+	helmRelease := umbrellaTestRelease(map[string]interface{}{
+		"autoscaling": map[string]interface{}{
+			"enabled":     true,
+			"minReplicas": float64(3),
+			"maxReplicas": float64(5),
 		},
-	}
+	})
 
 	log := logrus.New()
 	params := ExtractComponentParams(
@@ -348,16 +499,14 @@ func TestExtractComponentParams_ClusterController(t *testing.T) {
 		WithScheme(scheme).
 		Build()
 
-	helmRelease := &release.Release{
-		Config: map[string]interface{}{
-			"autoscaling": map[string]interface{}{
-				"enabled": true,
-			},
-			"workloadAutoscaling": map[string]interface{}{
-				"enabled": false,
-			},
+	helmRelease := umbrellaTestRelease(map[string]interface{}{
+		"autoscaling": map[string]interface{}{
+			"enabled": true,
 		},
-	}
+		"workloadAutoscaling": map[string]interface{}{
+			"enabled": false,
+		},
+	})
 
 	log := logrus.New()
 	params := ExtractComponentParams(
@@ -441,7 +590,7 @@ func umbrellaTestChart() *chart.Chart {
 		},
 		Values: map[string]interface{}{
 			"tags": map[string]interface{}{
-				"readonly":            false,
+				"readonly":            true,
 				"full":                false,
 				"node-autoscaler":     false,
 				"workload-autoscaler": false,
@@ -488,7 +637,7 @@ func TestExtractUmbrellaParams_TagsAndInventory(t *testing.T) {
 	tags, ok := params["tags"].(map[string]bool)
 	assert.True(t, ok, "tags must be reported")
 	assert.Equal(t, true, tags["node-autoscaler"])
-	assert.Equal(t, false, tags["readonly"])
+	assert.Equal(t, true, tags["readonly"])
 	assert.Len(t, tags, 4, "the chart-default tag modes are reported alongside the active one")
 
 	// Inventory: the mode-tagged sub-components are enabled, the others are

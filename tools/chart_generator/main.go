@@ -27,6 +27,7 @@ func parseManifests(r io.Reader) ([]*unstructured.Unstructured, error) {
 	var (
 		rbacObjs                []*unstructured.Unstructured
 		extendedPermissionsObjs []*unstructured.Unstructured
+		livePermissionsObjs     []*unstructured.Unstructured
 	)
 
 	dec := yamlutil.NewYAMLOrJSONDecoder(r, 4096)
@@ -47,9 +48,12 @@ func parseManifests(r io.Reader) ([]*unstructured.Unstructured, error) {
 		// filter by kind
 		switch u.GetKind() {
 		case "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding":
-			if u.GetLabels()["castware.cast.ai/extended-permissions"] == "true" {
+			switch u.GetLabels()["castware.cast.ai/extended-permissions"] {
+			case "true":
 				extendedPermissionsObjs = append(extendedPermissionsObjs, u)
-			} else {
+			case "live":
+				livePermissionsObjs = append(livePermissionsObjs, u)
+			default:
 				rbacObjs = append(rbacObjs, u)
 			}
 
@@ -60,6 +64,7 @@ func parseManifests(r io.Reader) ([]*unstructured.Unstructured, error) {
 	// Sort RBAC objects to have a repeatable code generation.
 	rbacObjs = sortRbacObjs(rbacObjs)
 	extendedPermissionsObjs = sortRbacObjs(extendedPermissionsObjs)
+	livePermissionsObjs = sortRbacObjs(livePermissionsObjs)
 
 	if err := injectAndWrite(rbacObjs, "charts/castai-castware-operator/templates/rbac.yaml", "", ""); err != nil {
 		return nil, err
@@ -72,6 +77,19 @@ func parseManifests(r io.Reader) ([]*unstructured.Unstructured, error) {
 		"{{- end }}",
 	); err != nil {
 		return nil, err
+	}
+
+	// castai-live-specific permissions are appended to the same file under their
+	// own conditional so they are only installed when the live opt-in is set.
+	if len(livePermissionsObjs) > 0 {
+		if err := injectAndWriteAppend(
+			livePermissionsObjs,
+			"charts/castai-castware-operator/templates/rbac-ext.yaml",
+			"{{- if and .Values.extendedPermissions .Values.defaultComponents.umbrella.live.enabled }}",
+			"{{- end }}",
+		); err != nil {
+			return nil, err
+		}
 	}
 
 	return rbacObjs, nil
@@ -99,6 +117,51 @@ func injectAndWrite(objs []*unstructured.Unstructured, outFilePath, header, foot
 	}
 	// nolint:errcheck
 	defer outF.Close()
+	if header != "" {
+		if _, err := outF.WriteString(header + "\n"); err != nil {
+			return err
+		}
+	}
+
+	for i, obj := range objs {
+		data, err := yaml.Marshal(obj.Object)
+		if err != nil {
+			return err
+		}
+		if i > 0 {
+			if _, err := outF.WriteString("\n---\n"); err != nil {
+				return err
+			}
+		}
+		injectedData := injectTemplating(data, obj)
+		if _, err := outF.Write(injectedData); err != nil {
+			return err
+		}
+	}
+
+	if footer != "" {
+		if _, err := outF.WriteString("\n" + footer); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// injectAndWriteAppend appends a second gated block to an already-written RBAC
+// template file. The `---` separator keeps the two conditionals as distinct
+// documents so the previous block's footer (`{{- end }}`) closes cleanly before
+// the next header opens.
+func injectAndWriteAppend(objs []*unstructured.Unstructured, outFilePath, header, footer string) error {
+	outF, err := os.OpenFile(outFilePath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	// nolint:errcheck
+	defer outF.Close()
+
+	if _, err := outF.WriteString("\n---\n"); err != nil {
+		return err
+	}
 	if header != "" {
 		if _, err := outF.WriteString(header + "\n"); err != nil {
 			return err
@@ -232,8 +295,7 @@ func injectTemplating(in []byte, obj *unstructured.Unstructured) []byte {
 				out = append(out, indent+`  namespace: `+namespace)
 			}
 
-			extendedPermissions := obj.GetLabels()["castware.cast.ai/extended-permissions"] == "true"
-
+			extendedPermissionsLabel := obj.GetLabels()["castware.cast.ai/extended-permissions"]
 			out = append(out,
 				indent+`  name: `+
 					strings.Replace(
@@ -245,8 +307,8 @@ func injectTemplating(in []byte, obj *unstructured.Unstructured) []byte {
 				indent+"  labels:",
 			)
 
-			if extendedPermissions {
-				out = append(out, indent+"    castware.cast.ai/extended-permissions: \"true\"")
+			if extendedPermissionsLabel == "true" || extendedPermissionsLabel == "live" {
+				out = append(out, indent+"    castware.cast.ai/extended-permissions: \""+extendedPermissionsLabel+"\"")
 			}
 
 			out = append(out, indent+"    {{- include \"castware-operator.labels\" . | nindent 4 }}")

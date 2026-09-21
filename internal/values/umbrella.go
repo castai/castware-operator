@@ -57,6 +57,15 @@ func UmbrellaValues(component *castwarev1alpha1.Component, cluster *castwarev1al
 		"global": map[string]any{
 			"castai": globalCastai,
 		},
+		"autoscaler": map[string]any{
+			// castai-live is opt-in: the live chart requires extra cluster-scoped
+			// RBAC (cluster-scope secrets read, PriorityClasses, ValidatingAdmission-
+			// Policies), so it is disabled unless the Component's own values
+			// (merged on top below) explicitly enable it.
+			"castai-live": map[string]any{
+				"enabled": false,
+			},
+		},
 	}
 
 	if len(kvisorCastai) > 0 {

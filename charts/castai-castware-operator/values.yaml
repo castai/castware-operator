@@ -1,5 +1,5 @@
 image:
-  repository: us-docker.pkg.dev/castai-hub/library/castware-operator
+  repository: ghcr.io/castai/images/castware-operator
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
@@ -146,18 +146,26 @@ defaultCluster:
 defaultComponents:
   enabled: true
   # When true, renders a single castai-umbrella Component CR instead of
-  # individual component CRs. Only the readonly profile is supported for now:
+  # individual component CRs. Mode tags are passed through to the umbrella
+  # chart (mutually exclusive):
   #   extendedPermissions=false → tags.readonly=true (default)
-  # Any non-readonly mode (extendedPermissions=true or a custom non-readonly
-  # tag) aborts the install with a guard error until full umbrella support is
-  # validated.
+  #   extendedPermissions=true → tags.full=true (if no explicit tags given)
+  # Non-readonly modes (node-autoscaler, workload-autoscaler, full) pull in the
+  # cluster-controller and require extendedPermissions=true.
   umbrella:
     enabled: false
     component: "castai-umbrella"
     cluster: "castai"
-    # Optional: override the auto-derived tags. Only tags.readonly=true is
-    # currently allowed; non-readonly tags fail the install.
+    # Optional: override the auto-derived tags. Any single mode tag is allowed:
+    # readonly, node-autoscaler, workload-autoscaler, full.
     # tags: {}
+    # castai-live (live migration/CLM components) is disabled by default: it
+    # requires extra cluster-scoped RBAC (cluster-scope secrets read,
+    # PriorityClasses, ValidatingAdmissionPolicies) that the operator's service
+    # account should not hold unless explicitly opted in. Enable it to install
+    # live alongside the umbrella and grant the live-specific permissions.
+    live:
+      enabled: false
     # Optional: extra umbrella-chart values merged into the Component CR's
     # spec.values (verbatim). Sub-component overrides must use the umbrella
     # chart's own paths, e.g. autoscaler.castai-agent.additionalEnv for the
