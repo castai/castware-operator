@@ -360,6 +360,30 @@ var _ = Describe("Component Webhook", func() {
 			Expect(err).Error().To(MatchError("component 'castai-umbrella' requires extended permissions, please run `helm upgrade castware-operator -n castai-agent --set extendedPermissions=\"true\" --reuse-values castai-helm/castware-operator`"))
 		})
 
+		It("Should deny umbrella creation when kent is enabled — not supported yet", func() {
+			By("kent is rejected regardless of the readonly tag")
+			obj.Spec.Component = components.ComponentNameUmbrella
+			obj.Spec.Cluster = clusterName
+			obj.SetNamespace("default")
+			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"readonly":true},"kent":{"enabled":true}}`)}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).Error().To(MatchError("component 'castai-umbrella' does not support the kent profile yet (kent.enabled)"))
+		})
+
+		It("Should admit umbrella creation with kent explicitly disabled", func() {
+			By("kent.enabled=false is inert")
+			obj.Spec.Component = components.ComponentNameUmbrella
+			obj.Spec.Cluster = clusterName
+			obj.SetNamespace("default")
+			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"readonly":true},"kent":{"enabled":false}}`)}
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: "",
+			})
+			Expect(validator.ValidateCreate(ctx, obj)).To(BeNil())
+		})
+
 		It("Should admit creation", func() {
 			By("simulating a valid creation scenario")
 			obj.Spec.Component = componentName
@@ -652,6 +676,17 @@ var _ = Describe("Component Webhook", func() {
 			obj.Spec.Migration = castwarev1alpha1.ComponentMigrationHelm
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
 			Expect(err).Error().To(MatchError("components can be migrated only during resource creation"))
+		})
+
+		It("Should deny update to the kent profile — not supported yet", func() {
+			By("arming a kent migration or install via update is rejected")
+			oldObj.Spec.Component = components.ComponentNameUmbrella
+			oldObj.Spec.Cluster = clusterName
+			obj.Spec.Component = components.ComponentNameUmbrella
+			obj.Spec.Cluster = clusterName
+			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"kent":{"enabled":true}}`)}
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).Error().To(MatchError("component 'castai-umbrella' does not support the kent profile yet (kent.enabled)"))
 		})
 
 		It("Should admit update", func() {
