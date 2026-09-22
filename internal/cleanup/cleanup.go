@@ -54,7 +54,7 @@ func (s *Service) Run(ctx context.Context) error {
 				s.log.WithField("component", client.ObjectKeyFromObject(&component).String()).
 					Warn("umbrella component CR has no cleanup finalizer, deleting it without the label-gated handoff")
 			} else {
-				// CID-1052: preserve the umbrella's helm release. The finalizer
+				// preserve the umbrella's helm release. The finalizer
 				// is not stripped: the still-running operator resolves it via the
 				// delete-candidate label without uninstalling.
 				if component.Labels == nil {
@@ -106,7 +106,7 @@ func (s *Service) Run(ctx context.Context) error {
 
 	// Delete the operator's CRDs only; umbrella subcomponent CRDs are owned
 	// by the umbrella chart, must survive the uninstall, and are re-adopted
-	// on reinstall (CID-1047).
+	// on reinstall.
 	crdNames := []string{
 		"components.castware.cast.ai",
 		"clusters.castware.cast.ai",

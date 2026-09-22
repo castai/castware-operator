@@ -109,7 +109,7 @@ func TestCleanup(t *testing.T) {
 		r.Empty(crdList.Items, "all CRDs should be deleted")
 	})
 
-	t.Run("waits for the operator to resolve the umbrella finalizer before deleting CRDs (CID-1052)", func(t *testing.T) {
+	t.Run("waits for the operator to resolve the umbrella finalizer before deleting CRDs", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -224,7 +224,7 @@ func TestCleanup(t *testing.T) {
 		}
 	})
 
-	t.Run("falls back to removing the umbrella finalizer when the operator does not (CID-1052)", func(t *testing.T) {
+	t.Run("falls back to removing the umbrella finalizer when the operator does not", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -310,7 +310,7 @@ func TestCleanup(t *testing.T) {
 		}
 	})
 
-	t.Run("warns and deletes directly an umbrella CR without finalizer (CID-1052)", func(t *testing.T) {
+	t.Run("warns and deletes directly an umbrella CR without finalizer", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -385,7 +385,7 @@ func TestCleanup(t *testing.T) {
 		}
 	})
 
-	t.Run("cleanup deletes only the operator CRDs; umbrella subcomponent CRDs survive (CID-1052)", func(t *testing.T) {
+	t.Run("cleanup deletes only the operator CRDs; umbrella subcomponent CRDs survive", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

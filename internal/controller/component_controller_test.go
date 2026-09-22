@@ -2012,7 +2012,7 @@ func TestReconcileMutualExclusivityGate(t *testing.T) {
 	})
 }
 
-// TestReconcileUmbrellaTeardown covers CID-1052: a labeled umbrella CR is
+// TestReconcileUmbrellaTeardown verifies that a labeled umbrella CR is
 // deleted without uninstalling the helm release; unlabeled or non-umbrella
 // deletions still uninstall it.
 func TestReconcileUmbrellaTeardown(t *testing.T) {

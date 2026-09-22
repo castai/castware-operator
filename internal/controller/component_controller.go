@@ -798,9 +798,9 @@ func (r *ComponentReconciler) deleteComponent(ctx context.Context, log logrus.Fi
 
 	log.Info("Component is being deleted")
 	if controllerutil.ContainsFinalizer(component, ComponentFinalizer) {
-		// CID-1052: during operator teardown (delete-candidate label set by
-		// cleanup) keep the umbrella's helm release installed for re-adoption
-		// on reinstall (CID-1047); remove only the CR/finalizer.
+		// During operator teardown (delete-candidate label set by cleanup)
+		// keep the umbrella's helm release installed for re-adoption on
+		// reinstall; remove only the CR/finalizer.
 		if isUmbrellaTeardown(component) {
 			log.Info("Umbrella component torn down with the operator, preserving the helm release")
 		} else {
