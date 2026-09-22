@@ -18,12 +18,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	castwarev1alpha1 "github.com/castai/castware-operator/api/v1alpha1"
@@ -2007,5 +2009,92 @@ func TestReconcileMutualExclusivityGate(t *testing.T) {
 		r.NotNil(cleared, "UmbrellaConflict condition must still be present (now False)")
 		r.Equal(metav1.ConditionFalse, cleared.Status)
 		r.Equal(reasonUmbrellaReleaseNotPresent, cleared.Reason, "cleared condition must use a NotPresent reason, not a Present one")
+	})
+}
+
+// TestReconcileUmbrellaTeardown covers CID-1052: a labeled umbrella CR is
+// deleted without uninstalling the helm release; unlabeled or non-umbrella
+// deletions still uninstall it.
+func TestReconcileUmbrellaTeardown(t *testing.T) {
+	t.Run("umbrella with delete-candidate label: preserves helm release, removes only the finalizer", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		component := newTestComponent(t, testCluster.Name, components.ComponentNameUmbrella)
+		component.Labels = map[string]string{LabelDeleteCandidate: "true"}
+		controllerutil.AddFinalizer(component, ComponentFinalizer)
+
+		ops := newComponentTestOpsWithCastAIClient(t, testCluster, component)
+		ops.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), testCluster.Spec.Cluster.ClusterID, gomock.Any()).Return(nil).AnyTimes()
+
+		// No mockHelm.Uninstall expectation on purpose: gomock fails on any
+		// unexpected call, asserting the release is preserved.
+		r.NoError(ops.sut.Delete(ctx, component))
+
+		res, err := ops.sut.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: component.Name, Namespace: component.Namespace}})
+		r.NoError(err)
+		r.Equal(reconcile.Result{}, res)
+
+		err = ops.sut.Get(ctx, client.ObjectKey{Name: component.Name, Namespace: component.Namespace}, &castwarev1alpha1.Component{})
+		r.True(apierrors.IsNotFound(err), "finalizer removed: the CR must be gone, got: %v", err)
+	})
+
+	t.Run("umbrella without label: uninstalls the helm release", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		component := newTestComponent(t, testCluster.Name, components.ComponentNameUmbrella)
+		controllerutil.AddFinalizer(component, ComponentFinalizer)
+
+		ops := newComponentTestOpsWithCastAIClient(t, testCluster, component)
+		ops.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), testCluster.Spec.Cluster.ClusterID, gomock.Any()).Return(nil).AnyTimes()
+		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+			Namespace:      component.Namespace,
+			ReleaseName:    components.ComponentNameUmbrella,
+			Wait:           true,
+			IgnoreNotFound: true,
+		}).Return(nil, nil)
+
+		r.NoError(ops.sut.Delete(ctx, component))
+
+		res, err := ops.sut.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: component.Name, Namespace: component.Namespace}})
+		r.NoError(err)
+		r.Equal(reconcile.Result{}, res)
+
+		err = ops.sut.Get(ctx, client.ObjectKey{Name: component.Name, Namespace: component.Namespace}, &castwarev1alpha1.Component{})
+		r.True(apierrors.IsNotFound(err), "finalizer removed: the CR must be gone, got: %v", err)
+	})
+
+	t.Run("non-umbrella with delete-candidate label: uninstalls the helm release", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		component := newTestComponent(t, testCluster.Name, components.ComponentNameAgent)
+		component.Labels = map[string]string{LabelDeleteCandidate: "true"}
+		controllerutil.AddFinalizer(component, ComponentFinalizer)
+
+		ops := newComponentTestOpsWithCastAIClient(t, testCluster, component)
+		ops.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), testCluster.Spec.Cluster.ClusterID, gomock.Any()).Return(nil).AnyTimes()
+		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+			Namespace:      component.Namespace,
+			ReleaseName:    components.ComponentNameAgent,
+			Wait:           true,
+			IgnoreNotFound: true,
+		}).Return(nil, nil)
+
+		r.NoError(ops.sut.Delete(ctx, component))
+
+		res, err := ops.sut.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: component.Name, Namespace: component.Namespace}})
+		r.NoError(err)
+		r.Equal(reconcile.Result{}, res)
+
+		err = ops.sut.Get(ctx, client.ObjectKey{Name: component.Name, Namespace: component.Namespace}, &castwarev1alpha1.Component{})
+		r.True(apierrors.IsNotFound(err), "finalizer removed: the CR must be gone, got: %v", err)
 	})
 }

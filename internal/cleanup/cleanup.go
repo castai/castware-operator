@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/castai/castware-operator/api/v1alpha1"
+	components "github.com/castai/castware-operator/internal/component"
 	"github.com/castai/castware-operator/internal/controller"
 	"github.com/sirupsen/logrus"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -28,12 +29,24 @@ func (s *Service) Run(ctx context.Context) error {
 		return err
 	}
 	for _, component := range componentCRs.Items {
-		if controllerutil.ContainsFinalizer(&component, controller.ComponentFinalizer) {
+		if component.Spec.Component == components.ComponentNameUmbrella {
+			// CID-1052: preserve the umbrella's helm release. The finalizer is
+			// not stripped: the still-running operator resolves it via the
+			// delete-candidate label without uninstalling.
+			if component.Labels == nil {
+				component.Labels = map[string]string{}
+			}
+			component.Labels[controller.LabelDeleteCandidate] = "true"
+			if err := s.Update(ctx, &component); err != nil {
+				s.log.WithError(err).Error("failed to mark umbrella component CR as delete candidate")
+				return err
+			}
+		} else if controllerutil.ContainsFinalizer(&component, controller.ComponentFinalizer) {
 			controllerutil.RemoveFinalizer(&component, controller.ComponentFinalizer)
 			if component.Labels == nil {
 				component.Labels = map[string]string{}
 			}
-			component.Labels["castware.cast.ai/delete-candidate"] = "true"
+			component.Labels[controller.LabelDeleteCandidate] = "true"
 			if err := s.Update(ctx, &component); err != nil {
 				s.log.WithError(err).Error("failed to remove finalizer from component CR")
 				return err
@@ -59,7 +72,9 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	s.log.Info("cluster CRs deleted")
 
-	// Delete CRDs
+	// Delete the operator's CRDs only; umbrella subcomponent CRDs are owned
+	// by the umbrella chart, must survive the uninstall, and are re-adopted
+	// on reinstall (CID-1047).
 	crdNames := []string{
 		"components.castware.cast.ai",
 		"clusters.castware.cast.ai",
