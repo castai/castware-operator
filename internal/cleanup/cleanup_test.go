@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 func TestCleanup(t *testing.T) {
@@ -107,7 +108,122 @@ func TestCleanup(t *testing.T) {
 		r.Empty(crdList.Items, "all CRDs should be deleted")
 	})
 
-	t.Run("umbrella CR keeps its finalizer and is marked delete candidate (CID-1052 label-gated handoff)", func(t *testing.T) {
+	t.Run("waits for the operator to resolve the umbrella finalizer before deleting CRDs (CID-1052)", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Umbrella component CR with the helm cleanup finalizer.
+		umbrella := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "castai-umbrella",
+				Namespace: "test-namespace",
+				Finalizers: []string{
+					controller.ComponentFinalizer,
+				},
+			},
+			Spec: castwarev1alpha1.ComponentSpec{
+				Component: components.ComponentNameUmbrella,
+				Cluster:   "test-cluster",
+				Enabled:   true,
+			},
+		}
+
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: "test-cluster-id",
+				},
+			},
+		}
+
+		componentCRD := &apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "components.castware.cast.ai",
+			},
+		}
+		clusterCRD := &apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "clusters.castware.cast.ai",
+			},
+		}
+
+		// Give the (simulated) operator ample time before the fallback fires.
+		ops := newTestOpsWithWait(t, 10*time.Second, umbrella, cluster, componentCRD, clusterCRD)
+		key := client.ObjectKey{Namespace: umbrella.Namespace, Name: umbrella.Name}
+
+		// Simulate the still-running operator: once cleanup has marked and
+		// deleted the umbrella CR, remove the finalizer (no helm uninstall).
+		type observation struct {
+			labelSet     bool
+			finalizerSet bool
+		}
+		obsCh := make(chan observation, 1)
+		resolved := make(chan struct{})
+		go func() {
+			defer close(resolved)
+			for {
+				var got castwarev1alpha1.Component
+				err := ops.sut.Get(ctx, key, &got)
+				if apierrors.IsNotFound(err) {
+					return
+				}
+				if err == nil && got.DeletionTimestamp != nil {
+					select {
+					case obsCh <- observation{
+						labelSet:     got.Labels[controller.LabelDeleteCandidate] == "true",
+						finalizerSet: controllerutil.ContainsFinalizer(&got, controller.ComponentFinalizer),
+					}:
+					default:
+					}
+					controllerutil.RemoveFinalizer(&got, controller.ComponentFinalizer)
+					if err := ops.sut.Update(ctx, &got); err != nil {
+						return
+					}
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+		}()
+
+		err := ops.sut.Run(ctx)
+		r.NoError(err)
+
+		select {
+		case <-resolved:
+		case <-time.After(10 * time.Second):
+			t.Error("simulated operator did not finish")
+		}
+
+		err = ops.sut.Get(ctx, key, &castwarev1alpha1.Component{})
+		r.True(apierrors.IsNotFound(err), "umbrella CR should be fully deleted, got: %v", err)
+
+		// The handoff contract held when the operator resolved it: cleanup
+		// had marked the CR and left the finalizer in place.
+		select {
+		case obs := <-obsCh:
+			r.True(obs.labelSet, "cleanup must mark the umbrella CR as delete candidate")
+			r.True(obs.finalizerSet, "cleanup must not strip the umbrella finalizer itself")
+		default:
+			t.Error("simulated operator never observed the terminating umbrella CR")
+		}
+
+		// The operator CRDs were deleted only after the CR was resolved.
+		for _, name := range []string{"components.castware.cast.ai", "clusters.castware.cast.ai"} {
+			err := ops.sut.Get(ctx, client.ObjectKey{Name: name}, &apiextensionsv1.CustomResourceDefinition{})
+			r.True(apierrors.IsNotFound(err), "operator CRD %q should be deleted, got: %v", name, err)
+		}
+	})
+
+	t.Run("falls back to removing the umbrella finalizer when the operator does not (CID-1052)", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -157,8 +273,6 @@ func TestCleanup(t *testing.T) {
 			},
 		}
 
-		// Seed the operator CRDs as well: Run always deletes them and errors
-		// out if they are missing.
 		componentCRD := &apiextensionsv1.CustomResourceDefinition{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "components.castware.cast.ai",
@@ -170,38 +284,29 @@ func TestCleanup(t *testing.T) {
 			},
 		}
 
+		// No operator runs in this test: the wait times out and cleanup must
+		// remove the finalizer itself so nothing is left stuck Terminating.
 		ops := newTestOps(t, umbrella, agent, cluster, componentCRD, clusterCRD)
 
-		// Run cleanup
 		err := ops.sut.Run(ctx)
 		r.NoError(err)
 
-		// The umbrella CR is left Terminating on purpose: the operator (absent
-		// here) resolves the finalizer without uninstalling the release.
-		gotUmbrella := &castwarev1alpha1.Component{}
-		err = ops.sut.Get(ctx, client.ObjectKey{Namespace: umbrella.Namespace, Name: umbrella.Name}, gotUmbrella)
-		r.NoError(err, "umbrella CR should still exist while it holds its finalizer")
-		r.NotNil(gotUmbrella.DeletionTimestamp, "cleanup should have issued a Delete on the umbrella CR")
-		r.NotZero(gotUmbrella.DeletionTimestamp.Time)
-		r.Contains(gotUmbrella.Finalizers, controller.ComponentFinalizer, "finalizer must NOT be stripped from the umbrella CR (label-gated handoff)")
-		r.Equal("true", gotUmbrella.Labels[controller.LabelDeleteCandidate], "umbrella CR should be marked as delete candidate")
+		// The umbrella CR is fully deleted despite no operator resolving it.
+		err = ops.sut.Get(ctx, client.ObjectKey{Namespace: umbrella.Namespace, Name: umbrella.Name}, &castwarev1alpha1.Component{})
+		r.True(apierrors.IsNotFound(err), "umbrella CR should be fully deleted, got: %v", err)
 
 		// The non-umbrella CR had its finalizer stripped, so the Delete
 		// removed it entirely.
-		gotAgent := &castwarev1alpha1.Component{}
-		err = ops.sut.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: agent.Name}, gotAgent)
+		err = ops.sut.Get(ctx, client.ObjectKey{Namespace: agent.Namespace, Name: agent.Name}, &castwarev1alpha1.Component{})
 		r.True(apierrors.IsNotFound(err), "non-umbrella component CR should be fully deleted, got: %v", err)
 
-		// Only the terminating umbrella CR remains.
-		componentList := &castwarev1alpha1.ComponentList{}
-		err = ops.sut.List(ctx, componentList)
-		r.NoError(err)
-		r.Len(componentList.Items, 1, "only the umbrella component CR should remain")
-
-		// The cluster CR is deleted.
-		gotCluster := &castwarev1alpha1.Cluster{}
-		err = ops.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, gotCluster)
+		// The cluster CR and the operator CRDs are deleted.
+		err = ops.sut.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Name}, &castwarev1alpha1.Cluster{})
 		r.True(apierrors.IsNotFound(err), "cluster CR should be deleted, got: %v", err)
+		for _, name := range []string{"components.castware.cast.ai", "clusters.castware.cast.ai"} {
+			err := ops.sut.Get(ctx, client.ObjectKey{Name: name}, &apiextensionsv1.CustomResourceDefinition{})
+			r.True(apierrors.IsNotFound(err), "operator CRD %q should be deleted, got: %v", name, err)
+		}
 	})
 
 	t.Run("cleanup deletes only the operator CRDs; umbrella subcomponent CRDs survive (CID-1052)", func(t *testing.T) {
@@ -267,6 +372,10 @@ type testOps struct {
 }
 
 func newTestOps(t *testing.T, objs ...client.Object) *testOps {
+	return newTestOpsWithWait(t, 100*time.Millisecond, objs...)
+}
+
+func newTestOpsWithWait(t *testing.T, waitTimeout time.Duration, objs ...client.Object) *testOps {
 	t.Helper()
 	r := require.New(t)
 	scheme := runtime.NewScheme()
@@ -284,8 +393,9 @@ func newTestOps(t *testing.T, objs ...client.Object) *testOps {
 
 	opts := &testOps{
 		sut: &Service{
-			Client: c,
-			log:    logrus.New(),
+			Client:                c,
+			log:                   logrus.New(),
+			umbrellaFinalizerWait: waitTimeout,
 		},
 	}
 
