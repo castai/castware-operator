@@ -2,6 +2,7 @@ package cleanup
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -309,6 +310,81 @@ func TestCleanup(t *testing.T) {
 		}
 	})
 
+	t.Run("warns and deletes directly an umbrella CR without finalizer (CID-1052)", func(t *testing.T) {
+		t.Parallel()
+		r := require.New(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Umbrella component CR without the helm cleanup finalizer.
+		umbrella := &castwarev1alpha1.Component{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "castai-umbrella",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ComponentSpec{
+				Component: components.ComponentNameUmbrella,
+				Cluster:   "test-cluster",
+				Enabled:   true,
+			},
+		}
+
+		cluster := &castwarev1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cluster",
+				Namespace: "test-namespace",
+			},
+			Spec: castwarev1alpha1.ClusterSpec{
+				Cluster: &castwarev1alpha1.ClusterMetadataSpec{
+					ClusterID: "test-cluster-id",
+				},
+			},
+		}
+
+		componentCRD := &apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "components.castware.cast.ai",
+			},
+		}
+		clusterCRD := &apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "clusters.castware.cast.ai",
+			},
+		}
+
+		ops := newTestOps(t, umbrella, cluster, componentCRD, clusterCRD)
+
+		// Capture cleanup's logs to assert the missing finalizer is visible.
+		log := logrus.New()
+		hook := &logHook{entries: &[]logrus.Entry{}}
+		log.AddHook(hook)
+		ops.sut.log = log
+
+		err := ops.sut.Run(ctx)
+		r.NoError(err)
+
+		// The CR is deleted directly, without the label-gated handoff.
+		err = ops.sut.Get(ctx, client.ObjectKey{Namespace: umbrella.Namespace, Name: umbrella.Name}, &castwarev1alpha1.Component{})
+		r.True(apierrors.IsNotFound(err), "umbrella CR should be deleted, got: %v", err)
+
+		// The bypassed handoff is visible in the logs.
+		warned := false
+		for _, e := range *hook.entries {
+			if e.Level == logrus.WarnLevel &&
+				e.Data["component"] == "test-namespace/castai-umbrella" &&
+				strings.Contains(e.Message, "finalizer") {
+				warned = true
+			}
+		}
+		r.True(warned, "expected a warning about the missing umbrella finalizer, got: %+v", *hook.entries)
+
+		// The operator CRDs are still deleted.
+		for _, name := range []string{"components.castware.cast.ai", "clusters.castware.cast.ai"} {
+			err := ops.sut.Get(ctx, client.ObjectKey{Name: name}, &apiextensionsv1.CustomResourceDefinition{})
+			r.True(apierrors.IsNotFound(err), "operator CRD %q should be deleted, got: %v", name, err)
+		}
+	})
+
 	t.Run("cleanup deletes only the operator CRDs; umbrella subcomponent CRDs survive (CID-1052)", func(t *testing.T) {
 		t.Parallel()
 		r := require.New(t)
@@ -369,6 +445,17 @@ func TestCleanup(t *testing.T) {
 
 type testOps struct {
 	sut *Service
+}
+
+type logHook struct {
+	entries *[]logrus.Entry
+}
+
+func (h *logHook) Levels() []logrus.Level { return logrus.AllLevels }
+
+func (h *logHook) Fire(entry *logrus.Entry) error {
+	*h.entries = append(*h.entries, *entry)
+	return nil
 }
 
 func newTestOps(t *testing.T, objs ...client.Object) *testOps {
