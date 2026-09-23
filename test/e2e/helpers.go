@@ -516,7 +516,7 @@ func (h *HelmHelper) GetReleaseCRDNames(releaseName string) ([]string, error) {
 
 // InstallChart upgrades or installs an arbitrary helm chart in the namespace
 func (h *HelmHelper) InstallChart(releaseName, chartRef string, additionalFlags ...string) error {
-	args := []string{
+	args := []string{ //nolint:prealloc
 		"upgrade", "--install", releaseName,
 		"--namespace", h.namespace,
 		"--create-namespace",
@@ -748,6 +748,7 @@ func FindComponentByName(components []component, name string) (component, bool) 
 // getOperatorLogs fetches the castware-operator controller logs. The label
 // selector matches all operator pods (--prefix keeps the output readable
 // when an upgrade briefly leaves two pods).
+// nolint:unparam // namespace kept for symmetry with the other helpers.
 func getOperatorLogs(namespace string) (string, error) {
 	cmd := exec.Command("kubectl", "logs",
 		"-l", "app.kubernetes.io/instance=castware-operator",

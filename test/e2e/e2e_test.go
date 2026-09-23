@@ -1741,7 +1741,7 @@ var _ = Describe("Manager", Ordered, func() {
 		// defaultComponents umbrella hook enabled. extraFlags add or override
 		// chart values (e.g. extendedPermissions=true for the full tag mode).
 		installUmbrellaOperator := func(extraFlags ...string) {
-			args := []string{
+			args := []string{ //nolint:prealloc
 				"upgrade", "--install", "castware-operator",
 				"--namespace", namespace,
 				"--set", fmt.Sprintf("image.repository=%s", imageParts[0]),
@@ -1753,17 +1753,24 @@ var _ = Describe("Manager", Ordered, func() {
 				"--set", "defaultCluster.terraform=false",
 				"--set", "defaultComponents.enabled=true",
 				"--set", "defaultComponents.umbrella.enabled=true",
-				// The agent under the umbrella needs the GKE env to run in kind.
-				"--set", "defaultComponents.umbrella.overrides.autoscaler.castai-agent.additionalEnv.GKE_CLUSTER_NAME=castware-operator-e2e",
-				"--set", "defaultComponents.umbrella.overrides.autoscaler.castai-agent.additionalEnv.GKE_LOCATION=e2e",
-				"--set", "defaultComponents.umbrella.overrides.autoscaler.castai-agent.additionalEnv.GKE_PROJECT_ID=e2e",
-				"--set", "defaultComponents.umbrella.overrides.autoscaler.castai-agent.additionalEnv.GKE_REGION=e2e",
 				"--set", "webhook.env.GKE_CLUSTER_NAME=castware-operator-e2e",
 				"--set", "webhook.env.GKE_LOCATION=e2e",
 				"--set", "webhook.env.GKE_PROJECT_ID=e2e",
 				"--set", "webhook.env.GKE_REGION=e2e",
 				"--atomic",
 				"--timeout", "5m",
+			}
+			// The agent under the umbrella needs the GKE env to run in kind; the
+			// umbrella overrides path is long, so build these flags in a loop to
+			// stay under the line-length limit.
+			for key, value := range map[string]string{
+				"GKE_CLUSTER_NAME": "castware-operator-e2e",
+				"GKE_LOCATION":     "e2e",
+				"GKE_PROJECT_ID":   "e2e",
+				"GKE_REGION":       "e2e",
+			} {
+				args = append(args, "--set",
+					"defaultComponents.umbrella.overrides.autoscaler.castai-agent.additionalEnv."+key+"="+value)
 			}
 			args = append(args, extraFlags...)
 			args = append(args, operatorChartPath)
@@ -1862,7 +1869,7 @@ var _ = Describe("Manager", Ordered, func() {
 			apiHost := strings.TrimPrefix(strings.TrimPrefix(apiURL, "https://"), "http://")
 			kvisorGrpcAddr := "kvisor." + strings.Join(strings.SplitN(apiHost, ".", 2)[1:], "")
 			By(fmt.Sprintf("hand-installing the umbrella chart with tag %s", tag))
-			flags := []string{
+			flags := []string{ //nolint:prealloc
 				"--set", fmt.Sprintf("global.castai.apiURL=%s", apiURL),
 				"--set", "global.castai.provider=gke",
 				"--set", fmt.Sprintf("global.castai.clusterID=%s", clusterIDValue),
@@ -2160,7 +2167,8 @@ var _ = Describe("Manager", Ordered, func() {
 				"  values:\n    tags:\n      readonly: true\n")
 			Expect(err).To(HaveOccurred(), "umbrella CR creation must be denied while individual CRs exist")
 			Expect(err.Error()).To(ContainSubstring(fmt.Sprintf(
-				"umbrella component cannot be created while individual component CR %q exists; set spec.migrate: true to take it over",
+				"umbrella component cannot be created while individual component CR %q exists; "+
+					"set spec.migrate: true to take it over",
 				components.ComponentNameAgent)))
 
 			By("hand-installing the umbrella chart alongside the agent (hybrid)")
@@ -2180,7 +2188,8 @@ var _ = Describe("Manager", Ordered, func() {
 			By("verifying the agent CR is forced read-only with an UmbrellaConflict condition")
 			Eventually(func(g Gomega) {
 				componentHelper.VerifySpecReadonly(g, components.ComponentNameAgent, true)
-				err := componentHelper.VerifyStatusConditionReason(components.ComponentNameAgent, "UmbrellaConflict", "UmbrellaReleasePresent")
+				err := componentHelper.VerifyStatusConditionReason(
+					components.ComponentNameAgent, "UmbrellaConflict", "UmbrellaReleasePresent")
 				g.Expect(err).NotTo(HaveOccurred(), "agent CR should carry the UmbrellaConflict condition")
 			}, 5*time.Minute, 10*time.Second).Should(Succeed())
 
@@ -2190,7 +2199,8 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err.Error()).To(ContainSubstring("readonly components cannot be modified"))
 
 			By("removing the umbrella release")
-			Expect(helmHelper.UninstallRelease(umbrellaReleaseName)).NotTo(HaveOccurred(), "Failed to uninstall the umbrella release")
+			Expect(helmHelper.UninstallRelease(umbrellaReleaseName)).
+				NotTo(HaveOccurred(), "Failed to uninstall the umbrella release")
 
 			By("flipping spec.readonly back on the agent CR")
 			cmd := exec.Command("kubectl", "patch", "component", components.ComponentNameAgent,
@@ -2200,7 +2210,8 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("verifying the UmbrellaConflict condition clears")
 			Eventually(func(g Gomega) {
-				err := componentHelper.VerifyStatusConditionReason(components.ComponentNameAgent, "UmbrellaConflict", "UmbrellaReleaseNotPresent")
+				err := componentHelper.VerifyStatusConditionReason(
+					components.ComponentNameAgent, "UmbrellaConflict", "UmbrellaReleaseNotPresent")
 				g.Expect(err).NotTo(HaveOccurred(), "UmbrellaConflict should clear once the umbrella release is gone")
 			}, 5*time.Minute, 10*time.Second).Should(Succeed())
 
@@ -2264,7 +2275,8 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(reported).NotTo(BeEmpty(), "lastReportedHelmRevision should be set after the install report")
 			}, 5*time.Minute, 10*time.Second).Should(Succeed())
-			reportedRevision, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.status.lastReportedHelmRevision}")
+			reportedRevision, err := componentHelper.GetField(
+				components.ComponentNameUmbrella, "{.status.lastReportedHelmRevision}")
 			Expect(err).NotTo(HaveOccurred())
 
 			By("upgrading the umbrella release directly (parameter-only revision bump)")
