@@ -122,7 +122,11 @@ var _ = Describe("Manager", Ordered, func() {
 		By("creating manager namespace")
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
 		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
+		// Tolerate a leftover namespace from a previous local run; CI always
+		// starts from a fresh cluster where the create succeeds.
+		if err != nil && !strings.Contains(err.Error(), "AlreadyExists") {
+			Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
+		}
 
 		By("labeling the namespace to enforce the restricted security policy")
 		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
@@ -141,7 +145,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 		Eventually(verifyPodReady, 5*time.Minute).WithArguments("app", "chartmuseum", "registry").Should(Succeed())
 
-		cmd = exec.Command("helm", "repo", "add", "local", "http://localhost:5001/helm-charts")
+		cmd = exec.Command("helm", "repo", "add", "local", "http://localhost:5001/helm-charts", "--force-update")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed add helm registry")
 
@@ -252,6 +256,17 @@ var _ = Describe("Manager", Ordered, func() {
 		By("uninstalling helm release")
 		_ = helmHelper.UninstallOperator()
 
+		By("uninstalling the umbrella release if present")
+		// The operator's pre-delete cleanup preserves the umbrella helm release
+		// by design; remove it explicitly so the suite leaves no leftovers even
+		// when the last specs ended with an installed umbrella.
+		if apiHelper != nil {
+			if umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName(); err == nil {
+				cmd = exec.Command("helm", "uninstall", umbrellaReleaseName, "-n", namespace, "--ignore-not-found")
+				_, _ = utils.Run(cmd)
+			}
+		}
+
 		By("removing manager namespace")
 		cmd = exec.Command("kubectl", "delete", "ns", namespace)
 		_, _ = utils.Run(cmd)
@@ -275,16 +290,23 @@ var _ = Describe("Manager", Ordered, func() {
 		specReport := CurrentSpecReport()
 		if specReport.Failed() {
 			By("Fetching controller manager pod logs")
-			cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
-			controllerLogs, err := utils.Run(cmd)
-			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
+			// In a focused run the first Manager spec may be skipped, leaving
+			// controllerPodName unset; fall back to the label selector which
+			// covers any operator pod (including the Umbrella specs).
+			if controllerPodName != "" {
+				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
+				controllerLogs, err := utils.Run(cmd)
+				if err == nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
+				} else {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
+				}
+			} else if operatorLogs, err := getOperatorLogs(namespace); err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", operatorLogs)
 			}
 
 			By("Fetching Kubernetes events")
-			cmd = exec.Command("kubectl", "get", "events", "-n", namespace, "--sort-by=.lastTimestamp")
+			cmd := exec.Command("kubectl", "get", "events", "-n", namespace, "--sort-by=.lastTimestamp")
 			eventsOutput, err := utils.Run(cmd)
 			if err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events:\n%s", eventsOutput)
@@ -302,12 +324,14 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 
 			By("Fetching controller manager pod description")
-			cmd = exec.Command("kubectl", "describe", "pod", controllerPodName, "-n", namespace)
-			podDescription, err := utils.Run(cmd)
-			if err == nil {
-				fmt.Println("Pod description:\n", podDescription)
-			} else {
-				fmt.Println("Failed to describe controller pod")
+			if controllerPodName != "" {
+				cmd = exec.Command("kubectl", "describe", "pod", controllerPodName, "-n", namespace)
+				podDescription, err := utils.Run(cmd)
+				if err == nil {
+					fmt.Println("Pod description:\n", podDescription)
+				} else {
+					fmt.Println("Failed to describe controller pod")
+				}
 			}
 		}
 	})
@@ -1605,6 +1629,747 @@ var _ = Describe("Manager", Ordered, func() {
 
 		})
 		// +kubebuilder:scaffold:e2e-webhooks-checks
+	})
+
+	// Umbrella scenarios (CID-1054). This group covers the fresh-install PR:
+	// chart-hook fresh install (readonly and full tag modes), takeover of a
+	// hand-installed umbrella, read-mode takeover, exclusivity, reporting
+	// round-trip and offboarding. The migration-trigger, induced-failure
+	// rollback and permission-gate scenarios land in a follow-up PR.
+	//
+	// Every spec is self-contained: it starts by resetting the cluster state
+	// (operator, umbrella release, namespace), so the group runs alone with
+	// -ginkgo.focus "Umbrella" and after the specs above in a full-suite run.
+	Context("Umbrella", func() {
+		// Exact per-tag sub-chart sets from internal/component/umbrella_tags.go.
+		// Each sub-chart is verified through the app.kubernetes.io/name labels
+		// its workloads carry; kvisor renders two workloads (agent daemonset
+		// and controller deployment) under its own names.
+		umbrellaWorkloadNames := map[string][]string{
+			components.ComponentNameAgent:                      {components.ComponentNameAgent},
+			components.UmbrellaSubchartSpotHandler:             {components.UmbrellaSubchartSpotHandler},
+			components.ComponentNameKvisor:                     {"castai-kvisor-agent", "castai-kvisor-controller"},
+			components.UmbrellaSubchartClusterController:       {components.UmbrellaSubchartClusterController},
+			components.ComponentNameEvictor:                    {components.ComponentNameEvictor},
+			components.ComponentNamePodMutator:                 {components.ComponentNamePodMutator},
+			components.ComponentNamePodPinner:                  {components.ComponentNamePodPinner},
+			components.ComponentNameWorkloadAutoscaler:         {components.ComponentNameWorkloadAutoscaler},
+			components.ComponentNameWorkloadAutoscalerExporter: {components.ComponentNameWorkloadAutoscalerExporter},
+		}
+
+		readonlySubcharts := []string{
+			components.ComponentNameAgent,
+			components.UmbrellaSubchartSpotHandler,
+			components.ComponentNameKvisor,
+		}
+		// The full tag set also contains castai-live, but the operator's own
+		// defaults disable it (autoscaler.castai-live.enabled=false), matching
+		// the umbrella's defaults, so it is not expected to land.
+		fullSubcharts := append(append([]string{}, readonlySubcharts...),
+			components.UmbrellaSubchartClusterController,
+			components.ComponentNameEvictor,
+			components.ComponentNamePodMutator,
+			components.ComponentNamePodPinner,
+			components.ComponentNameWorkloadAutoscaler,
+			components.ComponentNameWorkloadAutoscalerExporter,
+		)
+		fullReadySubcharts := append(append([]string{}, readonlySubcharts...),
+			components.UmbrellaSubchartClusterController,
+		)
+
+		umbrellaReset := func() {
+			By("uninstalling the operator")
+			cmd := exec.Command("helm", "uninstall", "castware-operator", "-n", namespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+
+			By("waiting for the operator CRDs to be removed")
+			// The pre-delete cleanup job may wait up to two minutes for the
+			// umbrella finalizer to resolve before deleting the CRDs.
+			Eventually(func(g Gomega) {
+				for _, crd := range []string{"components.castware.cast.ai", "clusters.castware.cast.ai"} {
+					exists, err := crdExists(crd)
+					g.Expect(err).NotTo(HaveOccurred(), "Failed to check CRD "+crd)
+					g.Expect(exists).To(BeFalse(), "CRD "+crd+" should be removed")
+				}
+			}, 4*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("uninstalling the umbrella release if present")
+			umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
+			Expect(err).NotTo(HaveOccurred(), "Failed to resolve the umbrella release name")
+			cmd = exec.Command("helm", "uninstall", umbrellaReleaseName, "-n", namespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+
+			By("recreating the namespace")
+			_ = namespaceHelper.Delete(namespace)
+			Eventually(namespaceHelper.VerifyDeleted, 3*time.Minute).
+				WithArguments(namespace).
+				Should(Succeed())
+			Expect(namespaceHelper.Create(namespace)).NotTo(HaveOccurred(), "Failed to create namespace")
+			// The umbrella's readonly tag set includes kvisor, a security scanner
+			// that needs host access (hostPID, privileged exporters, hostPath
+			// volumes) and cannot satisfy the restricted PodSecurity standard the
+			// Manager specs enforce for the agent/spot-handler charts. Relax the
+			// namespace to privileged so the exact per-tag component set can land.
+			cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+				"pod-security.kubernetes.io/enforce=privileged")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with privileged policy")
+		}
+
+		// installOperatorWithRetry retries an operator install that failed on
+		// the chart's post-install hooks racing the webhook server's first
+		// (cold) Mothership call: the 10s admission deadline can be exceeded
+		// on a fresh kind namespace, --atomic rolls the release back and a
+		// retry succeeds. Other failures are surfaced immediately.
+		installOperatorWithRetry := func(install func() error) {
+			var err error
+			for attempt := 1; attempt <= 3; attempt++ {
+				err = install()
+				if err == nil {
+					return
+				}
+				if !strings.Contains(err.Error(), "failed calling webhook") {
+					break
+				}
+				By(fmt.Sprintf("operator install hit the webhook startup race, retrying (attempt %d/3)", attempt+1))
+				time.Sleep(15 * time.Second)
+			}
+			Expect(err).NotTo(HaveOccurred(), "Failed to install operator after retries")
+		}
+
+		// installUmbrellaOperator installs the operator chart with the
+		// defaultComponents umbrella hook enabled. extraFlags add or override
+		// chart values (e.g. extendedPermissions=true for the full tag mode).
+		installUmbrellaOperator := func(extraFlags ...string) {
+			args := []string{
+				"upgrade", "--install", "castware-operator",
+				"--namespace", namespace,
+				"--set", fmt.Sprintf("image.repository=%s", imageParts[0]),
+				"--set", fmt.Sprintf("image.tag=%s", imageParts[1]),
+				"--set", "image.pullPolicy=IfNotPresent",
+				"--set", fmt.Sprintf("apiKeySecret.apiKey=%s", apiKey),
+				"--set", fmt.Sprintf("defaultCluster.api.apiUrl=%s", apiURL),
+				"--set", "defaultCluster.provider=gke",
+				"--set", "defaultCluster.terraform=false",
+				"--set", "defaultComponents.enabled=true",
+				"--set", "defaultComponents.umbrella.enabled=true",
+				// The agent under the umbrella needs the GKE env to run in kind.
+				"--set", "defaultComponents.umbrella.overrides.autoscaler.castai-agent.additionalEnv.GKE_CLUSTER_NAME=castware-operator-e2e",
+				"--set", "defaultComponents.umbrella.overrides.autoscaler.castai-agent.additionalEnv.GKE_LOCATION=e2e",
+				"--set", "defaultComponents.umbrella.overrides.autoscaler.castai-agent.additionalEnv.GKE_PROJECT_ID=e2e",
+				"--set", "defaultComponents.umbrella.overrides.autoscaler.castai-agent.additionalEnv.GKE_REGION=e2e",
+				"--set", "webhook.env.GKE_CLUSTER_NAME=castware-operator-e2e",
+				"--set", "webhook.env.GKE_LOCATION=e2e",
+				"--set", "webhook.env.GKE_PROJECT_ID=e2e",
+				"--set", "webhook.env.GKE_REGION=e2e",
+				"--atomic",
+				"--timeout", "5m",
+			}
+			args = append(args, extraFlags...)
+			args = append(args, operatorChartPath)
+			installOperatorWithRetry(func() error {
+				cmd := exec.Command("helm", args...)
+				_, err := utils.Run(cmd)
+				return err
+			})
+		}
+
+		waitForOnboardedCluster := func() {
+			By("waiting for the cluster to be onboarded")
+			Eventually(func(g Gomega) {
+				clusterID = clusterHelper.VerifyClusterID(g, "castai")
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+			clusterResp, err := apiHelper.GetCluster(clusterID)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get cluster from API")
+			org, ok := clusterResp["organizationId"].(string)
+			Expect(ok).To(BeTrue(), "organizationId missing in cluster response")
+			organizationID = org
+		}
+
+		waitUmbrellaComponentReady := func() {
+			By("waiting for the castai-umbrella component to become available")
+			Eventually(func(g Gomega) {
+				componentHelper.VerifyVersionIsSet(g, components.ComponentNameUmbrella)
+				err := componentHelper.VerifyStatusCondition(components.ComponentNameUmbrella, "Available")
+				g.Expect(err).NotTo(HaveOccurred(), "castai-umbrella should be Available")
+			}, 12*time.Minute, 15*time.Second).Should(Succeed())
+		}
+
+		// verifyDaemonsetReady asserts that a daemonset with the given
+		// app.kubernetes.io/name is deployed and reports a Ready condition. Used
+		// for the spot-handler, which only schedules on cloud spot instances and
+		// therefore never runs a pod in kind (matching the Manager specs' own
+		// spot-handler assertion).
+		verifyDaemonsetReady := func(g Gomega, name string) {
+			cmd := exec.Command("kubectl", "get", "daemonsets",
+				"-l", fmt.Sprintf("app.kubernetes.io/name=%s", name),
+				"-n", namespace,
+				"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.status.conditions[?(@.type=='Ready')].status}{'\\n'}{end}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred(), "Failed to get "+name+" daemonset")
+			g.Expect(output).NotTo(BeEmpty(), "No "+name+" daemonsets found")
+		}
+
+		// verifyUmbrellaSubcharts asserts that a workload exists for every
+		// expected sub-chart and that pods are ready for the ready subset
+		// (except the spot-handler, which is verified via its daemonset).
+		verifyUmbrellaSubcharts := func(g Gomega, expected, ready []string) {
+			for _, subchart := range expected {
+				for _, name := range umbrellaWorkloadNames[subchart] {
+					cmd := exec.Command("kubectl", "get", "deployments,daemonsets,statefulsets",
+						"-l", fmt.Sprintf("app.kubernetes.io/name=%s", name),
+						"-n", namespace,
+						"-o", "name")
+					output, err := utils.Run(cmd)
+					g.Expect(err).NotTo(HaveOccurred(), "Failed to list workloads for "+name)
+					// "No resources found" is still a successful kubectl call, so look
+					// for a resource name (all listed kinds print as <kind>.apps/<name>).
+					g.Expect(strings.Contains(output, "apps/")).To(BeTrue(),
+						fmt.Sprintf("no workload found for %s", name))
+				}
+			}
+			for _, subchart := range ready {
+				for _, name := range umbrellaWorkloadNames[subchart] {
+					if name == components.UmbrellaSubchartSpotHandler {
+						verifyDaemonsetReady(g, name)
+						continue
+					}
+					podHelper.VerifyPodsReady(g, "app.kubernetes.io/name", name)
+				}
+			}
+		}
+
+		ensureCastaiHelmRepo := func() {
+			By("ensuring the castai-helm repo is configured")
+			cmd := exec.Command("helm", "repo", "add", "castai-helm", "https://castai.github.io/helm-charts", "--force-update")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to add the castai-helm repo")
+			cmd = exec.Command("helm", "repo", "update", "castai-helm")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to update the castai-helm repo")
+		}
+
+		// handInstallUmbrella installs the published castai umbrella chart by
+		// hand with the same globals the operator would inject, so the operator
+		// can detect and adopt it afterwards.
+		handInstallUmbrella := func(releaseName, clusterIDValue, tag string, extraFlags ...string) {
+			ensureCastaiHelmRepo()
+			// The cluster webhook derives the kvisor grpc address from the api URL
+			// (api.dev-master.cast.ai -> kvisor.dev-master.cast.ai) and the
+			// operator injects it into the kvisor sub-chart; mirror that here so
+			// kvisor authenticates against the same environment. Without it the
+			// sub-chart's prod default rejects the key and kvisor never starts.
+			apiHost := strings.TrimPrefix(strings.TrimPrefix(apiURL, "https://"), "http://")
+			kvisorGrpcAddr := "kvisor." + strings.Join(strings.SplitN(apiHost, ".", 2)[1:], "")
+			By(fmt.Sprintf("hand-installing the umbrella chart with tag %s", tag))
+			flags := []string{
+				"--set", fmt.Sprintf("global.castai.apiURL=%s", apiURL),
+				"--set", "global.castai.provider=gke",
+				"--set", fmt.Sprintf("global.castai.clusterID=%s", clusterIDValue),
+				"--set", "global.castai.apiKeySecretRef=castware-api-key",
+				"--set", fmt.Sprintf("tags.%s=true", tag),
+				"--set", fmt.Sprintf("autoscaler.castai-kvisor.castai.grpcAddr=%s", kvisorGrpcAddr),
+				// Neutralize the kvisor cluster-id refs like the operator does, so
+				// the injected clusterID is consumed immediately.
+				"--set", "autoscaler.castai-kvisor.castai.clusterIdConfigMapKeyRef.name=",
+				"--set", "autoscaler.castai-kvisor.castai.clusterIdSecretKeyRef.name=",
+				// The agent needs the GKE env to run in kind.
+				"--set", "autoscaler.castai-agent.additionalEnv.GKE_CLUSTER_NAME=castware-operator-e2e",
+				"--set", "autoscaler.castai-agent.additionalEnv.GKE_LOCATION=e2e",
+				"--set", "autoscaler.castai-agent.additionalEnv.GKE_PROJECT_ID=e2e",
+				"--set", "autoscaler.castai-agent.additionalEnv.GKE_REGION=e2e",
+			}
+			flags = append(flags, extraFlags...)
+			err := helmHelper.InstallChart(releaseName, "castai-helm/castai", flags...)
+			Expect(err).NotTo(HaveOccurred(), "Failed to hand-install the umbrella chart")
+		}
+
+		It("should fresh install the umbrella via the chart hook in readonly mode", func() {
+			umbrellaReset()
+
+			By("installing the operator with the umbrella hook enabled (readonly defaults)")
+			installUmbrellaOperator()
+
+			waitForOnboardedCluster()
+
+			By("waiting for the castai-umbrella CR created by the post-install hook to become available")
+			waitUmbrellaComponentReady()
+
+			umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the exact readonly component set landed (extras included)")
+			Eventually(func(g Gomega) {
+				verifyUmbrellaSubcharts(g, readonlySubcharts, readonlySubcharts)
+			}, 10*time.Minute, 15*time.Second).Should(Succeed())
+
+			By("verifying no per-component CRs were created")
+			names, err := componentHelper.ListNames()
+			Expect(err).NotTo(HaveOccurred(), "Failed to list component CRs")
+			Expect(names).To(Equal([]string{components.ComponentNameUmbrella}),
+				"only the umbrella CR should exist, got %v", names)
+
+			By("verifying the umbrella release values match the umbrella's own defaults")
+			values, err := helmHelper.GetReleaseValuesJSON(umbrellaReleaseName)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get umbrella release values")
+			Expect(values).To(ContainSubstring(`"tags":{"readonly":true}`),
+				"the readonly tag should be auto-derived from extendedPermissions=false")
+			Expect(values).To(ContainSubstring(`"castai-live":{"enabled":false}`),
+				"castai-live should be disabled by default")
+
+			By("verifying the install report carries tags and inventory")
+			Eventually(func(g Gomega) {
+				logs, err := getOperatorLogs(namespace)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get operator logs")
+				g.Expect(logs).To(ContainSubstring("Recorded action result for component"))
+				g.Expect(logs).To(ContainSubstring("Name:castai-umbrella"))
+				g.Expect(logs).To(ContainSubstring("ComponentParams:map["))
+				// The inventory entries print with Go field names ({Name:... Version:... Enabled:...})
+				// and the tags map carries every mode tag, so match the real shapes.
+				g.Expect(logs).To(ContainSubstring("readonly:true"))
+				g.Expect(logs).To(ContainSubstring("inventory:[{Name:"))
+			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+		})
+
+		It("should fresh install the umbrella via the chart hook in full mode with extras", func() {
+			umbrellaReset()
+
+			By("installing the operator with extendedPermissions=true (auto-derived tags.full=true)")
+			installUmbrellaOperator("--set", "extendedPermissions=true")
+
+			waitForOnboardedCluster()
+			waitUmbrellaComponentReady()
+
+			umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the exact full component set landed (extras included)")
+			Eventually(func(g Gomega) {
+				verifyUmbrellaSubcharts(g, fullSubcharts, fullReadySubcharts)
+			}, 12*time.Minute, 15*time.Second).Should(Succeed())
+
+			By("verifying castai-live is disabled by the umbrella's own defaults")
+			cmd := exec.Command("kubectl", "get", "deployments,daemonsets,statefulsets",
+				"-l", fmt.Sprintf("app.kubernetes.io/name=%s", components.ComponentNameLive),
+				"-n", namespace, "-o", "name")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.Contains(output, "apps/")).To(BeFalse(), "castai-live should be disabled by default")
+
+			By("verifying no per-component CRs were created")
+			names, err := componentHelper.ListNames()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(names).To(Equal([]string{components.ComponentNameUmbrella}),
+				"only the umbrella CR should exist, got %v", names)
+
+			By("verifying the full tag in the release values")
+			values, err := helmHelper.GetReleaseValuesJSON(umbrellaReleaseName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(values).To(ContainSubstring(`"tags":{"full":true}`),
+				"the full tag should be auto-derived from extendedPermissions=true")
+
+			By("verifying the install report carries the full tag and inventory")
+			Eventually(func(g Gomega) {
+				logs, err := getOperatorLogs(namespace)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get operator logs")
+				// The inventory entries print with Go field names and the tags map carries
+				// every mode tag, so match the real shapes.
+				g.Expect(logs).To(ContainSubstring("full:true"))
+				g.Expect(logs).To(ContainSubstring("inventory:[{Name:"))
+			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+		})
+
+		It("should take over a hand-installed umbrella and preserve its release history", func() {
+			umbrellaReset()
+
+			By("installing the operator without default components")
+			installOperatorWithRetry(func() error {
+				return helmHelper.InstallOperator(imageParts[0], imageParts[1], apiKey, apiURL, operatorChartPath, "")
+			})
+			var err error
+
+			waitForOnboardedCluster()
+
+			umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
+			Expect(err).NotTo(HaveOccurred())
+
+			By("hand-installing the umbrella chart")
+			handInstallUmbrella(umbrellaReleaseName, clusterID, components.UmbrellaTagReadonly)
+
+			By("waiting for the umbrella workloads to be ready")
+			Eventually(func(g Gomega) {
+				verifyUmbrellaSubcharts(g, readonlySubcharts, readonlySubcharts)
+			}, 12*time.Minute, 15*time.Second).Should(Succeed())
+
+			By("capturing the release revision and history before adoption")
+			revision, err := helmHelper.GetReleaseRevision(umbrellaReleaseName)
+			Expect(err).NotTo(HaveOccurred())
+			historyCount, err := helmHelper.GetReleaseHistoryCount(umbrellaReleaseName)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for the operator to adopt the umbrella release")
+			Eventually(func(g Gomega) {
+				componentHelper.VerifyVersionIsSet(g, components.ComponentNameUmbrella)
+			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+
+			By("verifying the adoption metadata on the CR")
+			migration, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.spec.migration}")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(migration).To(Equal("helm"), "adopted CR should use migration: helm")
+			releaseNameField, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.spec.releaseName}")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(releaseNameField).To(Equal(umbrellaReleaseName), "adopted CR should pin the release name")
+
+			By("waiting for the adopted component to become available")
+			waitUmbrellaComponentReady()
+
+			By("verifying the release history is preserved (no install or upgrade by the operator)")
+			revisionAfter, err := helmHelper.GetReleaseRevision(umbrellaReleaseName)
+			Expect(err).NotTo(HaveOccurred())
+			historyAfter, err := helmHelper.GetReleaseHistoryCount(umbrellaReleaseName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(revisionAfter).To(Equal(revision), "operator must not bump the release revision on adoption")
+			Expect(historyAfter).To(Equal(historyCount), "operator must not add release history on adoption")
+
+			By("verifying no per-component CRs exist")
+			names, err := componentHelper.ListNames()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(names).To(Equal([]string{components.ComponentNameUmbrella}),
+				"only the umbrella CR should exist, got %v", names)
+
+			By("verifying the adoption reported tags and inventory to Mothership")
+			Eventually(func(g Gomega) {
+				logs, err := getOperatorLogs(namespace)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get operator logs")
+				g.Expect(logs).To(ContainSubstring("Name:castai-umbrella"))
+				g.Expect(logs).To(ContainSubstring("ComponentParams:map["))
+				// The inventory entries print with Go field names ({Name:... Version:... Enabled:...})
+				// and the tags map carries every mode tag, so match the real shapes.
+				g.Expect(logs).To(ContainSubstring("readonly:true"))
+				g.Expect(logs).To(ContainSubstring("inventory:[{Name:"))
+			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+		})
+
+		It("should take over a hand-installed umbrella in read mode without write ops", func() {
+			umbrellaReset()
+
+			By("installing the operator in migrationMode=read")
+			installOperatorWithRetry(func() error {
+				return helmHelper.InstallOperator(imageParts[0], imageParts[1], apiKey, apiURL, operatorChartPath, "read")
+			})
+			var err error
+
+			waitForOnboardedCluster()
+
+			umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
+			Expect(err).NotTo(HaveOccurred())
+
+			By("hand-installing the umbrella chart")
+			handInstallUmbrella(umbrellaReleaseName, clusterID, components.UmbrellaTagReadonly)
+
+			By("waiting for the umbrella workloads to be ready")
+			Eventually(func(g Gomega) {
+				verifyUmbrellaSubcharts(g, readonlySubcharts, readonlySubcharts)
+			}, 12*time.Minute, 15*time.Second).Should(Succeed())
+
+			By("capturing the release revision and history before adoption")
+			revision, err := helmHelper.GetReleaseRevision(umbrellaReleaseName)
+			Expect(err).NotTo(HaveOccurred())
+			historyCount, err := helmHelper.GetReleaseHistoryCount(umbrellaReleaseName)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for the operator to adopt the umbrella release as read-only")
+			Eventually(func(g Gomega) {
+				componentHelper.VerifySpecReadonly(g, components.ComponentNameUmbrella, true)
+			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+
+			By("verifying the adoption metadata on the CR")
+			migration, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.spec.migration}")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(migration).To(Equal("helm"), "adopted CR should use migration: helm")
+			releaseNameField, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.spec.releaseName}")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(releaseNameField).To(Equal(umbrellaReleaseName), "adopted CR should pin the release name")
+
+			By("waiting for the observed release version in the CR status")
+			Eventually(func(g Gomega) {
+				version, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.status.currentVersion}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(version).NotTo(BeEmpty(), "the read-only path should still observe the release version")
+			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+
+			By("verifying no write ops occurred")
+			revisionAfter, err := helmHelper.GetReleaseRevision(umbrellaReleaseName)
+			Expect(err).NotTo(HaveOccurred())
+			historyAfter, err := helmHelper.GetReleaseHistoryCount(umbrellaReleaseName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(revisionAfter).To(Equal(revision), "read mode must not bump the release revision")
+			Expect(historyAfter).To(Equal(historyCount), "read mode must not add release history")
+
+			By("verifying the operator recorded no action results (observe-only)")
+			logs, err := getOperatorLogs(namespace)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get operator logs")
+			Expect(logs).NotTo(ContainSubstring("Recorded action result for component"),
+				"read mode must not perform or report any component writes")
+
+			// Note: in read mode the operator itself never calls recordActionResult
+			// (verified above), so any Mothership-side inventory for the cluster
+			// comes solely from the agent's own snapshot channel. The dev
+			// Mothership did not surface the agent's usedVersion through the
+			// components:view endpoint for a read-mode (operator-onboarded)
+			// cluster within the retry window, so no API read-back is asserted
+			// here; the observable contract for read mode is the CR status above.
+
+			By("verifying the scan adopted the umbrella via the release")
+			Eventually(func(g Gomega) {
+				logs, err := getOperatorLogs(namespace)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get operator logs")
+				g.Expect(logs).To(ContainSubstring("Umbrella release found, creating castai-umbrella component resource"),
+					"the scan should have adopted the hand-installed release")
+			}, 2*time.Minute, 10*time.Second).Should(Succeed())
+		})
+
+		It("should enforce exclusivity between the umbrella and individual components", func() {
+			umbrellaReset()
+
+			By("installing the operator without default components")
+			installOperatorWithRetry(func() error {
+				return helmHelper.InstallOperator(imageParts[0], imageParts[1], apiKey, apiURL, operatorChartPath, "")
+			})
+			var err error
+
+			waitForOnboardedCluster()
+
+			umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating an individual castai-agent component CR")
+			err = componentHelper.CreateFromYAML(components.ComponentNameAgent, components.ComponentNameAgent, "")
+			Expect(err).NotTo(HaveOccurred(), "Failed to create agent CR")
+
+			By("waiting for the agent to be installed")
+			Eventually(func(g Gomega) {
+				componentHelper.VerifyVersionIsSet(g, components.ComponentNameAgent)
+			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("verifying umbrella CR creation is denied while individual CRs exist")
+			// The readonly tag keeps the umbrella within the operator's base
+			// permissions, so the admission check reaches the mutual-exclusivity
+			// gate instead of the extended-permissions denial.
+			err = componentHelper.CreateUmbrellaFromYAML(components.ComponentNameUmbrella, "castai",
+				"  values:\n    tags:\n      readonly: true\n")
+			Expect(err).To(HaveOccurred(), "umbrella CR creation must be denied while individual CRs exist")
+			Expect(err.Error()).To(ContainSubstring(fmt.Sprintf(
+				"umbrella component cannot be created while individual component CR %q exists; set spec.migrate: true to take it over",
+				components.ComponentNameAgent)))
+
+			By("hand-installing the umbrella chart alongside the agent (hybrid)")
+			// The agent sub-chart is disabled so the umbrella does not collide
+			// with the standalone agent release's resources: the hybrid state
+			// (umbrella release + individual release both installed) is what the
+			// operator must detect and handle without adopting the umbrella.
+			handInstallUmbrella(umbrellaReleaseName, clusterID, components.UmbrellaTagReadonly,
+				"--set", "autoscaler.castai-agent.enabled=false")
+
+			By("verifying the hybrid configuration is not adopted")
+			names, err := componentHelper.ListNames()
+			Expect(err).NotTo(HaveOccurred(), "Failed to list component CRs")
+			Expect(names).To(Equal([]string{components.ComponentNameAgent}),
+				"the hybrid config must not adopt the umbrella, got %v", names)
+
+			By("verifying the agent CR is forced read-only with an UmbrellaConflict condition")
+			Eventually(func(g Gomega) {
+				componentHelper.VerifySpecReadonly(g, components.ComponentNameAgent, true)
+				err := componentHelper.VerifyStatusConditionReason(components.ComponentNameAgent, "UmbrellaConflict", "UmbrellaReleasePresent")
+				g.Expect(err).NotTo(HaveOccurred(), "agent CR should carry the UmbrellaConflict condition")
+			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("verifying the read-only agent CR cannot be modified")
+			err = componentHelper.PatchVersion(components.ComponentNameAgent, "0.125.0")
+			Expect(err).To(HaveOccurred(), "modifying a read-only component must be denied")
+			Expect(err.Error()).To(ContainSubstring("readonly components cannot be modified"))
+
+			By("removing the umbrella release")
+			Expect(helmHelper.UninstallRelease(umbrellaReleaseName)).NotTo(HaveOccurred(), "Failed to uninstall the umbrella release")
+
+			By("flipping spec.readonly back on the agent CR")
+			cmd := exec.Command("kubectl", "patch", "component", components.ComponentNameAgent,
+				"-n", namespace, "--type=merge", "-p", `{"spec":{"readonly":false}}`)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "flipping spec.readonly must be the one allowed change")
+
+			By("verifying the UmbrellaConflict condition clears")
+			Eventually(func(g Gomega) {
+				err := componentHelper.VerifyStatusConditionReason(components.ComponentNameAgent, "UmbrellaConflict", "UmbrellaReleaseNotPresent")
+				g.Expect(err).NotTo(HaveOccurred(), "UmbrellaConflict should clear once the umbrella release is gone")
+			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("deleting the agent component CR")
+			cmd = exec.Command("kubectl", "delete", "component", components.ComponentNameAgent, "-n", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete agent CR")
+
+			By("waiting for the agent helm release to be uninstalled")
+			Eventually(func(g Gomega) {
+				exists, err := helmHelper.ReleaseExists(components.ComponentNameAgent)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(exists).To(BeFalse(), "agent release should be uninstalled with the CR")
+			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("creating the umbrella CR now that no individual CRs exist")
+			// The readonly tag avoids the extended-permissions requirement the
+			// webhook enforces for non-readonly umbrella values.
+			err = componentHelper.CreateUmbrellaFromYAML(components.ComponentNameUmbrella, "castai",
+				"  values:\n    tags:\n      readonly: true\n")
+			Expect(err).NotTo(HaveOccurred(), "umbrella CR creation must be allowed without individual CRs")
+			waitUmbrellaComponentReady()
+
+			By("verifying individual CR creation is denied while the umbrella CR exists")
+			err = componentHelper.CreateFromYAML(components.ComponentNameAgent, components.ComponentNameAgent, "")
+			Expect(err).To(HaveOccurred(), "individual CR creation must be denied while the umbrella CR exists")
+			Expect(err.Error()).To(ContainSubstring(fmt.Sprintf(
+				"cannot create individual component CR %q: umbrella component CR exists; use the castai-umbrella chart instead",
+				components.ComponentNameAgent)))
+		})
+
+		It("should report component params with tags and inventory across install, upgrade and uninstall", func() {
+			umbrellaReset()
+
+			By("installing the operator with the umbrella hook enabled (readonly defaults)")
+			installUmbrellaOperator()
+
+			waitForOnboardedCluster()
+			waitUmbrellaComponentReady()
+
+			umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the install report carries tags and inventory")
+			Eventually(func(g Gomega) {
+				logs, err := getOperatorLogs(namespace)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get operator logs")
+				g.Expect(logs).To(ContainSubstring("Recorded action result for component"))
+				g.Expect(logs).To(ContainSubstring("Name:castai-umbrella"))
+				g.Expect(logs).To(ContainSubstring("Action:ENABLE"))
+				g.Expect(logs).To(ContainSubstring("ComponentParams:map["))
+				// The inventory entries print with Go field names ({Name:... Version:... Enabled:...})
+				// and the tags map carries every mode tag, so match the real shapes.
+				g.Expect(logs).To(ContainSubstring("readonly:true"))
+				g.Expect(logs).To(ContainSubstring("inventory:[{Name:"))
+			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+
+			By("waiting for the reported revision to be tracked on the CR")
+			Eventually(func(g Gomega) {
+				reported, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.status.lastReportedHelmRevision}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(reported).NotTo(BeEmpty(), "lastReportedHelmRevision should be set after the install report")
+			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+			reportedRevision, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.status.lastReportedHelmRevision}")
+			Expect(err).NotTo(HaveOccurred())
+
+			By("upgrading the umbrella release directly (parameter-only revision bump)")
+			ensureCastaiHelmRepo()
+			err = helmHelper.InstallChart(umbrellaReleaseName, "castai-helm/castai", "--reuse-values")
+			Expect(err).NotTo(HaveOccurred(), "Failed to upgrade the umbrella release directly")
+
+			By("waiting for the revision change to be detected and reported")
+			Eventually(func(g Gomega) {
+				reported, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.status.lastReportedHelmRevision}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(reported).NotTo(Equal(reportedRevision), "lastReportedHelmRevision should advance after the revision bump")
+			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("verifying the upgrade report carries tags and inventory")
+			Eventually(func(g Gomega) {
+				logs, err := getOperatorLogs(namespace)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get operator logs")
+				g.Expect(logs).To(ContainSubstring("Successfully reported helm revision change to Mothership"))
+				// The inventory entries print with Go field names ({Name:... Version:... Enabled:...})
+				// and the tags map carries every mode tag, so match the real shapes.
+				g.Expect(logs).To(ContainSubstring("readonly:true"))
+				g.Expect(logs).To(ContainSubstring("inventory:[{Name:"))
+			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+
+			By("deleting the umbrella CR (uninstall)")
+			cmd := exec.Command("kubectl", "delete", "component", components.ComponentNameUmbrella, "-n", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete the umbrella CR")
+
+			By("waiting for the umbrella release to be uninstalled")
+			Eventually(func(g Gomega) {
+				exists, err := helmHelper.ReleaseExists(umbrellaReleaseName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(exists).To(BeFalse(), "the umbrella release should be uninstalled with the CR")
+			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("verifying the uninstall was reported")
+			// The DELETE report does not carry component_params (the release is
+			// gone); the round-trip closes with the DISABLE action record.
+			Eventually(func(g Gomega) {
+				logs, err := getOperatorLogs(namespace)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get operator logs")
+				g.Expect(logs).To(ContainSubstring("Recorded action result for component"))
+				g.Expect(logs).To(ContainSubstring("Name:castai-umbrella"))
+				g.Expect(logs).To(ContainSubstring("Action:DISABLE"))
+			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+		})
+
+		It("should preserve the umbrella when the operator is uninstalled (offboarding)", func() {
+			umbrellaReset()
+
+			By("installing the operator with the umbrella hook enabled in full mode")
+			installUmbrellaOperator("--set", "extendedPermissions=true")
+
+			waitForOnboardedCluster()
+			waitUmbrellaComponentReady()
+
+			umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for the full workload set to be running")
+			Eventually(func(g Gomega) {
+				verifyUmbrellaSubcharts(g, fullSubcharts, fullReadySubcharts)
+			}, 12*time.Minute, 15*time.Second).Should(Succeed())
+
+			By("capturing the CRDs owned by the umbrella release")
+			umbrellaCRDNames, err := helmHelper.GetReleaseCRDNames(umbrellaReleaseName)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get umbrella release CRDs")
+			Expect(umbrellaCRDNames).NotTo(BeEmpty(), "the umbrella release should own at least one CRD")
+
+			By("uninstalling the operator")
+			Expect(helmHelper.UninstallOperator()).NotTo(HaveOccurred(), "Failed to uninstall the operator")
+
+			By("verifying the operator CRDs are gone")
+			Eventually(func(g Gomega) {
+				for _, crd := range []string{"components.castware.cast.ai", "clusters.castware.cast.ai"} {
+					exists, err := crdExists(crd)
+					g.Expect(err).NotTo(HaveOccurred(), "Failed to check CRD "+crd)
+					g.Expect(exists).To(BeFalse(), "operator CRD "+crd+" should be removed")
+				}
+			}, 4*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying the umbrella helm release survived")
+			exists, err := helmHelper.ReleaseExists(umbrellaReleaseName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(exists).To(BeTrue(), "the umbrella release must survive the operator uninstall")
+
+			By("verifying the umbrella workloads survived")
+			Eventually(func(g Gomega) {
+				verifyUmbrellaSubcharts(g, fullSubcharts, fullReadySubcharts)
+			}, 2*time.Minute, 15*time.Second).Should(Succeed())
+
+			By("verifying the umbrella CRDs survived")
+			for _, crdName := range umbrellaCRDNames {
+				exists, err := crdExists(crdName)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(exists).To(BeTrue(), "umbrella CRD %s must survive the operator uninstall", crdName)
+			}
+
+			By("verifying the namespace is intact")
+			cmd := exec.Command("kubectl", "get", "ns", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "the namespace must survive the operator uninstall")
+		})
 	})
 })
 

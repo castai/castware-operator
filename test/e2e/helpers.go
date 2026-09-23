@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -48,12 +49,38 @@ spec:
       GKE_REGION: e2e
 `
 
+// umbrellaComponentYaml is a fmt template for an umbrella Component CR. The
+// last %s carries extra indented spec lines — e.g. "  readonly: true",
+// "  migrate: true", "  releaseName: foo" or a "  values:" block with
+// 4-space-indented children — and may be empty.
+const umbrellaComponentYaml = `apiVersion: castware.cast.ai/v1alpha1
+kind: Component
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  cluster: %s
+  component: castai-umbrella
+  enabled: true
+%s
+`
+
 // component represents a Cast AI component
 type component struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
 	UsedVersion   string `json:"usedVersion"`
 	LatestVersion string `json:"latestVersion"`
+}
+
+// castAIComponentInfo is a component from the Cast AI component registry
+type castAIComponentInfo struct {
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	HelmChart     string   `json:"helmChart"`
+	Dependencies  []string `json:"dependencies"`
+	LatestVersion string   `json:"latestVersion"`
+	ReleaseName   string   `json:"releaseName"`
 }
 
 // disablePreflightChecks forces PREFLIGHT_CHECKS=false in an onboarding script.
@@ -153,6 +180,87 @@ func (h *ComponentHelper) CreateFromYAML(componentName, componentType string, ad
 	cmd := exec.Command("kubectl", "apply", "-f", componentFile)
 	_, err := utils.Run(cmd)
 	return err
+}
+
+// CreateUmbrellaFromYAML creates an umbrella Component CR from the YAML
+// template. The extraSpecYAML argument carries additional indented spec
+// lines ("  readonly: true", "  migrate: true", "  releaseName: foo" or a
+// "  values:" block with 4-space-indented children) and may be empty. The
+// returned error carries admission webhook denials in its message.
+func (h *ComponentHelper) CreateUmbrellaFromYAML(componentName, clusterName, extraSpecYAML string) error {
+	manifest := fmt.Sprintf(umbrellaComponentYaml, componentName, h.namespace, clusterName, extraSpecYAML)
+	return h.ApplyYAML(fmt.Sprintf("%s-umbrella", componentName), manifest)
+}
+
+// ApplyYAML applies a manifest from /tmp and returns the kubectl error
+// verbatim — its message carries admission webhook denials.
+func (h *ComponentHelper) ApplyYAML(fileName, manifest string) error {
+	file := filepath.Join("/tmp", fmt.Sprintf("%s.yaml", fileName))
+	if err := os.WriteFile(file, []byte(manifest), os.FileMode(0o644)); err != nil {
+		return fmt.Errorf("failed to write manifest: %w", err)
+	}
+
+	cmd := exec.Command("kubectl", "apply", "-f", file)
+	_, err := utils.Run(cmd)
+	return err
+}
+
+// ListNames returns the names of all Component CRs in the namespace
+func (h *ComponentHelper) ListNames() ([]string, error) {
+	cmd := exec.Command("kubectl", "get", "components",
+		"-n", h.namespace,
+		"-o", "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}")
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list components: %w", err)
+	}
+	return utils.GetNonEmptyLines(output), nil
+}
+
+// GetField retrieves an arbitrary field of a component CR via jsonpath
+func (h *ComponentHelper) GetField(componentName, jsonpath string) (string, error) {
+	cmd := exec.Command("kubectl", "get", "component", componentName,
+		"-n", h.namespace,
+		"-o", fmt.Sprintf("jsonpath=%s", jsonpath))
+	return utils.Run(cmd)
+}
+
+// VerifySpecReadonly checks that a component's spec.readonly matches the
+// expected value. An unset field matches an expected false.
+func (h *ComponentHelper) VerifySpecReadonly(g Gomega, componentName string, expected bool) {
+	value, err := h.GetField(componentName, "{.spec.readonly}")
+	g.Expect(err).NotTo(HaveOccurred(), "Failed to get component spec.readonly")
+	if expected {
+		g.Expect(value).To(Equal("true"),
+			fmt.Sprintf("Component %s spec.readonly should be true", componentName))
+	} else {
+		g.Expect(value).To(Or(Equal("false"), BeEmpty()),
+			fmt.Sprintf("Component %s spec.readonly should be false or unset", componentName))
+	}
+}
+
+// VerifyStatusConditionReason checks that a component has a status
+// condition with the given type whose reason matches the expected reason.
+// The type and reason are matched as substrings of the serialized conditions,
+// which is exact enough because condition types and reasons are unique.
+func (h *ComponentHelper) VerifyStatusConditionReason(componentName, conditionType, reason string) error {
+	cmd := exec.Command("kubectl", "get", "component", componentName,
+		"-n", h.namespace,
+		"-o", "jsonpath={.status.conditions}")
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return fmt.Errorf("failed to get component status: %w", err)
+	}
+
+	expectedCondition := fmt.Sprintf(`"type":"%s"`, conditionType)
+	expectedReason := fmt.Sprintf(`"reason":"%s"`, reason)
+	if !strings.Contains(output, expectedCondition) {
+		return fmt.Errorf("component should have %s condition", conditionType)
+	}
+	if !strings.Contains(output, expectedReason) {
+		return fmt.Errorf("component %s condition should have reason %s", conditionType, reason)
+	}
+	return nil
 }
 
 // PodHelper provides helper methods for pod operations
@@ -311,6 +419,144 @@ func (h *HelmHelper) UninstallOperator() error {
 	return err
 }
 
+// ReleaseExists checks whether a helm release exists in the namespace.
+// A "not found" status is reported as (false, nil), not an error.
+func (h *HelmHelper) ReleaseExists(releaseName string) (bool, error) {
+	cmd := exec.Command("helm", "status", releaseName, "-n", h.namespace, "-o", "json")
+	_, err := utils.Run(cmd)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// GetReleaseRevision returns the current revision of a helm release
+func (h *HelmHelper) GetReleaseRevision(releaseName string) (int, error) {
+	cmd := exec.Command("helm", "status", releaseName, "-n", h.namespace, "-o", "json")
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get helm release status: %w", err)
+	}
+	var status struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(output), &status); err != nil {
+		return 0, fmt.Errorf("failed to unmarshal helm release status: %w", err)
+	}
+	return status.Version, nil
+}
+
+// GetReleaseHistoryCount returns the number of revisions in a release's history
+func (h *HelmHelper) GetReleaseHistoryCount(releaseName string) (int, error) {
+	cmd := exec.Command("helm", "history", releaseName, "-n", h.namespace, "-o", "json")
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get helm release history: %w", err)
+	}
+	var history []struct {
+		Revision int `json:"revision"`
+	}
+	if err := json.Unmarshal([]byte(output), &history); err != nil {
+		return 0, fmt.Errorf("failed to unmarshal helm release history: %w", err)
+	}
+	return len(history), nil
+}
+
+// GetReleaseValuesJSON returns the user-supplied values of a helm release as JSON
+func (h *HelmHelper) GetReleaseValuesJSON(releaseName string) (string, error) {
+	cmd := exec.Command("helm", "get", "values", releaseName, "-n", h.namespace, "-o", "json")
+	return utils.Run(cmd)
+}
+
+// GetReleaseCRDNames extracts the CustomResourceDefinition names rendered by
+// a helm release, parsed from its manifest. Used to verify which CRDs belong
+// to a release so tests can assert they survive teardowns of other releases.
+func (h *HelmHelper) GetReleaseCRDNames(releaseName string) ([]string, error) {
+	cmd := exec.Command("helm", "get", "manifest", releaseName, "-n", h.namespace)
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get helm release manifest: %w", err)
+	}
+
+	names := map[string]struct{}{}
+	sawCRD := false
+	inMetadata := false
+	name := ""
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == "---":
+			sawCRD, inMetadata, name = false, false, ""
+		case trimmed == "kind: CustomResourceDefinition":
+			sawCRD = true
+		case trimmed == "metadata:":
+			inMetadata = true
+		case trimmed == "spec:":
+			inMetadata = false
+		case inMetadata && strings.HasPrefix(trimmed, "name:"):
+			if name == "" {
+				name = strings.TrimSpace(strings.TrimPrefix(trimmed, "name:"))
+			}
+			if sawCRD && name != "" {
+				names[name] = struct{}{}
+			}
+		}
+	}
+
+	result := make([]string, 0, len(names))
+	for n := range names {
+		result = append(result, n)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+// InstallChart upgrades or installs an arbitrary helm chart in the namespace
+func (h *HelmHelper) InstallChart(releaseName, chartRef string, additionalFlags ...string) error {
+	args := []string{
+		"upgrade", "--install", releaseName,
+		"--namespace", h.namespace,
+		"--create-namespace",
+		"--timeout", "10m",
+	}
+	args = append(args, additionalFlags...)
+	args = append(args, chartRef)
+
+	cmd := exec.Command("helm", args...)
+	_, err := utils.Run(cmd)
+	return err
+}
+
+// UninstallRelease uninstalls an arbitrary helm release from the namespace
+func (h *HelmHelper) UninstallRelease(releaseName string) error {
+	cmd := exec.Command("helm", "uninstall", releaseName, "-n", h.namespace)
+	_, err := utils.Run(cmd)
+	return err
+}
+
+// ListReleaseNames returns the names of all helm releases in the namespace
+func (h *HelmHelper) ListReleaseNames() ([]string, error) {
+	cmd := exec.Command("helm", "list", "-n", h.namespace, "-o", "json")
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list helm releases: %w", err)
+	}
+	var releases []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(output), &releases); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal helm release list: %w", err)
+	}
+	names := make([]string, 0, len(releases))
+	for _, r := range releases {
+		names = append(names, r.Name)
+	}
+	return names, nil
+}
+
 // APIHelper provides helper methods for Cast AI API operations
 type APIHelper struct {
 	apiKey string
@@ -398,6 +644,29 @@ func (h *APIHelper) GetClusterComponents(organizationID, clusterID string) ([]co
 	return resp.Components, err
 }
 
+// GetComponentByName retrieves component registry information by component name
+func (h *APIHelper) GetComponentByName(name string) (*castAIComponentInfo, error) {
+	url := fmt.Sprintf("%s/cluster-management/v1/components:getByName?name=%s", h.apiURL, name)
+	var resp castAIComponentInfo
+	if err := h.FetchFromAPI(url, http.MethodGet, nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// GetUmbrellaReleaseName resolves the helm release name Mothership expects
+// for the umbrella component, falling back to the component name
+func (h *APIHelper) GetUmbrellaReleaseName() (string, error) {
+	umbrella, err := h.GetComponentByName("castai-umbrella")
+	if err != nil {
+		return "", err
+	}
+	if umbrella.ReleaseName == "" {
+		return "castai-umbrella", nil
+	}
+	return umbrella.ReleaseName, nil
+}
+
 // SecretHelper provides helper methods for secret operations
 type SecretHelper struct {
 	namespace string
@@ -474,4 +743,31 @@ func FindComponentByName(components []component, name string) (component, bool) 
 		}
 	}
 	return component{}, false
+}
+
+// getOperatorLogs fetches the castware-operator controller logs. The label
+// selector matches all operator pods (--prefix keeps the output readable
+// when an upgrade briefly leaves two pods).
+func getOperatorLogs(namespace string) (string, error) {
+	cmd := exec.Command("kubectl", "logs",
+		"-l", "app.kubernetes.io/instance=castware-operator",
+		"-n", namespace,
+		"--tail=3000",
+		"--prefix",
+	)
+	return utils.Run(cmd)
+}
+
+// crdExists checks whether a CRD with the given name exists. A "not found"
+// status is reported as (false, nil), not an error.
+func crdExists(name string) (bool, error) {
+	cmd := exec.Command("kubectl", "get", "crd", name, "-o", "name")
+	_, err := utils.Run(cmd)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
