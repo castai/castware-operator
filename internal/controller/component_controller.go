@@ -798,20 +798,27 @@ func (r *ComponentReconciler) deleteComponent(ctx context.Context, log logrus.Fi
 
 	log.Info("Component is being deleted")
 	if controllerutil.ContainsFinalizer(component, ComponentFinalizer) {
-		log.Info("Uninstalling Helm release")
-		_, err := r.HelmClient.Uninstall(helm.UninstallOptions{
-			Namespace:   component.Namespace,
-			ReleaseName: getReleaseName(component),
-			Wait:        true,
-			// If the helm release is not found there is nothing to uninstall,
-			// hence we can safely remove the finalizer.
-			IgnoreNotFound: true,
-		})
-		if err != nil {
-			log.WithError(err).Error("Failed to uninstall Helm release")
-			return ctrl.Result{}, err
+		// During operator teardown (delete-candidate label set by cleanup)
+		// keep the umbrella's helm release installed for re-adoption on
+		// reinstall; remove only the CR/finalizer.
+		if isUmbrellaTeardown(component) {
+			log.Info("Umbrella component torn down with the operator, preserving the helm release")
+		} else {
+			log.Info("Uninstalling Helm release")
+			_, err := r.HelmClient.Uninstall(helm.UninstallOptions{
+				Namespace:   component.Namespace,
+				ReleaseName: getReleaseName(component),
+				Wait:        true,
+				// If the helm release is not found there is nothing to uninstall,
+				// hence we can safely remove the finalizer.
+				IgnoreNotFound: true,
+			})
+			if err != nil {
+				log.WithError(err).Error("Failed to uninstall Helm release")
+				return ctrl.Result{}, err
+			}
 		}
-		// If the helm chart is successfully uninstalled the finalizer is removed and the CR deleted.
+		// The finalizer is removed and the CR deleted.
 		controllerutil.RemoveFinalizer(component, ComponentFinalizer)
 		if err := r.Update(ctx, component); err != nil {
 			return ctrl.Result{}, err
@@ -819,6 +826,14 @@ func (r *ComponentReconciler) deleteComponent(ctx context.Context, log logrus.Fi
 	}
 	// Stop reconciliation, deletion in progress.
 	return ctrl.Result{}, nil
+}
+
+// isUmbrellaTeardown reports whether the umbrella CR is being deleted as part
+// of the operator uninstall: cleanup's pre-delete hook marks component CRs
+// with the delete-candidate label (the operator-teardown signal).
+func isUmbrellaTeardown(component *castwarev1alpha1.Component) bool {
+	return component.Spec.Component == components.ComponentNameUmbrella &&
+		component.Labels[LabelDeleteCandidate] == "true"
 }
 
 func (r *ComponentReconciler) installComponent(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, dryRun bool) (_ ctrl.Result, err error) {
