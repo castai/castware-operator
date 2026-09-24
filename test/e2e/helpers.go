@@ -3,6 +3,7 @@ package e2e
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/castai/castware-operator/test/utils"
 	//nolint:staticcheck
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/util/yaml"
 )
 
 // Constants from e2e_test.go
@@ -481,28 +483,31 @@ func (h *HelmHelper) GetReleaseCRDNames(releaseName string) ([]string, error) {
 		return nil, fmt.Errorf("failed to get helm release manifest: %w", err)
 	}
 
+	return crdNamesFromManifest(output)
+}
+
+// crdNamesFromManifest extracts the CustomResourceDefinition names from a
+// multi-document helm manifest by decoding each document structurally, so
+// nested name: fields (ownerReferences, spec.names, ...) cannot be mistaken
+// for metadata.name.
+func crdNamesFromManifest(manifest string) ([]string, error) {
 	names := map[string]struct{}{}
-	sawCRD := false
-	inMetadata := false
-	name := ""
-	for _, line := range strings.Split(output, "\n") {
-		trimmed := strings.TrimSpace(line)
-		switch {
-		case trimmed == "---":
-			sawCRD, inMetadata, name = false, false, ""
-		case trimmed == "kind: CustomResourceDefinition":
-			sawCRD = true
-		case trimmed == "metadata:":
-			inMetadata = true
-		case trimmed == "spec:":
-			inMetadata = false
-		case inMetadata && strings.HasPrefix(trimmed, "name:"):
-			if name == "" {
-				name = strings.TrimSpace(strings.TrimPrefix(trimmed, "name:"))
+	decoder := yaml.NewYAMLOrJSONDecoder(strings.NewReader(manifest), 4096)
+	for {
+		var doc struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		}
+		if err := decoder.Decode(&doc); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
 			}
-			if sawCRD && name != "" {
-				names[name] = struct{}{}
-			}
+			return nil, fmt.Errorf("failed to decode helm release manifest: %w", err)
+		}
+		if doc.Kind == "CustomResourceDefinition" && doc.Metadata.Name != "" {
+			names[doc.Metadata.Name] = struct{}{}
 		}
 	}
 
