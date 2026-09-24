@@ -259,11 +259,17 @@ var _ = Describe("Manager", Ordered, func() {
 		By("uninstalling the umbrella release if present")
 		// The operator's pre-delete cleanup preserves the umbrella helm release
 		// by design; remove it explicitly so the suite leaves no leftovers even
-		// when the last specs ended with an installed umbrella.
+		// when the last specs ended with an installed umbrella. The uninstall is
+		// best-effort (a teardown failure must not mask the spec results), but it
+		// is logged so leftover state is diagnosable from CI output.
 		if apiHelper != nil {
 			if umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName(); err == nil {
 				cmd = exec.Command("helm", "uninstall", umbrellaReleaseName, "-n", namespace, "--ignore-not-found")
-				_, _ = utils.Run(cmd)
+				if _, err := utils.Run(cmd); err != nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "umbrella release cleanup failed (continuing): %v\n", err)
+				}
+			} else {
+				_, _ = fmt.Fprintf(GinkgoWriter, "failed to resolve the umbrella release name for cleanup (continuing): %v\n", err)
 			}
 		}
 
