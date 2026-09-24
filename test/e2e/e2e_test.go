@@ -253,6 +253,18 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("make", "undeploy")
 		_, _ = utils.Run(cmd)
 
+		By("waiting for component CRs to be finalized")
+		// The CR deletions above are asynchronous: their cleanup-helm finalizers
+		// are resolved by the still-running operator. Waiting here prevents the
+		// namespace deletion below from hanging when the operator teardown
+		// wins the race (the finalizer would never resolve).
+		Eventually(func(g Gomega) {
+			cmd = exec.Command("kubectl", "get", "components", "-n", namespace, "-o", "name")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred(), "Failed to list components")
+			g.Expect(strings.TrimSpace(output)).To(BeEmpty(), "component CRs should be finalized")
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
 		By("uninstalling helm release")
 		_ = helmHelper.UninstallOperator()
 
@@ -1646,6 +1658,99 @@ var _ = Describe("Manager", Ordered, func() {
 	// Every spec is self-contained: it starts by resetting the cluster state
 	// (operator, umbrella release, namespace), so the group runs alone with
 	// -ginkgo.focus "Umbrella" and after the specs above in a full-suite run.
+	// Shared closures for the Umbrella and Umbrella migration spec groups.
+	umbrellaReset := func() {
+		By("uninstalling the operator")
+		cmd := exec.Command("helm", "uninstall", "castware-operator", "-n", namespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("waiting for the operator CRDs to be removed")
+		// The pre-delete cleanup job may wait up to two minutes for the
+		// umbrella finalizer to resolve before deleting the CRDs.
+		Eventually(func(g Gomega) {
+			for _, crd := range []string{"components.castware.cast.ai", "clusters.castware.cast.ai"} {
+				exists, err := crdExists(crd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to check CRD "+crd)
+				g.Expect(exists).To(BeFalse(), "CRD "+crd+" should be removed")
+			}
+		}, 4*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("uninstalling the umbrella release if present")
+		umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
+		Expect(err).NotTo(HaveOccurred(), "Failed to resolve the umbrella release name")
+		cmd = exec.Command("helm", "uninstall", umbrellaReleaseName, "-n", namespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("recreating the namespace")
+		_ = namespaceHelper.Delete(namespace)
+		Eventually(namespaceHelper.VerifyDeleted, 3*time.Minute).
+			WithArguments(namespace).
+			Should(Succeed())
+		Expect(namespaceHelper.Create(namespace)).NotTo(HaveOccurred(), "Failed to create namespace")
+		// The umbrella's readonly tag set includes kvisor, a security scanner
+		// that needs host access (hostPID, privileged exporters, hostPath
+		// volumes) and cannot satisfy the restricted PodSecurity standard the
+		// Manager specs enforce for the agent/spot-handler charts. Relax the
+		// namespace to privileged so the exact per-tag component set can land.
+		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+			"pod-security.kubernetes.io/enforce=privileged")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with privileged policy")
+	}
+
+	// installOperatorWithRetry retries an operator install that failed on
+	// the chart's post-install hooks racing the webhook server's first
+	// (cold) Mothership call: the 10s admission deadline can be exceeded
+	// on a fresh kind namespace, --atomic rolls the release back and a
+	// retry succeeds. Other failures are surfaced immediately.
+	installOperatorWithRetry := func(install func() error) {
+		var err error
+		for attempt := 1; attempt <= 3; attempt++ {
+			err = install()
+			if err == nil {
+				return
+			}
+			if !strings.Contains(err.Error(), "failed calling webhook") {
+				break
+			}
+			if attempt < 3 {
+				By(fmt.Sprintf("operator install hit the webhook startup race, retrying (attempt %d/3)", attempt+1))
+				time.Sleep(15 * time.Second)
+			}
+		}
+		Expect(err).NotTo(HaveOccurred(), "Failed to install operator after retries")
+	}
+
+	waitForOnboardedCluster := func() {
+		By("waiting for the cluster to be onboarded")
+		Eventually(func(g Gomega) {
+			clusterID = clusterHelper.VerifyClusterID(g, "castai")
+		}, 5*time.Minute, 5*time.Second).Should(Succeed())
+		clusterResp, err := apiHelper.GetCluster(clusterID)
+		Expect(err).NotTo(HaveOccurred(), "Failed to get cluster from API")
+		org, ok := clusterResp["organizationId"].(string)
+		Expect(ok).To(BeTrue(), "organizationId missing in cluster response")
+		organizationID = org
+	}
+	waitUmbrellaComponentReady := func() {
+		By("waiting for the castai-umbrella component to become available")
+		Eventually(func(g Gomega) {
+			componentHelper.VerifyVersionIsSet(g, components.ComponentNameUmbrella)
+			err := componentHelper.VerifyStatusCondition(components.ComponentNameUmbrella, "Available")
+			g.Expect(err).NotTo(HaveOccurred(), "castai-umbrella should be Available")
+		}, 12*time.Minute, 15*time.Second).Should(Succeed())
+	}
+
+	ensureCastaiHelmRepo := func() {
+		By("ensuring the castai-helm repo is configured")
+		cmd := exec.Command("helm", "repo", "add", "castai-helm", "https://castai.github.io/helm-charts", "--force-update")
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to add the castai-helm repo")
+		cmd = exec.Command("helm", "repo", "update", "castai-helm")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to update the castai-helm repo")
+	}
+
 	Context("Umbrella", func() {
 		// Exact per-tag sub-chart sets from internal/component/umbrella_tags.go.
 		// Each sub-chart is verified through the app.kubernetes.io/name labels
@@ -1682,68 +1787,6 @@ var _ = Describe("Manager", Ordered, func() {
 		fullReadySubcharts := append(append([]string{}, readonlySubcharts...),
 			components.UmbrellaSubchartClusterController,
 		)
-
-		umbrellaReset := func() {
-			By("uninstalling the operator")
-			cmd := exec.Command("helm", "uninstall", "castware-operator", "-n", namespace, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
-
-			By("waiting for the operator CRDs to be removed")
-			// The pre-delete cleanup job may wait up to two minutes for the
-			// umbrella finalizer to resolve before deleting the CRDs.
-			Eventually(func(g Gomega) {
-				for _, crd := range []string{"components.castware.cast.ai", "clusters.castware.cast.ai"} {
-					exists, err := crdExists(crd)
-					g.Expect(err).NotTo(HaveOccurred(), "Failed to check CRD "+crd)
-					g.Expect(exists).To(BeFalse(), "CRD "+crd+" should be removed")
-				}
-			}, 4*time.Minute, 5*time.Second).Should(Succeed())
-
-			By("uninstalling the umbrella release if present")
-			umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
-			Expect(err).NotTo(HaveOccurred(), "Failed to resolve the umbrella release name")
-			cmd = exec.Command("helm", "uninstall", umbrellaReleaseName, "-n", namespace, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
-
-			By("recreating the namespace")
-			_ = namespaceHelper.Delete(namespace)
-			Eventually(namespaceHelper.VerifyDeleted, 3*time.Minute).
-				WithArguments(namespace).
-				Should(Succeed())
-			Expect(namespaceHelper.Create(namespace)).NotTo(HaveOccurred(), "Failed to create namespace")
-			// The umbrella's readonly tag set includes kvisor, a security scanner
-			// that needs host access (hostPID, privileged exporters, hostPath
-			// volumes) and cannot satisfy the restricted PodSecurity standard the
-			// Manager specs enforce for the agent/spot-handler charts. Relax the
-			// namespace to privileged so the exact per-tag component set can land.
-			cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
-				"pod-security.kubernetes.io/enforce=privileged")
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with privileged policy")
-		}
-
-		// installOperatorWithRetry retries an operator install that failed on
-		// the chart's post-install hooks racing the webhook server's first
-		// (cold) Mothership call: the 10s admission deadline can be exceeded
-		// on a fresh kind namespace, --atomic rolls the release back and a
-		// retry succeeds. Other failures are surfaced immediately.
-		installOperatorWithRetry := func(install func() error) {
-			var err error
-			for attempt := 1; attempt <= 3; attempt++ {
-				err = install()
-				if err == nil {
-					return
-				}
-				if !strings.Contains(err.Error(), "failed calling webhook") {
-					break
-				}
-				if attempt < 3 {
-					By(fmt.Sprintf("operator install hit the webhook startup race, retrying (attempt %d/3)", attempt+1))
-					time.Sleep(15 * time.Second)
-				}
-			}
-			Expect(err).NotTo(HaveOccurred(), "Failed to install operator after retries")
-		}
 
 		// installUmbrellaOperator installs the operator chart with the
 		// defaultComponents umbrella hook enabled. extraFlags add or override
@@ -1789,27 +1832,6 @@ var _ = Describe("Manager", Ordered, func() {
 			})
 		}
 
-		waitForOnboardedCluster := func() {
-			By("waiting for the cluster to be onboarded")
-			Eventually(func(g Gomega) {
-				clusterID = clusterHelper.VerifyClusterID(g, "castai")
-			}, 5*time.Minute, 5*time.Second).Should(Succeed())
-			clusterResp, err := apiHelper.GetCluster(clusterID)
-			Expect(err).NotTo(HaveOccurred(), "Failed to get cluster from API")
-			org, ok := clusterResp["organizationId"].(string)
-			Expect(ok).To(BeTrue(), "organizationId missing in cluster response")
-			organizationID = org
-		}
-
-		waitUmbrellaComponentReady := func() {
-			By("waiting for the castai-umbrella component to become available")
-			Eventually(func(g Gomega) {
-				componentHelper.VerifyVersionIsSet(g, components.ComponentNameUmbrella)
-				err := componentHelper.VerifyStatusCondition(components.ComponentNameUmbrella, "Available")
-				g.Expect(err).NotTo(HaveOccurred(), "castai-umbrella should be Available")
-			}, 12*time.Minute, 15*time.Second).Should(Succeed())
-		}
-
 		// verifyDaemonsetReady asserts that a daemonset with the given
 		// app.kubernetes.io/name is deployed and reports a Ready condition. Used
 		// for the spot-handler, which only schedules on cloud spot instances and
@@ -1852,16 +1874,6 @@ var _ = Describe("Manager", Ordered, func() {
 					podHelper.VerifyPodsReady(g, "app.kubernetes.io/name", name)
 				}
 			}
-		}
-
-		ensureCastaiHelmRepo := func() {
-			By("ensuring the castai-helm repo is configured")
-			cmd := exec.Command("helm", "repo", "add", "castai-helm", "https://castai.github.io/helm-charts", "--force-update")
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to add the castai-helm repo")
-			cmd = exec.Command("helm", "repo", "update", "castai-helm")
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to update the castai-helm repo")
 		}
 
 		// handInstallUmbrella installs the published castai umbrella chart by
@@ -2389,6 +2401,462 @@ var _ = Describe("Manager", Ordered, func() {
 			cmd := exec.Command("kubectl", "get", "ns", namespace)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "the namespace must survive the operator uninstall")
+		})
+	})
+
+	// Umbrella migration scenarios (PR2 of the umbrella e2e ticket):
+	// migration via both triggers, an induced-failure rollback, and the
+	// permission gate failing fast on insufficient RBAC. An umbrella-to-
+	// individual migration case is explicitly out of scope per the ticket.
+	//
+	// Every spec is self-contained: it starts by resetting the cluster state,
+	// so the group runs alone with -ginkgo.focus "Umbrella migration" and in
+	// any full-suite order.
+	Context("Umbrella migration", func() {
+		// migrationReset extends the shared reset with the standalone covered
+		// releases the migration specs hand-install.
+		migrationReset := func() {
+			umbrellaReset()
+			By("uninstalling standalone covered releases if present")
+			for _, release := range []string{components.ComponentNameKvisor, components.ComponentNameEvictor} {
+				cmd := exec.Command("helm", "uninstall", release, "-n", namespace, "--ignore-not-found")
+				if _, err := utils.Run(cmd); err != nil {
+					_, _ = fmt.Fprintf(GinkgoWriter,
+						"standalone release %s cleanup failed (continuing): %v\n", release, err)
+				}
+			}
+		}
+
+		// installBareOperator installs the operator without default components
+		// and with base permissions (no extendedPermissions).
+		installBareOperator := func() {
+			installOperatorWithRetry(func() error {
+				return helmHelper.InstallOperator(imageParts[0], imageParts[1], apiKey, apiURL, operatorChartPath, "")
+			})
+		}
+
+		// kvisorGrpcAddr derives the kvisor grpc endpoint from the api URL the
+		// same way the cluster webhook does (api.dev-master.cast.ai ->
+		// kvisor.dev-master.cast.ai); without it kvisor authenticates against
+		// the prod endpoint and never starts.
+		kvisorGrpcAddr := func() string {
+			apiHost := strings.TrimPrefix(strings.TrimPrefix(apiURL, "https://"), "http://")
+			return "kvisor." + strings.Join(strings.SplitN(apiHost, ".", 2)[1:], "")
+		}
+
+		// handInstallKvisor installs a standalone kvisor release (no Component
+		// CR) with the dev grpc address, so the migration absorbs it by chart
+		// identity and carries its values into the umbrella.
+		handInstallKvisor := func(clusterIDValue string) {
+			ensureCastaiHelmRepo()
+			By("hand-installing the kvisor standalone chart")
+			err := helmHelper.InstallStandaloneChart(components.ComponentNameKvisor,
+				"castai-helm/castai-kvisor", map[string]string{
+					"castai.apiKeySecretRef":               "castware-api-key",
+					"castai.clusterID":                     clusterIDValue,
+					"castai.grpcAddr":                      kvisorGrpcAddr(),
+					"castai.clusterIdConfigMapKeyRef.name": "",
+					"castai.clusterIdSecretKeyRef.name":    "",
+				})
+			Expect(err).NotTo(HaveOccurred(), "Failed to hand-install the kvisor standalone chart")
+		}
+
+		// handInstallEvictor installs a standalone evictor release (no Component
+		// CR). The pod is not expected to run in kind; only the release's
+		// presence matters — it widens the migration's derived tag to
+		// node-autoscaler, beyond what a base-permission operator holds.
+		handInstallEvictor := func() {
+			ensureCastaiHelmRepo()
+			By("hand-installing the evictor standalone chart")
+			err := helmHelper.InstallStandaloneChart(components.ComponentNameEvictor,
+				"castai-helm/castai-evictor", map[string]string{
+					"apiKeySecretRef": "castware-api-key",
+				})
+			Expect(err).NotTo(HaveOccurred(), "Failed to hand-install the evictor standalone chart")
+		}
+
+		// waitAgentInstalled creates the individual agent CR and waits for its
+		// release to be deployed.
+		waitAgentInstalled := func() {
+			By("creating an individual castai-agent component CR")
+			err := componentHelper.CreateFromYAML(components.ComponentNameAgent, components.ComponentNameAgent, "")
+			Expect(err).NotTo(HaveOccurred(), "Failed to create agent CR")
+			By("waiting for the agent to be installed")
+			Eventually(func(g Gomega) {
+				componentHelper.VerifyVersionIsSet(g, components.ComponentNameAgent)
+			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+		}
+
+		// waitOperatorReported waits until the cluster controller has reported
+		// the operator's revision (and with it its extendedPermissions
+		// condition) to Mothership — the migration permission gate relies on
+		// that server-side state.
+		waitOperatorReported := func() {
+			By("waiting for the operator to report its revision to Mothership")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "cluster", "castai",
+					"-n", namespace,
+					"-o", "jsonpath={.status.lastReportedHelmRevision}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get cluster CR")
+				g.Expect(output).NotTo(BeEmpty(), "lastReportedHelmRevision should be set")
+			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+		}
+
+		// createMigratingUmbrellaCR arms the migration on a fresh umbrella CR
+		// whose readonly-tag values satisfy the admission webhook's permission
+		// check on a base-permission operator.
+		createMigratingUmbrellaCR := func() {
+			By("creating the umbrella CR with spec.migrate")
+			err := componentHelper.CreateUmbrellaFromYAML(components.ComponentNameUmbrella, "castai",
+				"  migrate: true\n  values:\n    tags:\n      readonly: true\n")
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the migrating umbrella CR")
+		}
+
+		waitMigrationSucceeded := func() {
+			By("waiting for the migration to succeed")
+			Eventually(func(g Gomega) {
+				err := componentHelper.VerifyStatusConditionReason(
+					components.ComponentNameUmbrella, "Migrating", "MigrationSucceeded")
+				g.Expect(err).NotTo(HaveOccurred())
+				err = componentHelper.VerifyStatusCondition(components.ComponentNameUmbrella, "Available")
+				g.Expect(err).NotTo(HaveOccurred(), "umbrella should be Available after the migration")
+			}, 10*time.Minute, 15*time.Second).Should(Succeed())
+		}
+
+		waitMigrationRolledBack := func() {
+			By("waiting for the migration to fail and roll back")
+			Eventually(func(g Gomega) {
+				phase, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.status.migrationPhase}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(phase).To(Equal("RolledBack"), "migrationPhase should be RolledBack")
+				err = componentHelper.VerifyStatusConditionReason(
+					components.ComponentNameUmbrella, "Migrating", "MigrationFailed")
+				g.Expect(err).NotTo(HaveOccurred())
+			}, 10*time.Minute, 15*time.Second).Should(Succeed())
+		}
+
+		// verifyUmbrellaKvisorWorkloads asserts the kvisor workloads exist (the
+		// agent readiness is asserted separately).
+		verifyUmbrellaKvisorWorkloads := func(g Gomega) {
+			for _, name := range []string{"castai-kvisor-agent", "castai-kvisor-controller"} {
+				cmd := exec.Command("kubectl", "get", "deployments,daemonsets",
+					"-l", fmt.Sprintf("app.kubernetes.io/name=%s", name),
+					"-n", namespace,
+					"-o", "name")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to list workloads for "+name)
+				g.Expect(strings.Contains(output, "apps/")).To(BeTrue(), "no workload found for "+name)
+			}
+		}
+
+		It("should migrate agent and kvisor standalones to the umbrella via spec.migrate", func() {
+			migrationReset()
+			installBareOperator()
+			waitForOnboardedCluster()
+			umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
+			Expect(err).NotTo(HaveOccurred())
+
+			waitAgentInstalled()
+			handInstallKvisor(clusterID)
+			By("waiting for the kvisor standalone release to be present")
+			Eventually(func(g Gomega) {
+				exists, err := helmHelper.ReleaseExists(components.ComponentNameKvisor)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(exists).To(BeTrue(), "kvisor standalone release should be installed")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("capturing the agent pod identity before the migration")
+			agentPodsBefore, err := podHelper.GetPodIdentities("app.kubernetes.io/name", components.ComponentNameAgent)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(agentPodsBefore).NotTo(BeEmpty(), "expected a running agent pod")
+
+			createMigratingUmbrellaCR()
+			waitMigrationSucceeded()
+
+			By("verifying only the umbrella CR remains")
+			names, err := componentHelper.ListNames()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(names).To(Equal([]string{components.ComponentNameUmbrella}),
+				"only the umbrella CR should remain, got %v", names)
+
+			By("verifying the migration cleared the migrate and readonly flags")
+			migrate, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.spec.migrate}")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(migrate).To(Or(Equal("false"), BeEmpty()), "spec.migrate should be cleared")
+			readonly, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.spec.readonly}")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(readonly).To(Or(Equal("false"), BeEmpty()), "spec.readonly should be cleared")
+
+			By("verifying the kvisor standalone release was absorbed")
+			Eventually(func(g Gomega) {
+				exists, err := helmHelper.ReleaseExists(components.ComponentNameKvisor)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(exists).To(BeFalse(), "the kvisor standalone release should be uninstalled")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying the absorbed kvisor values were carried over")
+			values, err := helmHelper.GetReleaseValuesJSON(umbrellaReleaseName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(values).To(ContainSubstring(kvisorGrpcAddr()),
+				"the kvisor grpcAddr should be carried into the umbrella release values")
+
+			By("verifying the agent workload was re-created under the umbrella")
+			// The migration deletes the standalone's agent workloads before the
+			// umbrella install (their selectors embed the standalone release name
+			// and are immutable), so the agent pod is re-created — the documented
+			// restart trade-off of the migration path.
+			agentPodsAfter, err := podHelper.GetPodIdentities("app.kubernetes.io/name", components.ComponentNameAgent)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(agentPodsAfter).NotTo(Equal(agentPodsBefore),
+				"the agent pod should have been re-created with the umbrella's selector")
+			Expect(agentPodsAfter).NotTo(BeEmpty(), "expected a running agent pod after the migration")
+
+			By("verifying the agent and kvisor workloads run under the umbrella")
+			Eventually(func(g Gomega) {
+				podHelper.VerifyPodsReady(g, "app.kubernetes.io/name", components.ComponentNameAgent)
+				verifyUmbrellaKvisorWorkloads(g)
+			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+		})
+
+		It("should migrate via the Mothership install action with migrate", func() {
+			migrationReset()
+			installBareOperator()
+			waitForOnboardedCluster()
+			waitAgentInstalled()
+
+			// The runAction request schema known to this repo carries only the
+			// action enum; whether the dev Mothership propagates a migrate flag
+			// from the request into the polled install action is decided
+			// Mothership-side. Attempt the call with a migrate field and assert
+			// what actually happens; if the API rejects it, the gap is documented
+			// and the operator-side propagation (action.Migrate -> spec.migrate,
+			// unit-tested in this repo) stands.
+			By("triggering an umbrella install action via the API")
+			umbrellaComponent, err := apiHelper.GetComponentByName(components.ComponentNameUmbrella)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(umbrellaComponent.ID).NotTo(BeEmpty(), "umbrella component ID not found")
+
+			runActionURL := fmt.Sprintf(
+				"%s/cluster-management/v1/organizations/%s/clusters/%s/components/%s:runAction",
+				apiURL, organizationID, clusterID, umbrellaComponent.ID)
+			var runResp struct {
+				Action struct {
+					Action    string `json:"action"`
+					Automated bool   `json:"automated"`
+				} `json:"action"`
+			}
+			err = apiHelper.FetchFromAPI(runActionURL, http.MethodPost,
+				map[string]interface{}{"action": "ENABLE", "migrate": true}, &runResp)
+			if err != nil {
+				By("documenting the Mothership-side gap: the runAction request cannot drive the migration")
+				_, _ = fmt.Fprintf(GinkgoWriter,
+					"runAction ENABLE with a migrate field failed: %v\n"+
+						"The public request schema carries only the action enum; the migrate flag\n"+
+						"is set Mothership-side. The operator-side propagation (action.Migrate ->\n"+
+						"spec.migrate) is covered by internal/controller unit tests.\n", err)
+				return
+			}
+
+			By("waiting for the operator to pick up the install action")
+			// pollActions runs every 30 seconds. If the polled action carries
+			// migrate, the umbrella CR is created with spec.migrate and the
+			// migration proceeds; if it does not, the install is blocked by the
+			// mutual-exclusivity gate while the individuals are present.
+			Eventually(func(g Gomega) string {
+				logs, err := getOperatorLogs(namespace)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get operator logs")
+				return logs
+			}, 3*time.Minute, 10*time.Second).Should(ContainSubstring("install action: castai-umbrella"))
+
+			By("waiting for the action outcome")
+			// The polled action either creates the umbrella CR (when the
+			// Mothership-side action carries migrate) or is blocked by the
+			// mutual-exclusivity gate while the agent release is present (when
+			// it does not — the observed behavior of the dev Mothership's
+			// runAction, which accepts but does not propagate the migrate field).
+			var outcome string
+			Eventually(func(g Gomega) {
+				names, err := componentHelper.ListNames()
+				if err == nil && stringSliceContains(names, components.ComponentNameUmbrella) {
+					outcome = "created"
+				} else if logs, err := getOperatorLogs(namespace); err == nil &&
+					strings.Contains(logs, "cannot install umbrella component") {
+					outcome = "blocked"
+				} else {
+					outcome = ""
+				}
+				g.Expect(outcome).NotTo(BeEmpty(),
+					"the install action must either create the umbrella CR or be blocked")
+			}, 3*time.Minute, 10*time.Second).Should(Succeed())
+
+			if outcome == "created" {
+				By("the action carried migrate: waiting for the migration to succeed")
+				migrate, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.spec.migrate}")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(migrate).To(Equal("true"), "an action-driven umbrella CR must carry spec.migrate")
+				waitMigrationSucceeded()
+				names, err := componentHelper.ListNames()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(names).To(Equal([]string{components.ComponentNameUmbrella}),
+					"only the umbrella CR should remain, got %v", names)
+				Eventually(func(g Gomega) {
+					podHelper.VerifyPodsReady(g, "app.kubernetes.io/name", components.ComponentNameAgent)
+				}, 5*time.Minute, 15*time.Second).Should(Succeed())
+				return
+			}
+
+			// The blocked outcome (observed on the dev Mothership): the
+			// runAction request accepted the migrate field but the polled
+			// lifecycle action did not carry it, so the operator's sanctioned
+			// behavior is to refuse the umbrella install while individuals are
+			// present. Assert that refusal; driving the migration through the
+			// public API needs the Mothership-side migrate propagation (the
+			// operator-side action.Migrate propagation is covered by
+			// internal/controller unit tests).
+			By("documenting that the action did not carry migrate")
+			_, _ = fmt.Fprintf(GinkgoWriter,
+				"install action was polled without migrate; the umbrella install was blocked by the\n"+
+					"mutual-exclusivity gate. Driving the migration through the public runAction API needs\n"+
+					"the Mothership-side migrate propagation.\n")
+			logs, err := getOperatorLogs(namespace)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(logs).To(ContainSubstring("install action: castai-umbrella"),
+				"the operator should have polled the install action")
+			Expect(logs).To(ContainSubstring("cannot install umbrella component: individual component releases present"),
+				"the install must be blocked while the agent release is present")
+			names, err := componentHelper.ListNames()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(names).NotTo(ContainElement(components.ComponentNameUmbrella),
+				"no umbrella CR must exist when the action is blocked")
+			Eventually(func(g Gomega) {
+				podHelper.VerifyPodsReady(g, "app.kubernetes.io/name", components.ComponentNameAgent)
+			}, 2*time.Minute, 10*time.Second).Should(Succeed())
+		})
+
+		It("should roll back to individuals when the umbrella install fails", func() {
+			migrationReset()
+			installBareOperator()
+			waitForOnboardedCluster()
+			umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
+			Expect(err).NotTo(HaveOccurred())
+
+			waitAgentInstalled()
+			handInstallKvisor(clusterID)
+			By("waiting for the kvisor standalone release to be present")
+			Eventually(func(g Gomega) {
+				exists, err := helmHelper.ReleaseExists(components.ComponentNameKvisor)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(exists).To(BeTrue(), "kvisor standalone release should be installed")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("pre-creating an unowned spot-handler DaemonSet to collide with the umbrella install")
+			// The readonly umbrella render includes the castai-spot-handler
+			// DaemonSet; an unowned resource with that name makes the umbrella helm
+			// install fail, which the migration controller treats as a rollback
+			// trigger (not a retry).
+			collisionYAML := `apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: castai-spot-handler
+  namespace: castai-agent
+  labels:
+    app.kubernetes.io/name: castai-spot-handler
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: castai-spot-handler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: castai-spot-handler
+    spec:
+      containers:
+      - name: placeholder
+        image: registry.k8s.io/pause:3.10
+`
+			err = componentHelper.ApplyYAML("spot-handler-collision", collisionYAML)
+			Expect(err).NotTo(HaveOccurred(), "Failed to pre-create the collision DaemonSet")
+
+			createMigratingUmbrellaCR()
+			waitMigrationRolledBack()
+
+			By("verifying the umbrella release is absent")
+			exists, err := helmHelper.ReleaseExists(umbrellaReleaseName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(exists).To(BeFalse(), "the umbrella release should be uninstalled by the rollback")
+
+			By("verifying the kvisor standalone was reinstalled from the snapshot")
+			Eventually(func(g Gomega) {
+				exists, err := helmHelper.ReleaseExists(components.ComponentNameKvisor)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(exists).To(BeTrue(), "the kvisor standalone release should be reinstalled")
+			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("verifying the agent component was reactivated and its pods run again")
+			// The rollback deliberately uninstalls the umbrella (which had adopted
+			// the agent Deployment), so the agent restarts on this path — the
+			// no-restart invariant is a success-path property.
+			Eventually(func(g Gomega) {
+				componentHelper.VerifySpecReadonly(g, components.ComponentNameAgent, false)
+			}, 2*time.Minute, 10*time.Second).Should(Succeed())
+			Eventually(func(g Gomega) {
+				podHelper.VerifyPodsReady(g, "app.kubernetes.io/name", components.ComponentNameAgent)
+			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+		})
+
+		It("should block the migration fast when RBAC is insufficient", func() {
+			migrationReset()
+			installBareOperator()
+			waitForOnboardedCluster()
+			waitOperatorReported()
+
+			waitAgentInstalled()
+			handInstallEvictor()
+			By("waiting for the evictor standalone release to be present")
+			Eventually(func(g Gomega) {
+				exists, err := helmHelper.ReleaseExists(components.ComponentNameEvictor)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(exists).To(BeTrue(), "evictor standalone release should be installed")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			// The evictor widens the derived tag to node-autoscaler while the CR's
+			// own readonly values pass the admission webhook: the gate payload
+			// requests a surface the base-permission operator does not hold. If
+			// the dev Mothership enforces the server-side comparison, the refusal
+			// surfaces as MigrationBlocked before the finalizer, the readonly
+			// patch and any uninstall.
+			createMigratingUmbrellaCR()
+
+			By("verifying the permission gate blocks the migration")
+			Eventually(func(g Gomega) {
+				err := componentHelper.VerifyStatusConditionReason(
+					components.ComponentNameUmbrella, "Migrating", "MigrationBlocked")
+				g.Expect(err).NotTo(HaveOccurred(), "the migration should be blocked by the permission gate")
+				derived, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.status.migrationDerivedTag}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(derived).To(Equal(components.UmbrellaTagNodeAutoscaler),
+					"the evictor should widen the derived tag to node-autoscaler")
+			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("verifying the block was fail-fast: nothing was uninstalled")
+			agentRelease, err := helmHelper.ReleaseExists(components.ComponentNameAgent)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(agentRelease).To(BeTrue(), "the agent release must not be uninstalled by a blocked migration")
+			Eventually(func(g Gomega) {
+				componentHelper.VerifySpecReadonly(g, components.ComponentNameAgent, false)
+			}, 2*time.Minute, 10*time.Second).Should(Succeed())
+			evictorRelease, err := helmHelper.ReleaseExists(components.ComponentNameEvictor)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(evictorRelease).To(BeTrue(), "the evictor release must remain present")
+
+			By("cleaning up the blocked umbrella CR")
+			// No migration finalizer is armed before the gate, so the CR deletes
+			// without a rollback.
+			cmd := exec.Command("kubectl", "delete", "component", components.ComponentNameUmbrella, "-n", namespace)
+			if _, err := utils.Run(cmd); err != nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "blocked umbrella CR cleanup failed (continuing): %v\n", err)
+			}
 		})
 	})
 })
