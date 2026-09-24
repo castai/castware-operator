@@ -1683,6 +1683,23 @@ var _ = Describe("Manager", Ordered, func() {
 			components.UmbrellaSubchartClusterController,
 		)
 
+		// The node-autoscaler tag set also contains castai-live, but the
+		// operator's own defaults disable it
+		// (autoscaler.castai-live.enabled=false), matching the umbrella's
+		// defaults, so it is not expected to land.
+		nodeAutoscalerSubcharts := append(append([]string{}, readonlySubcharts...),
+			components.UmbrellaSubchartClusterController,
+			components.ComponentNameEvictor,
+			components.ComponentNamePodMutator,
+			components.ComponentNamePodPinner,
+		)
+		// Only the readonly trio and the cluster-controller are asserted ready
+		// (matching the full mode's ready set); the remaining node-side
+		// sub-charts are verified by workload existence only.
+		nodeAutoscalerReadySubcharts := append(append([]string{}, readonlySubcharts...),
+			components.UmbrellaSubchartClusterController,
+		)
+
 		umbrellaReset := func() {
 			By("uninstalling the operator")
 			cmd := exec.Command("helm", "uninstall", "castware-operator", "-n", namespace, "--ignore-not-found")
@@ -1990,6 +2007,67 @@ var _ = Describe("Manager", Ordered, func() {
 				// The inventory entries print with Go field names and the tags map carries
 				// every mode tag, so match the real shapes.
 				g.Expect(logs).To(ContainSubstring("full:true"))
+				g.Expect(logs).To(ContainSubstring("inventory:[{Name:"))
+			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+		})
+
+		It("should fresh install the umbrella via the chart hook with an explicit node-autoscaler tag", func() {
+			umbrellaReset()
+
+			By("installing the operator with an explicit node-autoscaler tag")
+			// extendedPermissions=true satisfies the admission gate (any
+			// non-readonly tag pulls in the cluster-controller), but the explicit
+			// tag must win over the tags.full the chart would otherwise derive
+			// from extendedPermissions.
+			installUmbrellaOperator("--set", "extendedPermissions=true",
+				"--set", "defaultComponents.umbrella.tags."+components.UmbrellaTagNodeAutoscaler+"=true")
+
+			waitForOnboardedCluster()
+			waitUmbrellaComponentReady()
+
+			umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the exact node-autoscaler component set landed")
+			Eventually(func(g Gomega) {
+				verifyUmbrellaSubcharts(g, nodeAutoscalerSubcharts, nodeAutoscalerReadySubcharts)
+			}, 12*time.Minute, 15*time.Second).Should(Succeed())
+
+			By("verifying components outside the node-autoscaler tag are absent")
+			// castai-live is disabled by the umbrella's own defaults and the
+			// workload-autoscaler pair belongs to workload-autoscaler/full only;
+			// together they pin the tag's boundary against the full set.
+			cmd := exec.Command("kubectl", "get", "deployments,daemonsets,statefulsets",
+				"-l", fmt.Sprintf("app.kubernetes.io/name in (%s, %s, %s)",
+					components.ComponentNameLive,
+					components.ComponentNameWorkloadAutoscaler,
+					components.ComponentNameWorkloadAutoscalerExporter),
+				"-n", namespace, "-o", "name")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.Contains(output, "apps/")).To(BeFalse(),
+				"the node-autoscaler tag must not install live or the workload-autoscaler components")
+
+			By("verifying no per-component CRs were created")
+			names, err := componentHelper.ListNames()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(names).To(Equal([]string{components.ComponentNameUmbrella}),
+				"only the umbrella CR should exist, got %v", names)
+
+			By("verifying the node-autoscaler tag in the release values")
+			values, err := helmHelper.GetReleaseValuesJSON(umbrellaReleaseName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(values).To(ContainSubstring(`"tags":{"node-autoscaler":true}`),
+				"the explicit tag should pass through instead of the extendedPermissions-derived full tag")
+
+			By("verifying the install report carries the node-autoscaler tag and inventory")
+			Eventually(func(g Gomega) {
+				logs, err := getOperatorLogs(namespace)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get operator logs")
+				g.Expect(logs).To(ContainSubstring("Name:castai-umbrella"))
+				// The inventory entries print with Go field names and the tags map carries
+				// every mode tag, so match the real shapes.
+				g.Expect(logs).To(ContainSubstring("node-autoscaler:true"))
 				g.Expect(logs).To(ContainSubstring("inventory:[{Name:"))
 			}, 5*time.Minute, 15*time.Second).Should(Succeed())
 		})
