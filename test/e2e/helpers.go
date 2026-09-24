@@ -150,19 +150,58 @@ func (h *ComponentHelper) PatchVersion(componentName, version string) error {
 	return err
 }
 
-// VerifyStatusCondition checks that a component has a specific status condition
-func (h *ComponentHelper) VerifyStatusCondition(componentName, conditionType string) error {
+// componentCondition mirrors one entry of a Component CR's status.conditions.
+type componentCondition struct {
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason"`
+	Message string `json:"message"`
+}
+
+// getComponentConditions fetches a component's status conditions, decoded
+// into a typed slice so field comparisons are exact.
+func (h *ComponentHelper) getComponentConditions(componentName string) ([]componentCondition, error) {
 	cmd := exec.Command("kubectl", "get", "component", componentName,
 		"-n", h.namespace,
 		"-o", "jsonpath={.status.conditions}")
 	output, err := utils.Run(cmd)
 	if err != nil {
-		return fmt.Errorf("failed to get component status: %w", err)
+		return nil, fmt.Errorf("failed to get component status: %w", err)
 	}
 
-	expectedCondition := fmt.Sprintf(`"type":"%s"`, conditionType)
-	if !strings.Contains(output, expectedCondition) {
-		return fmt.Errorf("component should have %s condition", conditionType)
+	if strings.TrimSpace(output) == "" {
+		return nil, nil
+	}
+	var conditions []componentCondition
+	if err := json.Unmarshal([]byte(output), &conditions); err != nil {
+		return nil, fmt.Errorf("failed to parse component status conditions: %w", err)
+	}
+	return conditions, nil
+}
+
+// findComponentCondition returns the first condition with the given type and,
+// when reason is non-empty, the given reason.
+func findComponentCondition(conditions []componentCondition, conditionType, reason string) *componentCondition {
+	for i := range conditions {
+		if conditions[i].Type != conditionType {
+			continue
+		}
+		if reason != "" && conditions[i].Reason != reason {
+			continue
+		}
+		return &conditions[i]
+	}
+	return nil
+}
+
+// VerifyStatusCondition checks that a component has a specific status condition
+func (h *ComponentHelper) VerifyStatusCondition(componentName, conditionType string) error {
+	conditions, err := h.getComponentConditions(componentName)
+	if err != nil {
+		return err
+	}
+	if findComponentCondition(conditions, conditionType, "") == nil {
+		return fmt.Errorf("component should have %s condition, got %+v", conditionType, conditions)
 	}
 	return nil
 }
@@ -246,21 +285,13 @@ func (h *ComponentHelper) VerifySpecReadonly(g Gomega, componentName string, exp
 // The type and reason are matched as substrings of the serialized conditions,
 // which is exact enough because condition types and reasons are unique.
 func (h *ComponentHelper) VerifyStatusConditionReason(componentName, conditionType, reason string) error {
-	cmd := exec.Command("kubectl", "get", "component", componentName,
-		"-n", h.namespace,
-		"-o", "jsonpath={.status.conditions}")
-	output, err := utils.Run(cmd)
+	conditions, err := h.getComponentConditions(componentName)
 	if err != nil {
-		return fmt.Errorf("failed to get component status: %w", err)
+		return err
 	}
-
-	expectedCondition := fmt.Sprintf(`"type":"%s"`, conditionType)
-	expectedReason := fmt.Sprintf(`"reason":"%s"`, reason)
-	if !strings.Contains(output, expectedCondition) {
-		return fmt.Errorf("component should have %s condition", conditionType)
-	}
-	if !strings.Contains(output, expectedReason) {
-		return fmt.Errorf("component %s condition should have reason %s", conditionType, reason)
+	if findComponentCondition(conditions, conditionType, reason) == nil {
+		return fmt.Errorf("component should have a %s condition with reason %s, got %+v",
+			conditionType, reason, conditions)
 	}
 	return nil
 }

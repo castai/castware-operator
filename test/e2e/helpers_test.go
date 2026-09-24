@@ -57,3 +57,27 @@ spec:
 		"recommendations.autoscaling.cast.ai",
 	}, names)
 }
+
+// TestFindComponentCondition verifies the exact typed matching of component
+// status conditions: the type and reason must belong to the same condition,
+// regardless of the order the fields were serialized in.
+func TestFindComponentCondition(t *testing.T) {
+	// Reason serialized before type, plus another condition sharing the type.
+	conditions := []componentCondition{
+		{Type: "Available", Status: "True", Reason: "Installed"},
+		{Type: "UmbrellaConflict", Status: "True", Reason: "UmbrellaReleasePresent"},
+		{Type: "UmbrellaConflict", Status: "False", Reason: "UmbrellaReleaseNotPresent"},
+	}
+
+	found := findComponentCondition(conditions, "UmbrellaConflict", "UmbrellaReleasePresent")
+	require.NotNil(t, found)
+	assert.Equal(t, "True", found.Status)
+
+	found = findComponentCondition(conditions, "UmbrellaConflict", "")
+	require.NotNil(t, found)
+	assert.Equal(t, "UmbrellaReleasePresent", found.Reason) // first of the type, reason ignored
+
+	assert.Nil(t, findComponentCondition(conditions, "UmbrellaConflict", "IndividualReleasesPresent"))
+	assert.Nil(t, findComponentCondition(conditions, "Progressing", "UmbrellaReleasePresent"))
+	assert.Nil(t, findComponentCondition(nil, "UmbrellaConflict", "UmbrellaReleasePresent"))
+}
