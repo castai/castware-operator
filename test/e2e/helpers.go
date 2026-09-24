@@ -233,16 +233,27 @@ func (h *ComponentHelper) CreateUmbrellaFromYAML(componentName, clusterName, ext
 	return h.ApplyYAML(fmt.Sprintf("%s-umbrella", componentName), manifest)
 }
 
-// ApplyYAML applies a manifest from /tmp and returns the kubectl error
-// verbatim — its message carries admission webhook denials.
+// ApplyYAML applies a manifest from a unique temporary file (removed after
+// the attempt) and returns the kubectl error verbatim — its message carries
+// admission webhook denials.
 func (h *ComponentHelper) ApplyYAML(fileName, manifest string) error {
-	file := filepath.Join("/tmp", fmt.Sprintf("%s.yaml", fileName))
-	if err := os.WriteFile(file, []byte(manifest), os.FileMode(0o644)); err != nil {
+	file, err := os.CreateTemp("", fmt.Sprintf("%s-*.yaml", fileName))
+	if err != nil {
+		return fmt.Errorf("failed to create manifest file: %w", err)
+	}
+	//nolint:errcheck
+	defer os.Remove(file.Name())
+
+	if _, err := file.Write([]byte(manifest)); err != nil {
+		_ = file.Close()
 		return fmt.Errorf("failed to write manifest: %w", err)
 	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("failed to close manifest file: %w", err)
+	}
 
-	cmd := exec.Command("kubectl", "apply", "-f", file)
-	_, err := utils.Run(cmd)
+	cmd := exec.Command("kubectl", "apply", "-f", file.Name())
+	_, err = utils.Run(cmd)
 	return err
 }
 
