@@ -1698,23 +1698,24 @@ var _ = Describe("Manager", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with privileged policy")
 	}
 
-	// installOperatorWithRetry retries an operator install that failed on
-	// the chart's post-install hooks racing the webhook server's first
-	// (cold) Mothership call: the 10s admission deadline can be exceeded
-	// on a fresh kind namespace, --atomic rolls the release back and a
-	// retry succeeds. Other failures are surfaced immediately.
+	// installOperatorWithRetry retries a failed operator install up to the
+	// limit. The main transient failure is the chart's post-install hooks
+	// racing the webhook server's first (cold) Mothership call — the 10s
+	// admission deadline can be exceeded on a fresh kind namespace. Every
+	// install uses --atomic, so a failed attempt is fully rolled back and a
+	// retry starts clean; rather than match on helm/kubectl error wording (an
+	// unstable contract), any install error is retried and the last error is
+	// surfaced if the limit is reached.
 	installOperatorWithRetry := func(install func() error) {
+		const maxAttempts = 3
 		var err error
-		for attempt := 1; attempt <= 3; attempt++ {
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
 			err = install()
 			if err == nil {
 				return
 			}
-			if !strings.Contains(err.Error(), "failed calling webhook") {
-				break
-			}
-			if attempt < 3 {
-				By(fmt.Sprintf("operator install hit the webhook startup race, retrying (attempt %d/3)", attempt+1))
+			if attempt < maxAttempts {
+				By(fmt.Sprintf("operator install failed (attempt %d/%d), retrying: %v", attempt, maxAttempts, err))
 				time.Sleep(15 * time.Second)
 			}
 		}
@@ -2832,11 +2833,11 @@ var _ = Describe("Manager", Ordered, func() {
 			// DaemonSet; an unowned resource with that name makes the umbrella helm
 			// install fail, which the migration controller treats as a rollback
 			// trigger (not a retry).
-			collisionYAML := `apiVersion: apps/v1
+			collisionYAML := fmt.Sprintf(`apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: castai-spot-handler
-  namespace: castai-agent
+  namespace: %s
   labels:
     app.kubernetes.io/name: castai-spot-handler
 spec:
@@ -2851,7 +2852,7 @@ spec:
       containers:
       - name: placeholder
         image: registry.k8s.io/pause:3.10
-`
+`, namespace)
 			err = componentHelper.ApplyYAML("spot-handler-collision", collisionYAML)
 			Expect(err).NotTo(HaveOccurred(), "Failed to pre-create the collision DaemonSet")
 
