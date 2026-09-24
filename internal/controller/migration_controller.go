@@ -77,6 +77,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1545,6 +1546,22 @@ func (r *MigrationReconciler) deleteReleaseWorkloads(ctx context.Context, log lo
 				kind.name, workload.GetName(), releaseName)
 			if err := r.Delete(ctx, workload); err != nil && !apierrors.IsNotFound(err) {
 				return fmt.Errorf("delete %s %s: %w", kind.name, workload.GetName(), err)
+			}
+			// A lingering object (e.g. held by a foreign finalizer, or still
+			// carrying a deletionTimestamp) would make the following umbrella
+			// install fail with AlreadyExists and trigger a spurious rollback.
+			// Wait for the object to actually vanish before proceeding.
+			if err := wait.PollUntilContextCancel(ctx, 2*time.Second, true,
+				func(ctx context.Context) (bool, error) {
+					if err := r.Get(ctx, client.ObjectKeyFromObject(workload), workload); err != nil {
+						if apierrors.IsNotFound(err) {
+							return true, nil
+						}
+						return false, fmt.Errorf("get %s %s after delete: %w", kind.name, workload.GetName(), err)
+					}
+					return false, nil
+				}); err != nil {
+				return fmt.Errorf("wait for %s %s deletion: %w", kind.name, workload.GetName(), err)
 			}
 			return nil
 		}); err != nil {
