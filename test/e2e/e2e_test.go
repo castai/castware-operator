@@ -1731,8 +1731,10 @@ var _ = Describe("Manager", Ordered, func() {
 				if !strings.Contains(err.Error(), "failed calling webhook") {
 					break
 				}
-				By(fmt.Sprintf("operator install hit the webhook startup race, retrying (attempt %d/3)", attempt+1))
-				time.Sleep(15 * time.Second)
+				if attempt < 3 {
+					By(fmt.Sprintf("operator install hit the webhook startup race, retrying (attempt %d/3)", attempt+1))
+					time.Sleep(15 * time.Second)
+				}
 			}
 			Expect(err).NotTo(HaveOccurred(), "Failed to install operator after retries")
 		}
