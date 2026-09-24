@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -693,9 +694,10 @@ func (h *APIHelper) GetClusterComponents(organizationID, clusterID string) ([]co
 
 // GetComponentByName retrieves component registry information by component name
 func (h *APIHelper) GetComponentByName(name string) (*castAIComponentInfo, error) {
-	url := fmt.Sprintf("%s/cluster-management/v1/components:getByName?name=%s", h.apiURL, name)
+	query := url.Values{"name": []string{name}}
+	endpoint := fmt.Sprintf("%s/cluster-management/v1/components:getByName?%s", h.apiURL, query.Encode())
 	var resp castAIComponentInfo
-	if err := h.FetchFromAPI(url, http.MethodGet, nil, &resp); err != nil {
+	if err := h.FetchFromAPI(endpoint, http.MethodGet, nil, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
