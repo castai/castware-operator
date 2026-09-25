@@ -330,6 +330,20 @@ jobs:
           username: _json_key
           password: ${{ secrets.ARTIFACT_BUILDER_JSON_KEY }}
 
+      - name: Cache helm repositories and charts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/helm
+            ~/.config/helm
+          key: helm-e2e-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: helm-e2e-${{ runner.os }}-
+
+      - name: Pre-pull component images into kind
+        run: ./local/prepull-e2e-images.sh
+        env:
+          KIND_CLUSTER: castware-operator-e2e
+
       - name: Run E2E tests
         env:
           API_KEY: ${{ secrets.API_KEY }}

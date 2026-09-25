@@ -1739,7 +1739,7 @@ var _ = Describe("Manager", Ordered, func() {
 			componentHelper.VerifyVersionIsSet(g, components.ComponentNameUmbrella)
 			err := componentHelper.VerifyStatusCondition(components.ComponentNameUmbrella, "Available")
 			g.Expect(err).NotTo(HaveOccurred(), "castai-umbrella should be Available")
-		}, 12*time.Minute, 15*time.Second).Should(Succeed())
+		}, 12*time.Minute, 5*time.Second).Should(Succeed())
 	}
 
 	ensureCastaiHelmRepo := func() {
@@ -1945,7 +1945,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("verifying the exact readonly component set landed (extras included)")
 			Eventually(func(g Gomega) {
 				verifyUmbrellaSubcharts(g, readonlySubcharts, readonlySubcharts)
-			}, 10*time.Minute, 15*time.Second).Should(Succeed())
+			}, 10*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying no per-component CRs were created")
 			names, err := componentHelper.ListNames()
@@ -1972,7 +1972,7 @@ var _ = Describe("Manager", Ordered, func() {
 				// and the tags map carries every mode tag, so match the real shapes.
 				g.Expect(logs).To(ContainSubstring("readonly:true"))
 				g.Expect(logs).To(ContainSubstring("inventory:[{Name:"))
-			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
 		It("should fresh install the umbrella via the chart hook in full mode with extras", func() {
@@ -1990,7 +1990,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("verifying the exact full component set landed (extras included)")
 			Eventually(func(g Gomega) {
 				verifyUmbrellaSubcharts(g, fullSubcharts, fullReadySubcharts)
-			}, 12*time.Minute, 15*time.Second).Should(Succeed())
+			}, 12*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying castai-live is disabled by the umbrella's own defaults")
 			cmd := exec.Command("kubectl", "get", "deployments,daemonsets,statefulsets",
@@ -2020,7 +2020,7 @@ var _ = Describe("Manager", Ordered, func() {
 				// every mode tag, so match the real shapes.
 				g.Expect(logs).To(ContainSubstring("full:true"))
 				g.Expect(logs).To(ContainSubstring("inventory:[{Name:"))
-			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
 		It("should fresh install the umbrella via the chart hook with an explicit node-autoscaler tag", func() {
@@ -2043,7 +2043,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("verifying the exact node-autoscaler component set landed")
 			Eventually(func(g Gomega) {
 				verifyUmbrellaSubcharts(g, nodeAutoscalerSubcharts, nodeAutoscalerReadySubcharts)
-			}, 12*time.Minute, 15*time.Second).Should(Succeed())
+			}, 12*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying components outside the node-autoscaler tag are absent")
 			// castai-live is disabled by the umbrella's own defaults and the
@@ -2081,7 +2081,7 @@ var _ = Describe("Manager", Ordered, func() {
 				// every mode tag, so match the real shapes.
 				g.Expect(logs).To(ContainSubstring("node-autoscaler:true"))
 				g.Expect(logs).To(ContainSubstring("inventory:[{Name:"))
-			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
 		It("should take over a hand-installed umbrella and preserve its release history", func() {
@@ -2104,7 +2104,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting for the umbrella workloads to be ready")
 			Eventually(func(g Gomega) {
 				verifyUmbrellaSubcharts(g, readonlySubcharts, readonlySubcharts)
-			}, 12*time.Minute, 15*time.Second).Should(Succeed())
+			}, 12*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("capturing the release revision and history before adoption")
 			revision, err := helmHelper.GetReleaseRevision(umbrellaReleaseName)
@@ -2115,7 +2115,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting for the operator to adopt the umbrella release")
 			Eventually(func(g Gomega) {
 				componentHelper.VerifyVersionIsSet(g, components.ComponentNameUmbrella)
-			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying the adoption metadata on the CR")
 			migration, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.spec.migration}")
@@ -2152,7 +2152,7 @@ var _ = Describe("Manager", Ordered, func() {
 				// and the tags map carries every mode tag, so match the real shapes.
 				g.Expect(logs).To(ContainSubstring("readonly:true"))
 				g.Expect(logs).To(ContainSubstring("inventory:[{Name:"))
-			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
 		It("should take over a hand-installed umbrella in read mode without write ops", func() {
@@ -2175,7 +2175,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting for the umbrella workloads to be ready")
 			Eventually(func(g Gomega) {
 				verifyUmbrellaSubcharts(g, readonlySubcharts, readonlySubcharts)
-			}, 12*time.Minute, 15*time.Second).Should(Succeed())
+			}, 12*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("capturing the release revision and history before adoption")
 			revision, err := helmHelper.GetReleaseRevision(umbrellaReleaseName)
@@ -2186,7 +2186,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting for the operator to adopt the umbrella release as read-only")
 			Eventually(func(g Gomega) {
 				componentHelper.VerifySpecReadonly(g, components.ComponentNameUmbrella, true)
-			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying the adoption metadata on the CR")
 			migration, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.spec.migration}")
@@ -2201,7 +2201,7 @@ var _ = Describe("Manager", Ordered, func() {
 				version, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.status.currentVersion}")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(version).NotTo(BeEmpty(), "the read-only path should still observe the release version")
-			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying no write ops occurred")
 			revisionAfter, err := helmHelper.GetReleaseRevision(umbrellaReleaseName)
@@ -2231,7 +2231,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get operator logs")
 				g.Expect(logs).To(ContainSubstring("Umbrella release found, creating castai-umbrella component resource"),
 					"the scan should have adopted the hand-installed release")
-			}, 2*time.Minute, 10*time.Second).Should(Succeed())
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
 		It("should enforce exclusivity between the umbrella and individual components", func() {
@@ -2255,7 +2255,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting for the agent to be installed")
 			Eventually(func(g Gomega) {
 				componentHelper.VerifyVersionIsSet(g, components.ComponentNameAgent)
-			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying umbrella CR creation is denied while individual CRs exist")
 			// The readonly tag keeps the umbrella within the operator's base
@@ -2289,7 +2289,7 @@ var _ = Describe("Manager", Ordered, func() {
 				err := componentHelper.VerifyStatusConditionReason(
 					components.ComponentNameAgent, "UmbrellaConflict", "UmbrellaReleasePresent")
 				g.Expect(err).NotTo(HaveOccurred(), "agent CR should carry the UmbrellaConflict condition")
-			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying the read-only agent CR cannot be modified")
 			err = componentHelper.PatchVersion(components.ComponentNameAgent, "0.125.0")
@@ -2311,7 +2311,7 @@ var _ = Describe("Manager", Ordered, func() {
 				err := componentHelper.VerifyStatusConditionReason(
 					components.ComponentNameAgent, "UmbrellaConflict", "UmbrellaReleaseNotPresent")
 				g.Expect(err).NotTo(HaveOccurred(), "UmbrellaConflict should clear once the umbrella release is gone")
-			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("deleting the agent component CR")
 			cmd = exec.Command("kubectl", "delete", "component", components.ComponentNameAgent, "-n", namespace)
@@ -2323,7 +2323,7 @@ var _ = Describe("Manager", Ordered, func() {
 				exists, err := helmHelper.ReleaseExists(components.ComponentNameAgent)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(exists).To(BeFalse(), "agent release should be uninstalled with the CR")
-			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("creating the umbrella CR now that no individual CRs exist")
 			// The readonly tag avoids the extended-permissions requirement the
@@ -2365,14 +2365,14 @@ var _ = Describe("Manager", Ordered, func() {
 				// and the tags map carries every mode tag, so match the real shapes.
 				g.Expect(logs).To(ContainSubstring("readonly:true"))
 				g.Expect(logs).To(ContainSubstring("inventory:[{Name:"))
-			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("waiting for the reported revision to be tracked on the CR")
 			Eventually(func(g Gomega) {
 				reported, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.status.lastReportedHelmRevision}")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(reported).NotTo(BeEmpty(), "lastReportedHelmRevision should be set after the install report")
-			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 			reportedRevision, err := componentHelper.GetField(
 				components.ComponentNameUmbrella, "{.status.lastReportedHelmRevision}")
 			Expect(err).NotTo(HaveOccurred())
@@ -2387,7 +2387,7 @@ var _ = Describe("Manager", Ordered, func() {
 				reported, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.status.lastReportedHelmRevision}")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(reported).NotTo(Equal(reportedRevision), "lastReportedHelmRevision should advance after the revision bump")
-			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying the upgrade report carries tags and inventory")
 			Eventually(func(g Gomega) {
@@ -2398,7 +2398,7 @@ var _ = Describe("Manager", Ordered, func() {
 				// and the tags map carries every mode tag, so match the real shapes.
 				g.Expect(logs).To(ContainSubstring("readonly:true"))
 				g.Expect(logs).To(ContainSubstring("inventory:[{Name:"))
-			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("deleting the umbrella CR (uninstall)")
 			cmd := exec.Command("kubectl", "delete", "component", components.ComponentNameUmbrella, "-n", namespace)
@@ -2410,7 +2410,7 @@ var _ = Describe("Manager", Ordered, func() {
 				exists, err := helmHelper.ReleaseExists(umbrellaReleaseName)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(exists).To(BeFalse(), "the umbrella release should be uninstalled with the CR")
-			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying the uninstall was reported")
 			// The DELETE report does not carry component_params (the release is
@@ -2421,7 +2421,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(logs).To(ContainSubstring("Recorded action result for component"))
 				g.Expect(logs).To(ContainSubstring("Name:castai-umbrella"))
 				g.Expect(logs).To(ContainSubstring("Action:DISABLE"))
-			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
 		It("should preserve the umbrella when the operator is uninstalled (offboarding)", func() {
@@ -2439,7 +2439,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting for the full workload set to be running")
 			Eventually(func(g Gomega) {
 				verifyUmbrellaSubcharts(g, fullSubcharts, fullReadySubcharts)
-			}, 12*time.Minute, 15*time.Second).Should(Succeed())
+			}, 12*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("capturing the CRDs owned by the umbrella release")
 			umbrellaCRDNames, err := helmHelper.GetReleaseCRDNames(umbrellaReleaseName)
@@ -2466,7 +2466,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("verifying the umbrella workloads survived")
 			Eventually(func(g Gomega) {
 				verifyUmbrellaSubcharts(g, fullSubcharts, fullReadySubcharts)
-			}, 2*time.Minute, 15*time.Second).Should(Succeed())
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying the umbrella CRDs survived")
 			for _, crdName := range umbrellaCRDNames {
@@ -2562,7 +2562,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting for the agent to be installed")
 			Eventually(func(g Gomega) {
 				componentHelper.VerifyVersionIsSet(g, components.ComponentNameAgent)
-			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 		}
 
 		// waitOperatorReported waits until the cluster controller has reported
@@ -2578,7 +2578,7 @@ var _ = Describe("Manager", Ordered, func() {
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get cluster CR")
 				g.Expect(output).NotTo(BeEmpty(), "lastReportedHelmRevision should be set")
-			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 		}
 
 		// createMigratingUmbrellaCR arms the migration on a fresh umbrella CR
@@ -2599,7 +2599,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				err = componentHelper.VerifyStatusCondition(components.ComponentNameUmbrella, "Available")
 				g.Expect(err).NotTo(HaveOccurred(), "umbrella should be Available after the migration")
-			}, 10*time.Minute, 15*time.Second).Should(Succeed())
+			}, 10*time.Minute, 5*time.Second).Should(Succeed())
 		}
 
 		waitMigrationRolledBack := func() {
@@ -2611,7 +2611,7 @@ var _ = Describe("Manager", Ordered, func() {
 				err = componentHelper.VerifyStatusConditionReason(
 					components.ComponentNameUmbrella, "Migrating", "MigrationFailed")
 				g.Expect(err).NotTo(HaveOccurred())
-			}, 10*time.Minute, 15*time.Second).Should(Succeed())
+			}, 10*time.Minute, 5*time.Second).Should(Succeed())
 		}
 
 		// verifyUmbrellaKvisorWorkloads asserts the kvisor workloads exist (the
@@ -2694,7 +2694,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(func(g Gomega) {
 				podHelper.VerifyPodsReady(g, "app.kubernetes.io/name", components.ComponentNameAgent)
 				verifyUmbrellaKvisorWorkloads(g)
-			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
 		It("should migrate via the Mothership install action with migrate", func() {
@@ -2745,7 +2745,7 @@ var _ = Describe("Manager", Ordered, func() {
 				logs, err := getOperatorLogs(namespace)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get operator logs")
 				return logs
-			}, 3*time.Minute, 10*time.Second).Should(ContainSubstring("install action: castai-umbrella"))
+			}, 3*time.Minute, 5*time.Second).Should(ContainSubstring("install action: castai-umbrella"))
 
 			By("waiting for the action outcome")
 			// The polled action either creates the umbrella CR (when the
@@ -2766,7 +2766,7 @@ var _ = Describe("Manager", Ordered, func() {
 				}
 				g.Expect(outcome).NotTo(BeEmpty(),
 					"the install action must either create the umbrella CR or be blocked")
-			}, 3*time.Minute, 10*time.Second).Should(Succeed())
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 			if outcome == "created" {
 				By("the action carried migrate: waiting for the migration to succeed")
@@ -2780,7 +2780,7 @@ var _ = Describe("Manager", Ordered, func() {
 					"only the umbrella CR should remain, got %v", names)
 				Eventually(func(g Gomega) {
 					podHelper.VerifyPodsReady(g, "app.kubernetes.io/name", components.ComponentNameAgent)
-				}, 5*time.Minute, 15*time.Second).Should(Succeed())
+				}, 5*time.Minute, 5*time.Second).Should(Succeed())
 				return
 			}
 
@@ -2809,7 +2809,7 @@ var _ = Describe("Manager", Ordered, func() {
 				"no umbrella CR must exist when the action is blocked")
 			Eventually(func(g Gomega) {
 				podHelper.VerifyPodsReady(g, "app.kubernetes.io/name", components.ComponentNameAgent)
-			}, 2*time.Minute, 10*time.Second).Should(Succeed())
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
 		It("should roll back to individuals when the umbrella install fails", func() {
@@ -2869,7 +2869,7 @@ spec:
 				exists, err := helmHelper.ReleaseExists(components.ComponentNameKvisor)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(exists).To(BeTrue(), "the kvisor standalone release should be reinstalled")
-			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying the agent component was reactivated and its pods run again")
 			// The rollback deliberately uninstalls the umbrella (which had adopted
@@ -2877,10 +2877,10 @@ spec:
 			// no-restart invariant is a success-path property.
 			Eventually(func(g Gomega) {
 				componentHelper.VerifySpecReadonly(g, components.ComponentNameAgent, false)
-			}, 2*time.Minute, 10*time.Second).Should(Succeed())
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 			Eventually(func(g Gomega) {
 				podHelper.VerifyPodsReady(g, "app.kubernetes.io/name", components.ComponentNameAgent)
-			}, 5*time.Minute, 15*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
 		It("should block the migration fast when RBAC is insufficient", func() {
@@ -2915,7 +2915,7 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(derived).To(Equal(components.UmbrellaTagNodeAutoscaler),
 					"the evictor should widen the derived tag to node-autoscaler")
-			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying the block was fail-fast: nothing was uninstalled")
 			agentRelease, err := helmHelper.ReleaseExists(components.ComponentNameAgent)
@@ -2923,7 +2923,7 @@ spec:
 			Expect(agentRelease).To(BeTrue(), "the agent release must not be uninstalled by a blocked migration")
 			Eventually(func(g Gomega) {
 				componentHelper.VerifySpecReadonly(g, components.ComponentNameAgent, false)
-			}, 2*time.Minute, 10*time.Second).Should(Succeed())
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 			evictorRelease, err := helmHelper.ReleaseExists(components.ComponentNameEvictor)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(evictorRelease).To(BeTrue(), "the evictor release must remain present")
