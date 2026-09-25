@@ -642,6 +642,34 @@ func NewAPIHelper(apiKey, apiURL string) *APIHelper {
 
 // FetchFromAPI makes an HTTP request to the Cast AI API
 func (h *APIHelper) FetchFromAPI(url string, method string, requestBody interface{}, responseBody interface{}) error {
+	return h.fetchFromAPI(url, method, requestBody, responseBody)
+}
+
+// FetchFromAPIWithRetry fetches an API resource with a bounded retry for
+// transient edge failures: the dev API's nginx front has been observed to
+// return intermittent 401s mid-run while the same request succeeded minutes
+// earlier with the same key. Used for the onboarding script fetches, which
+// the legacy-script specs execute against the dev environment.
+func (h *APIHelper) FetchFromAPIWithRetry(
+	url string, method string, requestBody interface{}, responseBody interface{},
+) error {
+	const maxAttempts = 3
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		err = h.fetchFromAPI(url, method, requestBody, responseBody)
+		if err == nil {
+			return nil
+		}
+		if attempt < maxAttempts {
+			time.Sleep(5 * time.Second)
+		}
+	}
+	return err
+}
+
+// fetchFromAPI performs the HTTP request shared by FetchFromAPI and
+// FetchFromAPIWithRetry.
+func (h *APIHelper) fetchFromAPI(url string, method string, requestBody interface{}, responseBody interface{}) error {
 	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create HTTP request for URL %s: %w", url, err)

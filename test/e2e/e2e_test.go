@@ -791,7 +791,7 @@ var _ = Describe("Manager", Ordered, func() {
 			// nolint: lll
 			getPhase2URL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s/credentials-script?crossRole=true&nvidiaDevicePlugin=false&installSecurityAgent=true&installAutoscalerAgent=true&installGpuMetricsExporter=false&installNetflowExporter=false&installWorkloadAutoscaler=true&installPodMutator=false&installOmni=false",
 				apiURL, clusterID)
-			err := apiHelper.FetchFromAPI(getPhase2URL, http.MethodGet, nil, &scriptResp)
+			err := apiHelper.FetchFromAPIWithRetry(getPhase2URL, http.MethodGet, nil, &scriptResp)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase2 script")
 
 			phase2Script := disablePreflightChecks(scriptResp.Script)
@@ -851,7 +851,7 @@ var _ = Describe("Manager", Ordered, func() {
 			var scriptResp string
 			// nolint: lll
 			getScriptURL := fmt.Sprintf("%s/v1/agent.sh?provider=gke", apiURL)
-			err := apiHelper.FetchFromAPI(getScriptURL, http.MethodGet, nil, &scriptResp)
+			err := apiHelper.FetchFromAPIWithRetry(getScriptURL, http.MethodGet, nil, &scriptResp)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase1 script")
 
 			cmd := exec.Command("bash", "-c", scriptResp)
@@ -1146,7 +1146,7 @@ var _ = Describe("Manager", Ordered, func() {
 			// nolint: lll
 			getPhase2URL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s/credentials-script?crossRole=true&nvidiaDevicePlugin=false&installSecurityAgent=true&installAutoscalerAgent=true&installGpuMetricsExporter=false&installNetflowExporter=false&installWorkloadAutoscaler=true&installPodMutator=false&installOmni=false",
 				apiURL, clusterID)
-			err := apiHelper.FetchFromAPI(getPhase2URL, http.MethodGet, nil, &scriptResp)
+			err := apiHelper.FetchFromAPIWithRetry(getPhase2URL, http.MethodGet, nil, &scriptResp)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase2 script")
 
 			phase2Script := disablePreflightChecks(scriptResp.Script)
@@ -1219,7 +1219,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("getting phase1 script")
 			var scriptResp string
 			getScriptURL := fmt.Sprintf("%s/v1/agent.sh?provider=gke", apiURL)
-			err = apiHelper.FetchFromAPI(getScriptURL, http.MethodGet, nil, &scriptResp)
+			err = apiHelper.FetchFromAPIWithRetry(getScriptURL, http.MethodGet, nil, &scriptResp)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase1 script")
 
 			cmd = exec.Command("bash", "-c", scriptResp)
@@ -1255,7 +1255,7 @@ var _ = Describe("Manager", Ordered, func() {
 			// nolint: lll
 			getPhase2URL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s/credentials-script?crossRole=true&nvidiaDevicePlugin=false&installSecurityAgent=true&installAutoscalerAgent=true&installGpuMetricsExporter=false&installNetflowExporter=false&installWorkloadAutoscaler=true&installPodMutator=false&installOmni=false&installOperator=false",
 				apiURL, clusterID)
-			err = apiHelper.FetchFromAPI(getPhase2URL, http.MethodGet, nil, &scriptResp2)
+			err = apiHelper.FetchFromAPIWithRetry(getPhase2URL, http.MethodGet, nil, &scriptResp2)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase2 script")
 
 			By("modifying phase2 script to set OPERATOR_MANAGED=false")
@@ -1404,7 +1404,7 @@ var _ = Describe("Manager", Ordered, func() {
 			var scriptResp string
 			// nolint: lll
 			getScriptURL := fmt.Sprintf("%s/v1/agent.sh?provider=gke", apiURL)
-			err := apiHelper.FetchFromAPI(getScriptURL, http.MethodGet, nil, &scriptResp)
+			err := apiHelper.FetchFromAPIWithRetry(getScriptURL, http.MethodGet, nil, &scriptResp)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase1 script")
 
 			cmd := exec.Command("bash", "-c", scriptResp)
@@ -1443,7 +1443,7 @@ var _ = Describe("Manager", Ordered, func() {
 			// nolint: lll
 			getPhase2URL := fmt.Sprintf("%s/v1/kubernetes/external-clusters/%s/credentials-script?crossRole=true&nvidiaDevicePlugin=false&installSecurityAgent=true&installAutoscalerAgent=true&installGpuMetricsExporter=false&installNetflowExporter=false&installWorkloadAutoscaler=true&installPodMutator=false&installOmni=false",
 				apiURL, clusterID)
-			err = apiHelper.FetchFromAPI(getPhase2URL, http.MethodGet, nil, &phase2ScriptResp)
+			err = apiHelper.FetchFromAPIWithRetry(getPhase2URL, http.MethodGet, nil, &phase2ScriptResp)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get phase2 script")
 
 			// Install phase2 as not operator managed
