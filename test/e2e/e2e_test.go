@@ -257,8 +257,16 @@ var _ = Describe("Manager", Ordered, func() {
 		// The CR deletions above are asynchronous: their cleanup-helm finalizers
 		// are resolved by the still-running operator. Waiting here prevents the
 		// namespace deletion below from hanging when the operator teardown
-		// wins the race (the finalizer would never resolve).
+		// wins the race (the finalizer would never resolve). The operator's
+		// pre-delete cleanup job may also delete the components CRD outright —
+		// a missing CRD equally means no lingering CRs, so treat it as success
+		// instead of a failed attempt.
 		Eventually(func(g Gomega) {
+			crdStillThere, err := crdExists("components.castware.cast.ai")
+			g.Expect(err).NotTo(HaveOccurred(), "Failed to check components CRD")
+			if !crdStillThere {
+				return
+			}
 			cmd = exec.Command("kubectl", "get", "components", "-n", namespace, "-o", "name")
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred(), "Failed to list components")
