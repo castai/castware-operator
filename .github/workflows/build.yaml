@@ -289,6 +289,7 @@ jobs:
   e2e:
     name: E2E test
     runs-on: ubuntu-24.04
+    timeout-minutes: 150
     if: |
       always() &&
       needs.build.result == 'success' &&
