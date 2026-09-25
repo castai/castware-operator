@@ -1499,8 +1499,12 @@ var _ = Describe("Manager", Ordered, func() {
 				Should(Succeed())
 
 			By("verifying castai-agent component status is Available")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameAgent, "Available")
-			Expect(err).NotTo(HaveOccurred(), "castai-agent component should be Available")
+			// The adoption (Migrating) and the autoUpgrade-driven upgrade can still
+			// be in flight right after the version is set — poll instead of a
+			// single-shot check so the spec does not race them.
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameAgent, "Available").
+				Should(Succeed())
 
 			By("waiting for spot-handler component to be ready")
 			Eventually(componentHelper.VerifyVersionIsSet, 5*time.Minute).
@@ -1508,8 +1512,9 @@ var _ = Describe("Manager", Ordered, func() {
 				Should(Succeed())
 
 			By("verifying spot-handler component status is Available")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameSpotHandler, "Available")
-			Expect(err).NotTo(HaveOccurred(), "spot-handler component should be Available")
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameSpotHandler, "Available").
+				Should(Succeed())
 
 			By("waiting for cluster-controller component to be ready")
 			Eventually(componentHelper.VerifyVersionIsSet, 5*time.Minute).
@@ -1517,8 +1522,9 @@ var _ = Describe("Manager", Ordered, func() {
 				Should(Succeed())
 
 			By("verifying cluster-controller component status is Available")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameClusterController, "Available")
-			Expect(err).NotTo(HaveOccurred(), "cluster-controller component should be Available")
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameClusterController, "Available").
+				Should(Succeed())
 		})
 
 		It("should not allow to disable extended permissions once they are enabled", func() {
