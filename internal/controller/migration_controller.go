@@ -77,6 +77,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -678,6 +679,23 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 		return ctrl.Result{}, fmt.Errorf("build umbrella values: %w", err)
 	}
 
+	// The standalone agent's workloads carry the standalone release name in
+	// their selectors (app.kubernetes.io/instance), while the umbrella renders
+	// them with the umbrella release name — and workload selectors are
+	// immutable, so helm's takeover patch would fail on "field is immutable".
+	// Delete the agent's workloads before the install and let the umbrella
+	// re-create them: the agent pod restarts here, the documented trade-off of
+	// the migration path (the release record and all patchable resources are
+	// still adopted by TakeOwnership, and Finalize forgets the agent's
+	// individual release record as before).
+	agentReleaseName, err := r.releaseNameFor(ctx, castAiClient, components.ComponentNameAgent)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolve agent release name for workload deletion: %w", err)
+	}
+	if err := r.deleteReleaseWorkloads(ctx, log, component.Namespace, agentReleaseName); err != nil {
+		return ctrl.Result{}, fmt.Errorf("delete agent workloads for umbrella takeover: %w", err)
+	}
+
 	chartName := component.HelmChartName()
 	if component.Labels != nil && component.Labels[castwarev1alpha1.LabelHelmChart] != "" {
 		chartName = component.Labels[castwarev1alpha1.LabelHelmChart]
@@ -695,9 +713,10 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 		ReleaseName:     umbrellaReleaseName,
 		ValuesOverrides: valuesMap,
 	}); err != nil {
-		// Install failure: the agent was never touched (it's still running under
-		// its individual release) and the non-agent individuals were already
-		// uninstalled. Roll back so the component reconciler reinstalls them.
+		// Install failure: the agent's workloads were deleted above (they must
+		// be re-created with the umbrella's selector labels), and the non-agent
+		// individuals were already uninstalled. Roll back so the component
+		// reconciler reinstalls everything from the individual CRs.
 		log.WithError(err).Error("Umbrella install failed; rolling back")
 		return r.rollback(ctx, log, component, cluster, castAiClient, fmt.Errorf("install umbrella: %w", err))
 	}
@@ -863,15 +882,17 @@ func (r *MigrationReconciler) rollback(ctx context.Context, log logrus.FieldLogg
 	//
 	// Helm's Uninstall deletes every resource recorded in the release manifest.
 	// Because the umbrella install used TakeOwnership, that manifest includes
-	// the agent Deployment it adopted from the individual agent release — so
+	// the agent resources it adopted from the individual agent release — so
 	// this uninstall deletes the agent pods, not just the umbrella's own
-	// resources. This is a deliberate trade-off: the heartbeat invariant (no pod
-	// restart) is scoped to the success path; the rollback path is permitted a
-	// restart. The agent is restored below by re-enabling its CR, which makes
+	// resources. The agent already restarts on the migration path itself
+	// (phaseInstallUmbrella deletes the standalone's workloads first: their
+	// selectors embed the standalone release name and are immutable, so the
+	// umbrella must re-create them), so the rollback adds no further restart
+	// trade-off. The agent is restored below by re-enabling its CR, which makes
 	// ComponentReconciler helm-upgrade--install the individual agent release,
 	// re-creating the Deployment. (Forgetting the umbrella instead of
-	// uninstalling would preserve the pods but orphan its non-agent resources
-	// — cluster-controller/spot-handler — leaving a hybrid state, which is
+	// uninstalling would orphan its non-agent resources —
+	// cluster-controller/spot-handler — leaving a hybrid state, which is
 	// worse.)
 	umbrellaReleaseName, nameErr := r.releaseNameFor(ctx, castAiClient, components.ComponentNameUmbrella)
 	if nameErr != nil {
@@ -1487,6 +1508,69 @@ func (r *MigrationReconciler) releaseNameFor(ctx context.Context, castAiClient c
 	return mc.ReleaseName, nil
 }
 
+// helmReleaseNameAnnotation is set by helm on every resource it owns; it
+// identifies the release a workload belongs to.
+const helmReleaseNameAnnotation = "meta.helm.sh/release-name"
+
+// deleteReleaseWorkloads deletes the workload resources (deployments,
+// daemonsets, statefulsets) owned by the given helm release — identified by
+// helm's meta.helm.sh/release-name annotation — so a following install under a
+// different release name can re-create them with its own selector labels.
+// Workload selectors embed the release name (app.kubernetes.io/instance) and
+// are immutable, so patching the standalone's workloads to the umbrella's
+// labels cannot work. The release record itself is untouched; a failed or
+// interrupted migration restores the workloads by re-enabling the individual
+// CRs (the component reconciler re-creates them on its install/upgrade path).
+func (r *MigrationReconciler) deleteReleaseWorkloads(ctx context.Context, log logrus.FieldLogger, namespace, releaseName string) error {
+	kinds := []struct {
+		name string
+		list client.ObjectList
+	}{
+		{"deployments", &appsv1.DeploymentList{}},
+		{"daemonsets", &appsv1.DaemonSetList{}},
+		{"statefulsets", &appsv1.StatefulSetList{}},
+	}
+	for _, kind := range kinds {
+		if err := r.List(ctx, kind.list, client.InNamespace(namespace)); err != nil {
+			return fmt.Errorf("list %s in namespace %s: %w", kind.name, namespace, err)
+		}
+		if err := meta.EachListItem(kind.list, func(obj runtime.Object) error {
+			workload, ok := obj.(client.Object)
+			if !ok {
+				return nil
+			}
+			if workload.GetAnnotations()[helmReleaseNameAnnotation] != releaseName {
+				return nil
+			}
+			log.Infof("Deleting %s %s (owned by release %s) so the umbrella can re-create it with its own selector",
+				kind.name, workload.GetName(), releaseName)
+			if err := r.Delete(ctx, workload); err != nil && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("delete %s %s: %w", kind.name, workload.GetName(), err)
+			}
+			// A lingering object (e.g. held by a foreign finalizer, or still
+			// carrying a deletionTimestamp) would make the following umbrella
+			// install fail with AlreadyExists and trigger a spurious rollback.
+			// Wait for the object to actually vanish before proceeding.
+			if err := wait.PollUntilContextCancel(ctx, 2*time.Second, true,
+				func(ctx context.Context) (bool, error) {
+					if err := r.Get(ctx, client.ObjectKeyFromObject(workload), workload); err != nil {
+						if apierrors.IsNotFound(err) {
+							return true, nil
+						}
+						return false, fmt.Errorf("get %s %s after delete: %w", kind.name, workload.GetName(), err)
+					}
+					return false, nil
+				}); err != nil {
+				return fmt.Errorf("wait for %s %s deletion: %w", kind.name, workload.GetName(), err)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // recordMigrationResult reports the migration outcome to Mothership as a
 // component action result on the umbrella component. On success it also
 // carries the umbrella's component params (tags), extracted from the
@@ -1502,11 +1586,13 @@ func (r *MigrationReconciler) recordMigrationResult(ctx context.Context, log log
 		releaseName = components.ComponentNameUmbrella
 	}
 	req := &castai.ComponentActionResult{
-		Name:        components.ComponentNameUmbrella,
-		Action:      castai.Action_INSTALL,
-		Status:      status,
-		ReleaseName: releaseName,
-		Message:     message,
+		Name:           components.ComponentNameUmbrella,
+		Action:         castai.Action_INSTALL,
+		CurrentVersion: component.Status.CurrentVersion,
+		Version:        component.Spec.Version,
+		Status:         status,
+		ReleaseName:    releaseName,
+		Message:        message,
 	}
 	if errMsg != "" {
 		req.Message = fmt.Sprintf("%s: %s", message, errMsg)

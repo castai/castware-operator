@@ -289,6 +289,7 @@ jobs:
   e2e:
     name: E2E test
     runs-on: ubuntu-24.04
+    timeout-minutes: 150
     if: |
       always() &&
       needs.build.result == 'success' &&
@@ -328,6 +329,20 @@ jobs:
           registry: us-docker.pkg.dev
           username: _json_key
           password: ${{ secrets.ARTIFACT_BUILDER_JSON_KEY }}
+
+      - name: Cache helm repositories and charts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/helm
+            ~/.config/helm
+          key: helm-e2e-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: helm-e2e-${{ runner.os }}-
+
+      - name: Pre-pull component images into kind
+        run: ./local/prepull-e2e-images.sh
+        env:
+          KIND_CLUSTER: castware-operator-e2e
 
       - name: Run E2E tests
         env:
