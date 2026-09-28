@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"sort"
 
+	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/storage/driver"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
@@ -69,6 +70,17 @@ var UmbrellaCoveredCharts = []string{
 	components.ComponentNameLive,                       // full
 	components.ComponentNameWorkloadAutoscaler,         // full
 	components.ComponentNameWorkloadAutoscalerExporter, // full
+}
+
+// KentCoveredCharts are the non-operator charts only the kent profile
+// renders (see components.KentOnlyComponents; the remaining kent-profile
+// charts are already in UmbrellaCoveredCharts). The migration absorbs their
+// standalone releases like the tag-covered ones — their presence forces the
+// kent branch of the mode derivation, since no tag renders them.
+var KentCoveredCharts = []string{
+	components.ComponentNameKentroller,
+	components.ComponentNameChartUpgrader,
+	components.ComponentNameMetricsServer,
 }
 
 // IsUmbrellaOrSubcomponent reports whether name is the umbrella component or
@@ -239,32 +251,35 @@ func ValidateInstallPermissions(ctx context.Context, c castai.CastAIClient, clus
 // values-driven, not tag-driven), and pre-install there is no release to
 // extract from anyway.
 //
-// derivedTag, when non-empty, is the umbrella tag mode the migration derived
-// from the present standalone set (components.MinimalCoveringTag). It is
-// folded into the payload as tags.<derivedTag>=true so the gate validates the
-// EFFECTIVE install surface — exactly what values.UmbrellaValues will render —
-// rather than the user-only one: a migration deriving a broader tag must be
-// permission-checked against that broader surface before anything is
-// uninstalled. The merge mirrors UmbrellaValues' extraOverrides slot (user
-// spec.values on top), so an explicit user tag choice remains in effect: the
-// derived tag adds its own key under tags, it never replaces the user's. An
-// empty derivedTag (the component controller's call site, or a migration with
-// nothing to derive) leaves the user values untouched.
+// derivedMode, when non-empty, is the umbrella mode the migration derived
+// (components.MinimalCoveringProfile: an autoscaler tag, or the kent
+// profile). It is folded into the payload exactly the key UmbrellaValues will
+// render — tags.<tag>=true or kent.enabled=true — so the gate validates the
+// EFFECTIVE install surface, not just the user's own values. An empty
+// derivedMode leaves the user values untouched.
 //
 // The response's BlockReason is normalized to "missing permissions" when the
-// server returns none, so callers surface one consistent message.
-// Transport/API errors are returned as-is so each caller wraps them with its
-// own context. A nil userValues (or empty raw) is sent as no params.
-func ValidateUmbrellaInstallPermissions(ctx context.Context, c castai.CastAIClient, clusterID, targetVersion, derivedTag string, userValues *apiextensionsv1.JSON) (*castai.ValidateComponentInstallResponse, error) {
+// server returns none. Transport/API errors are returned as-is; a nil
+// userValues is sent as no params.
+func ValidateUmbrellaInstallPermissions(ctx context.Context, c castai.CastAIClient, clusterID, targetVersion, derivedMode string, userValues *apiextensionsv1.JSON) (*castai.ValidateComponentInstallResponse, error) {
 	componentParams, err := utils.UnmarshalJSON(userValues)
 	if err != nil {
 		return nil, fmt.Errorf("unmarshal umbrella values for permission gate: %w", err)
 	}
 
-	if derivedTag != "" {
-		derived := map[string]any{"tags": map[string]any{derivedTag: true}}
+	switch derivedMode {
+	case "":
+		// Nothing derived: the user values are the whole surface.
+	case components.UmbrellaProfileKent:
+		// Kent is a profile, not a tag: fold as kent.enabled=true.
+		derived := map[string]any{"kent": map[string]any{"enabled": true}}
 		if err := utils.MergeMaps(componentParams, derived); err != nil {
-			return nil, fmt.Errorf("merge derived tag %q into permission gate values: %w", derivedTag, err)
+			return nil, fmt.Errorf("merge derived kent profile into permission gate values: %w", err)
+		}
+	default:
+		derived := map[string]any{"tags": map[string]any{derivedMode: true}}
+		if err := utils.MergeMaps(componentParams, derived); err != nil {
+			return nil, fmt.Errorf("merge derived tag %q into permission gate values: %w", derivedMode, err)
 		}
 	}
 
@@ -295,12 +310,25 @@ type CoveredStandaloneRelease struct {
 // returned so callers block rather than proceed on unknown state. Releases
 // with nil Chart or nil Chart.Metadata are skipped defensively.
 func InstalledCoveredStandaloneReleases(hc helm.Client, namespace string) ([]CoveredStandaloneRelease, error) {
+	return installedStandaloneReleases(hc, namespace, UmbrellaCoveredCharts)
+}
+
+// InstalledKentStandaloneReleases returns the standalone releases whose
+// chart is one of KentCoveredCharts. Same contract as
+// InstalledCoveredStandaloneReleases.
+func InstalledKentStandaloneReleases(hc helm.Client, namespace string) ([]CoveredStandaloneRelease, error) {
+	return installedStandaloneReleases(hc, namespace, KentCoveredCharts)
+}
+
+// installedStandaloneReleases is the shared chart-identity matcher behind
+// InstalledCoveredStandaloneReleases and InstalledKentStandaloneReleases.
+func installedStandaloneReleases(hc helm.Client, namespace string, charts []string) ([]CoveredStandaloneRelease, error) {
 	rels, err := hc.ListReleases(helm.ListReleasesOptions{Namespace: namespace})
 	if err != nil {
 		return nil, err
 	}
-	coveredSet := make(map[string]bool, len(UmbrellaCoveredCharts))
-	for _, chart := range UmbrellaCoveredCharts {
+	coveredSet := make(map[string]bool, len(charts))
+	for _, chart := range charts {
 		coveredSet[chart] = true
 	}
 	var matched []CoveredStandaloneRelease
@@ -323,4 +351,14 @@ func InstalledCoveredStandaloneReleases(hc helm.Client, namespace string) ([]Cov
 		return matched[i].ReleaseName < matched[j].ReleaseName
 	})
 	return matched, nil
+}
+
+// UmbrellaReleaseKentMode reports whether the given umbrella helm release is
+// in kent mode (its user config sets kent.enabled=true). Intended for
+// take-over flows that must keep a kent umbrella in kent mode.
+func UmbrellaReleaseKentMode(rel *release.Release) bool {
+	if rel == nil || rel.Config == nil {
+		return false
+	}
+	return components.KentEnabled(rel.Config)
 }

@@ -1,8 +1,19 @@
 {{- if .Values.defaultComponents.enabled }}
 {{- if .Values.defaultComponents.umbrella.enabled }}
+{{- /* Kent profile guard: kent requires extendedPermissions (the kent stack
+       needs the extended RBAC surface) and is mutually exclusive with an
+       explicit tags block (the chart fails a kent+tags mix at render). */ -}}
+{{- if .Values.defaultComponents.umbrella.kent.enabled }}
+{{-   if not .Values.extendedPermissions }}
+{{-     fail "defaultComponents.umbrella.kent.enabled=true requires extendedPermissions=true: the kent profile renders components that need the extended RBAC surface. Reinstall the operator with --set extendedPermissions=\"true\"" }}
+{{-   end }}
+{{-   if .Values.defaultComponents.umbrella.tags }}
+{{-     fail "defaultComponents.umbrella.kent.enabled=true is mutually exclusive with defaultComponents.umbrella.tags: the umbrella chart fails a kent+tags mix. Remove one of the two." }}
+{{-   end }}
+{{- end }}
 {{- /* Compute the effective umbrella mode tags: an explicit tags block wins;
-       otherwise extendedPermissions derives tags.full (everything) and the
-       default is tags.readonly (agent, spot-handler, kvisor only). */ -}}
+       otherwise extendedPermissions derives tags.full and the default is
+       tags.readonly. Unused in kent mode — the profile replaces the tags. */ -}}
 {{- $umbrellaTags := .Values.defaultComponents.umbrella.tags }}
 {{- if not $umbrellaTags }}
 {{-   if .Values.extendedPermissions }}
@@ -10,6 +21,16 @@
 {{-   else }}
 {{-     $umbrellaTags = dict "readonly" true }}
 {{-   end }}
+{{- end }}
+{{- /* Build the umbrella CR values in one map so overrides merge instead of
+       emitting duplicate keys (e.g. two autoscaler blocks would drop one).
+       Kent mode renders kent.enabled=true with no tags; the autoscaler path
+       carries the mode tags and the castai-live opt-out default. */ -}}
+{{- $umbrellaValues := dict }}
+{{- if .Values.defaultComponents.umbrella.kent.enabled }}
+{{-   $umbrellaValues = mergeOverwrite (dict "kent" (dict "enabled" true)) (.Values.defaultComponents.umbrella.overrides | default dict) }}
+{{- else }}
+{{-   $umbrellaValues = mergeOverwrite (dict "tags" $umbrellaTags "autoscaler" (dict "castai-live" (dict "enabled" (.Values.defaultComponents.umbrella.live.enabled)))) (.Values.defaultComponents.umbrella.overrides | default dict) }}
 {{- end }}
 ---
 apiVersion: castware.cast.ai/v1alpha1
@@ -27,9 +48,6 @@ spec:
   component: {{ .Values.defaultComponents.umbrella.component | default "castai-umbrella" | quote }}
   cluster: {{ .Values.defaultComponents.umbrella.cluster | default "castai" | quote }}
   enabled: true
-{{- /* Build the umbrella CR values in one map so overrides merge instead of
-       emitting duplicate keys (e.g. two autoscaler blocks would drop one). */}}
-{{- $umbrellaValues := mergeOverwrite (dict "tags" $umbrellaTags "autoscaler" (dict "castai-live" (dict "enabled" (.Values.defaultComponents.umbrella.live.enabled)))) (.Values.defaultComponents.umbrella.overrides | default dict) }}
   values:
     {{- toYaml $umbrellaValues | nindent 4 }}
 {{- else }}

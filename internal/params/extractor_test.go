@@ -551,6 +551,12 @@ func umbrellaTestChart() *chart.Chart {
 		"workloadAutoscaling": map[string]interface{}{"enabled": false},
 	})
 	kentSub := sub("castai-kentroller", "0.1.56", map[string]interface{}{})
+	wa := sub("castai-workload-autoscaler", "1.12.0", map[string]interface{}{})
+	wae := sub("castai-workload-autoscaler-exporter", "1.13.0", map[string]interface{}{})
+	live := sub("castai-live", "0.103.0", map[string]interface{}{})
+	pm := sub("castai-pod-mutator", "0.17.5", map[string]interface{}{})
+	ms := sub("metrics-server", "3.13.0", map[string]interface{}{})
+	cu := sub("castai-chart-upgrader", "0.1.1", map[string]interface{}{})
 
 	autoscaler := &chart.Chart{
 		Metadata: &chart.Metadata{
@@ -567,17 +573,41 @@ func umbrellaTestChart() *chart.Chart {
 	}
 	autoscaler.AddDependency(agent, spot, kvisor, cc)
 
+	// The kent profile mirrors the published wrapper sub-chart: eleven
+	// condition-driven dependencies with the wrapper's enablement defaults.
 	kent := &chart.Chart{
 		Metadata: &chart.Metadata{
 			Name:    "kent",
 			Version: "0.15.0",
 			Dependencies: []*chart.Dependency{
+				{Name: "castai-agent", Version: "0.161.0", Condition: "castai-agent.enabled"},
+				{Name: "castai-cluster-controller", Version: "0.92.4", Condition: "castai-cluster-controller.enabled"},
 				{Name: "castai-kentroller", Version: "0.1.56", Condition: "castai-kentroller.enabled"},
+				{Name: "castai-workload-autoscaler", Version: "1.12.0", Condition: "castai-workload-autoscaler.enabled"},
+				{Name: "castai-workload-autoscaler-exporter", Version: "1.13.0", Condition: "castai-workload-autoscaler-exporter.enabled"},
+				{Name: "castai-live", Version: "0.103.0", Condition: "castai-live.enabled"},
+				{Name: "castai-pod-mutator", Version: "0.17.5", Condition: "castai-pod-mutator.enabled"},
+				{Name: "castai-spot-handler", Version: "0.35.2", Condition: "castai-spot-handler.enabled"},
+				{Name: "metrics-server", Version: "3.13.0", Condition: "metrics-server.enabled"},
+				{Name: "castai-kvisor", Version: "1.164.5", Condition: "castai-kvisor.enabled"},
+				{Name: "castai-chart-upgrader", Version: "0.1.1", Condition: "castai-chart-upgrader.enabled"},
 			},
 		},
-		Values: map[string]interface{}{},
+		Values: map[string]interface{}{
+			"castai-agent":                        map[string]interface{}{"enabled": true},
+			"castai-cluster-controller":           map[string]interface{}{"enabled": true},
+			"castai-kentroller":                   map[string]interface{}{"enabled": true},
+			"castai-workload-autoscaler":          map[string]interface{}{"enabled": true},
+			"castai-workload-autoscaler-exporter": map[string]interface{}{"enabled": true},
+			"castai-live":                         map[string]interface{}{"enabled": true},
+			"castai-pod-mutator":                  map[string]interface{}{"enabled": true},
+			"castai-spot-handler":                 map[string]interface{}{"enabled": true},
+			"metrics-server":                      map[string]interface{}{"enabled": false},
+			"castai-kvisor":                       map[string]interface{}{"enabled": true},
+			"castai-chart-upgrader":               map[string]interface{}{"enabled": false},
+		},
 	}
-	kent.AddDependency(kentSub)
+	kent.AddDependency(agent, cc, kentSub, wa, wae, live, pm, spot, ms, kvisor, cu)
 
 	root := &chart.Chart{
 		Metadata: &chart.Metadata{
@@ -689,6 +719,88 @@ func TestExtractUmbrellaParams_ReadonlyMode(t *testing.T) {
 	cc := inventoryEntry(t, params, "castai-cluster-controller")
 	assert.False(t, cc.Enabled, "readonly does not enable the cluster-controller")
 	assert.Equal(t, false, params["extendedPermissions"])
+}
+
+func TestExtractUmbrellaParams_KentMode(t *testing.T) {
+	log := logrus.New()
+	rel := umbrellaTestRelease(map[string]interface{}{
+		"kent": map[string]interface{}{"enabled": true},
+	})
+
+	params := extractUmbrellaParams(context.Background(), log, rel, nil, "test-namespace")
+
+	// The tags map still carries the chart-default baseline — inert in kent
+	// mode (the chart renders no tag-gated sub-chart alongside kent).
+	kent := inventoryEntry(t, params, "kent")
+	assert.True(t, kent.Enabled)
+
+	// All eleven kent components inventoried with the wrapper's condition
+	// defaults resolved: the nine enabled by default...
+	for _, name := range []string{
+		"castai-agent",
+		"castai-cluster-controller",
+		"castai-kentroller",
+		"castai-workload-autoscaler",
+		"castai-workload-autoscaler-exporter",
+		"castai-live",
+		"castai-pod-mutator",
+		"castai-spot-handler",
+		"castai-kvisor",
+	} {
+		entry := inventoryEntry(t, params, name)
+		assert.True(t, entry.Enabled, "%s enabled by the kent profile defaults", name)
+		assert.NotEmpty(t, entry.Version, "%s version reported", name)
+	}
+	// ...and the two disabled by default.
+	assert.False(t, inventoryEntry(t, params, "metrics-server").Enabled)
+	assert.False(t, inventoryEntry(t, params, "castai-chart-upgrader").Enabled)
+
+	// Shared components appear exactly once (dedup across profiles).
+	seen := map[string]int{}
+	inventory, ok := params["inventory"].([]umbrellaSubcomponent)
+	assert.True(t, ok)
+	for _, entry := range inventory {
+		seen[entry.Name]++
+	}
+	for name, count := range seen {
+		assert.Equal(t, 1, count, "%s must appear once in the inventory (dedup across profiles)", name)
+	}
+
+	// Flat flags resolve under the kent.* path.
+	assert.Equal(t, true, params["extendedPermissions"])
+	autoscaling, ok := params["autoscaling"].(map[string]interface{})
+	assert.True(t, ok, "autoscaling flag must be reported from the kent path")
+	assert.Equal(t, false, autoscaling["enabled"])
+	workloadAutoscaling, ok := params["workloadAutoscaling"].(map[string]interface{})
+	assert.True(t, ok, "workloadAutoscaling flag must be reported from the kent path")
+	assert.Equal(t, false, workloadAutoscaling["enabled"])
+	_, hasPhase2 := params["phase2Permissions"]
+	assert.True(t, hasPhase2, "phase2Permissions flag must be reported from the kent path")
+	// The kent profile enables castai-live by default.
+	assert.Equal(t, true, params["live"])
+}
+
+func TestExtractUmbrellaParams_KentMode_ExplicitOverrides(t *testing.T) {
+	log := logrus.New()
+	rel := umbrellaTestRelease(map[string]interface{}{
+		"kent": map[string]interface{}{
+			"enabled":        true,
+			"metrics-server": map[string]interface{}{"enabled": true},
+			"castai-cluster-controller": map[string]interface{}{
+				"autoscaling": map[string]interface{}{"enabled": true},
+			},
+		},
+	})
+
+	params := extractUmbrellaParams(context.Background(), log, rel, nil, "test-namespace")
+
+	// An explicit kent.<subchart>.enabled override beats the wrapper default.
+	assert.True(t, inventoryEntry(t, params, "metrics-server").Enabled, "explicit kent.metrics-server.enabled=true wins")
+
+	// The flat flag resolves from the kent path, not the autoscaler default.
+	autoscaling, ok := params["autoscaling"].(map[string]interface{})
+	assert.True(t, ok)
+	assert.Equal(t, true, autoscaling["enabled"], "autoscaling must resolve from the kent path in kent mode")
 }
 
 func TestExtractUmbrellaParams_ExplicitOverridesBeatTagMode(t *testing.T) {

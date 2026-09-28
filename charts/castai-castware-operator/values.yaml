@@ -152,6 +152,9 @@ defaultComponents:
   #   extendedPermissions=true → tags.full=true (if no explicit tags given)
   # Non-readonly modes (node-autoscaler, workload-autoscaler, full) pull in the
   # cluster-controller and require extendedPermissions=true.
+  # The kent profile option below replaces the tag modes entirely: it renders
+  # kent.enabled=true (no tags), requires extendedPermissions=true, and cannot
+  # be combined with an explicit tags block.
   umbrella:
     enabled: false
     component: "castai-umbrella"
@@ -165,6 +168,13 @@ defaultComponents:
     # account should not hold unless explicitly opted in. Enable it to install
     # live alongside the umbrella and grant the live-specific permissions.
     live:
+      enabled: false
+    # Kent profile opt-in: renders the umbrella CR in kent mode
+    # (kent.enabled=true, no tags) instead of the tag modes. Requires
+    # extendedPermissions=true and is mutually exclusive with the tags above
+    # (the template fails the render otherwise). The operator hard-disables
+    # the profile's chart-upgrader cronjob — it owns umbrella upgrades.
+    kent:
       enabled: false
     # Optional: extra umbrella-chart values merged into the Component CR's
     # spec.values (verbatim). Sub-component overrides must use the umbrella

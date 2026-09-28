@@ -113,6 +113,45 @@ func keysOf[V any](m map[string]V) []string {
 	return out
 }
 
+// TestUmbrellaKentComponentsMatchPublishedChart downloads the published
+// castai chart and diffs its kent sub-chart's dependency set against
+// KentComponents. The kent dependencies are condition-driven (not tags), so
+// the derived set is the plain dependency-name list — including the
+// default-disabled metrics-server and castai-chart-upgrader.
+func TestUmbrellaKentComponentsMatchPublishedChart(t *testing.T) {
+	t.Parallel()
+
+	version, urls := publishedUmbrellaChart(t)
+	require.NotEmpty(t, urls, "index entry for chart %s version %s has no urls", umbrellaChartName, version)
+
+	umbrella := downloadChart(t, urls[0], version)
+
+	// The kent profile sub-chart holds the condition-driven dependencies.
+	var kent *chart.Chart
+	for _, dep := range umbrella.Dependencies() {
+		if dep != nil && dep.Metadata != nil && dep.Metadata.Name == "kent" {
+			kent = dep
+			break
+		}
+	}
+	require.NotNil(t, kent, "published chart %s has no kent sub-chart (renamed, or not shipped yet?) — update KentComponents, or pin UMBRELLA_CHART_TEST_VERSION to a release that ships it", version)
+
+	// Rebuild the chart's kent component set from the declared dependencies.
+	fromChart := make([]string, 0, len(kent.Metadata.Dependencies))
+	for _, dep := range kent.Metadata.Dependencies {
+		require.NotNil(t, dep, "nil dependency in the kent sub-chart")
+		require.NotEmpty(t, dep.Name, "dependency without a name in the kent sub-chart")
+		require.NotEmpty(t, dep.Condition, "dependency %s has no condition — the kent profile is condition-driven, not tag-driven", dep.Name)
+		fromChart = append(fromChart, dep.Name)
+	}
+
+	// Same component set, exactly (order-insensitive: a reorder in the chart
+	// must not fail the guard).
+	require.ElementsMatch(t, KentComponents, fromChart,
+		"the kent sub-chart of %s renders a different component set than umbrella_kent.go — update KentComponents: chart=%v compiled=%v",
+		version, fromChart, KentComponents)
+}
+
 // publishedUmbrellaChart resolves which chart version to validate: the
 // UMBRELLA_CHART_TEST_VERSION pin when set, otherwise the latest published
 // entry. Returns the version and its download urls.
