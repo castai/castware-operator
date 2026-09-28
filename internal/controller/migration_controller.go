@@ -123,6 +123,11 @@ type MigrationReconciler struct {
 // the same timescale a stuck install would.
 const verifyTimeout = 10 * time.Minute
 
+// workloadDeletionTimeout bounds the per-workload wait in
+// deleteReleaseWorkloads: an object held by a foreign finalizer must fail
+// the reconcile (which backs off and retries) rather than block forever.
+const workloadDeletionTimeout = 2 * time.Minute
+
 // MigrationFinalizer blocks deletion of the umbrella CR while a migration is in
 // flight. It is armed in phaseMarkReadonly (before readonly is set — the
 // validating webhook rejects updates to a CR that is readonly in both old and
@@ -1627,8 +1632,11 @@ func (r *MigrationReconciler) deleteReleaseWorkloads(ctx context.Context, log lo
 			// A lingering object (e.g. held by a foreign finalizer, or still
 			// carrying a deletionTimestamp) would make the following umbrella
 			// install fail with AlreadyExists and trigger a spurious rollback.
-			// Wait for the object to actually vanish before proceeding.
-			if err := wait.PollUntilContextCancel(ctx, 2*time.Second, true,
+			// Wait for the object to actually vanish before proceeding, bounded
+			// by a deadline: an object that never disappears must fail the
+			// reconcile (which backs off and retries) rather than block the
+			// worker forever.
+			if err := wait.PollUntilContextTimeout(ctx, 2*time.Second, workloadDeletionTimeout, true,
 				func(ctx context.Context) (bool, error) {
 					if err := r.Get(ctx, client.ObjectKeyFromObject(workload), workload); err != nil {
 						if apierrors.IsNotFound(err) {
@@ -1638,7 +1646,8 @@ func (r *MigrationReconciler) deleteReleaseWorkloads(ctx context.Context, log lo
 					}
 					return false, nil
 				}); err != nil {
-				return fmt.Errorf("wait for %s %s deletion: %w", kind.name, workload.GetName(), err)
+				return fmt.Errorf("wait for %s %s deletion: %w (still present after %s — held by a foreign finalizer?)",
+					kind.name, workload.GetName(), err, workloadDeletionTimeout)
 			}
 			return nil
 		}); err != nil {
