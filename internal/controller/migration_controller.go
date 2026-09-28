@@ -1581,6 +1581,14 @@ const helmReleaseNameAnnotation = "meta.helm.sh/release-name"
 // labels cannot work. The release record itself is untouched; a failed or
 // interrupted migration restores the workloads by re-enabling the individual
 // CRs (the component reconciler re-creates them on its install/upgrade path).
+//
+// Scope: the migration calls this for the agent's release, which renders a
+// single Deployment (the daemonset/statefulset entries are defensive). Other
+// kinds need no handling — pods and replicasets cascade with their owning
+// workload, and no chart renders jobs or cronjobs in the release body (jobs
+// exist only as helm hooks, which helm removes per their
+// hook-delete-policy). If a future absorbed chart renders other
+// selector-bearing workloads, extend the kinds list below.
 func (r *MigrationReconciler) deleteReleaseWorkloads(ctx context.Context, log logrus.FieldLogger, namespace, releaseName string) error {
 	kinds := []struct {
 		name string
