@@ -260,7 +260,8 @@ func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.
 	// post-uninstall probing cannot see the absorbed releases, so
 	// InstallUmbrella reads these fields back. The kent branch goes to
 	// MigrationDerivedProfile, tag modes to MigrationDerivedTag — exactly one
-	// is ever set. Write-once keeps a resume idempotent.
+	// is ever set. Write-once keeps a resume idempotent; both setters keep
+	// the in-memory copy in sync for the permission gate below.
 	if component.Status.MigrationDerivedTag == "" && component.Status.MigrationDerivedProfile == "" {
 		mode := migrationModeFor(component, present)
 		if mode == components.UmbrellaProfileKent {
@@ -273,7 +274,6 @@ func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.
 			if err := r.setMigrationDerivedTag(ctx, component, mode); err != nil {
 				return ctrl.Result{}, err
 			}
-			component.Status.MigrationDerivedTag = mode
 			log.Infof("Derived umbrella tag mode %q from %d present standalone component(s) (%d absorbable standalone release(s))",
 				mode, len(present), len(covered))
 		}
@@ -1444,7 +1444,6 @@ func (r *MigrationReconciler) resolveInstallMode(ctx context.Context, log logrus
 		if err := r.setMigrationDerivedTag(ctx, component, mode); err != nil {
 			return "", err
 		}
-		component.Status.MigrationDerivedTag = mode
 	}
 	return mode, nil
 }
@@ -1491,7 +1490,7 @@ func (r *MigrationReconciler) setMigrationDerivedTag(ctx context.Context, compon
 
 // setMigrationDerivedProfile persists the derived kent profile into
 // status.migrationDerivedProfile — same durability and write-once semantics
-// as setMigrationDerivedTag.
+// as setMigrationDerivedTag (which also keeps the in-memory copy in sync).
 func (r *MigrationReconciler) setMigrationDerivedProfile(ctx context.Context, component *castwarev1alpha1.Component, profile string) error {
 	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		latest := &castwarev1alpha1.Component{}
