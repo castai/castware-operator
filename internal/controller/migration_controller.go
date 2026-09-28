@@ -64,7 +64,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -418,7 +417,7 @@ func (r *MigrationReconciler) phaseUninstallIndividuals(ctx context.Context, log
 	// so it survives the uninstalls and an operator restart; a resume with a
 	// non-empty snapshot must not recapture (it is the only record of how
 	// these releases were installed — they have no Component CRs).
-	covered, err := r.absorbableStandaloneReleases(cluster.Namespace)
+	covered, err := migrationgate.InstalledAbsorbableStandaloneReleases(r.HelmClient, cluster.Namespace)
 	if err != nil {
 		return ctrl.Result{}, r.degradeMigration(ctx, log, component, fmt.Errorf("list absorbable standalone releases: %w", err))
 	}
@@ -567,7 +566,7 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 	// silently absorb or duplicate it — block until it is removed. The
 	// already-present fast path above skips this on purpose: the adoption
 	// already happened and blocking Finalize would not undo it.
-	absorbable, err := r.absorbableStandaloneReleases(cluster.Namespace)
+	absorbable, err := migrationgate.InstalledAbsorbableStandaloneReleases(r.HelmClient, cluster.Namespace)
 	if err != nil {
 		return ctrl.Result{}, r.degradeMigration(ctx, log, component, fmt.Errorf("check absorbable standalone releases: %w", err))
 	}
@@ -1393,7 +1392,7 @@ func (r *MigrationReconciler) presentComponents(ctx context.Context, castAiClien
 	if err != nil {
 		return nil, nil, err
 	}
-	covered, err := r.absorbableStandaloneReleases(cluster.Namespace)
+	covered, err := migrationgate.InstalledAbsorbableStandaloneReleases(r.HelmClient, cluster.Namespace)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1403,26 +1402,6 @@ func (r *MigrationReconciler) presentComponents(ctx context.Context, castAiClien
 		names = append(names, rel.ChartName)
 	}
 	return names, covered, nil
-}
-
-// absorbableStandaloneReleases lists the standalone releases the migration
-// absorbs: the tag-covered charts plus the kent-only charts (the derived
-// mode re-renders everything it absorbs). Sorted by ReleaseName; a listing
-// error is returned so callers block on unknown state.
-func (r *MigrationReconciler) absorbableStandaloneReleases(namespace string) ([]migrationgate.CoveredStandaloneRelease, error) {
-	covered, err := migrationgate.InstalledCoveredStandaloneReleases(r.HelmClient, namespace)
-	if err != nil {
-		return nil, err
-	}
-	kentCovered, err := migrationgate.InstalledKentStandaloneReleases(r.HelmClient, namespace)
-	if err != nil {
-		return nil, err
-	}
-	absorbable := append(covered, kentCovered...)
-	sort.Slice(absorbable, func(i, j int) bool {
-		return absorbable[i].ReleaseName < absorbable[j].ReleaseName
-	})
-	return absorbable, nil
 }
 
 // derivedMigrationMode returns the persisted derived mode: the kent profile

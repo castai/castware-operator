@@ -320,13 +320,38 @@ func InstalledKentStandaloneReleases(hc helm.Client, namespace string) ([]Covere
 	return installedStandaloneReleases(hc, namespace, KentCoveredCharts)
 }
 
-// installedStandaloneReleases is the shared chart-identity matcher behind
-// InstalledCoveredStandaloneReleases and InstalledKentStandaloneReleases.
+// InstalledAbsorbableStandaloneReleases returns the standalone releases the
+// migration absorbs — a chart in either UmbrellaCoveredCharts or
+// KentCoveredCharts — with a single helm listing (the migration probes on
+// every phase; halving the listing traffic matters more than the union's
+// extra entries). Same matching and ordering contract as the single-set
+// variants.
+func InstalledAbsorbableStandaloneReleases(hc helm.Client, namespace string) ([]CoveredStandaloneRelease, error) {
+	rels, err := hc.ListReleases(helm.ListReleasesOptions{Namespace: namespace})
+	if err != nil {
+		return nil, err
+	}
+	charts := make([]string, 0, len(UmbrellaCoveredCharts)+len(KentCoveredCharts))
+	charts = append(charts, UmbrellaCoveredCharts...)
+	charts = append(charts, KentCoveredCharts...)
+	return matchStandaloneReleases(rels, charts), nil
+}
+
+// installedStandaloneReleases is the shared listing behind the single-set
+// Installed*StandaloneReleases functions.
 func installedStandaloneReleases(hc helm.Client, namespace string, charts []string) ([]CoveredStandaloneRelease, error) {
 	rels, err := hc.ListReleases(helm.ListReleasesOptions{Namespace: namespace})
 	if err != nil {
 		return nil, err
 	}
+	return matchStandaloneReleases(rels, charts), nil
+}
+
+// matchStandaloneReleases filters rels down to those whose chart name is in
+// charts, returning the full release details (name, chart, version, user
+// config) sorted by ReleaseName. Releases with nil Chart or nil Chart.Metadata
+// are skipped defensively; a config left nil is kept as-is.
+func matchStandaloneReleases(rels []*release.Release, charts []string) []CoveredStandaloneRelease {
 	coveredSet := make(map[string]bool, len(charts))
 	for _, chart := range charts {
 		coveredSet[chart] = true
@@ -343,14 +368,14 @@ func installedStandaloneReleases(hc helm.Client, namespace string, charts []stri
 			ReleaseName:  rel.Name,
 			ChartName:    rel.Chart.Metadata.Name,
 			ChartVersion: rel.Chart.Metadata.Version,
-			Config:       rel.Config, // may be nil: kept as-is, not substituted with an empty map
+			Config:       rel.Config,
 		})
 	}
 	// A single chart may have several standalone releases; all are returned.
 	sort.Slice(matched, func(i, j int) bool {
 		return matched[i].ReleaseName < matched[j].ReleaseName
 	})
-	return matched, nil
+	return matched
 }
 
 // UmbrellaReleaseKentMode reports whether the given umbrella helm release is

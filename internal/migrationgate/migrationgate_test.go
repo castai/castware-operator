@@ -742,3 +742,44 @@ func TestUmbrellaReleaseKentMode(t *testing.T) {
 		})
 	}
 }
+
+func TestInstalledAbsorbableStandaloneReleases(t *testing.T) {
+	t.Parallel()
+	ns := "castai-agent"
+
+	t.Run("single listing matches both covered sets", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		hc := mock_helm.NewMockClient(ctrl)
+
+		// One listing returns tag-covered, kent-covered and non-matching
+		// charts alike: the union matcher must partition by chart identity.
+		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return([]*release.Release{
+			relWithChartDetails("zulu-upgrader", components.ComponentNameChartUpgrader, "0.1.1", nil),
+			relWithChartDetails("alpha-kentroller", components.ComponentNameKentroller, "0.19.0", nil),
+			relWithChartDetails("mid-kvisor", components.ComponentNameKvisor, "1.2.3", nil),
+			relWithChart(components.ComponentNameAgent),
+			relWithChart("some-other-chart"),
+		}, nil)
+
+		releases, err := InstalledAbsorbableStandaloneReleases(hc, ns)
+		r.NoError(err)
+		r.Len(releases, 3, "tag-covered and kent-covered releases both matched")
+		// Deterministic: sorted by release name across both sets.
+		r.Equal("alpha-kentroller", releases[0].ReleaseName)
+		r.Equal("mid-kvisor", releases[1].ReleaseName)
+		r.Equal("zulu-upgrader", releases[2].ReleaseName)
+	})
+
+	t.Run("listing error is returned so callers block", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		hc := mock_helm.NewMockClient(ctrl)
+
+		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return(nil, errors.New("helm unreachable"))
+
+		releases, err := InstalledAbsorbableStandaloneReleases(hc, ns)
+		r.Error(err)
+		r.Nil(releases)
+	})
+}

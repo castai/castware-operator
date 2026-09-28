@@ -192,11 +192,10 @@ func expectAgentOnlyIndividual(ops *migrationTestOps) {
 // snapshot + uninstall listing), then absent for the install-phase drift
 // guard.
 func expectCoveredReleasesAbsorbed(ops *migrationTestOps, rels ...*release.Release) {
-	// Each absorbable probe (MarkReadonly's present-set derivation and
-	// UninstallIndividuals' snapshot listing) lists twice: the tag-covered and
-	// kent-covered halves of the absorbable set.
+	// The absorbable probe (MarkReadonly's derivation, UninstallIndividuals'
+	// snapshot listing) is a single helm list matching both covered sets.
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
-		Return(rels, nil).Times(4)
+		Return(rels, nil).Times(2)
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
 		Return(nil, nil).AnyTimes()
 }
@@ -810,11 +809,11 @@ func TestMigrationReconciler_UmbrellaOnlyStandalone_AbsorbedByMigration(t *testi
 	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameAgent}).
 		Return(migRelease(components.ComponentNameAgent), nil).AnyTimes()
 	// The standalone castai-kvisor release is present for the first two
-	// reconciles (MarkReadonly's mode derivation and UninstallIndividuals'
-	// snapshot + uninstall; each probes the absorbable set with two listings);
-	// gone afterwards (the install-phase drift guard must see an empty list).
+	// reconciles (MarkReadonly's derivation and UninstallIndividuals' snapshot
+	// + uninstall, one listing per probe); gone afterwards (the drift guard
+	// must see an empty list).
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
-		Return([]*release.Release{kvisor}, nil).Times(4)
+		Return([]*release.Release{kvisor}, nil).Times(2)
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
 		Return(nil, nil).AnyTimes()
 	// UninstallIndividuals uninstalls the covered standalone release (the
@@ -1089,10 +1088,9 @@ func TestMigrationReconciler_UmbrellaOnlyStandalone_DriftGuard_BlocksBeforeInsta
 	// Umbrella release not yet installed (fresh/resumed pre-install path).
 	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
 		Return(nil, errors.New("no release found"))
-	// Standalone kvisor present (the drift-guard's absorbable probe lists
-	// twice: the tag-covered and kent-covered halves).
+	// Standalone kvisor present for the drift-guard's single absorbable list.
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
-		Return([]*release.Release{migRelease("castai-kvisor")}, nil).Times(2)
+		Return([]*release.Release{migRelease("castai-kvisor")}, nil).Times(1)
 
 	_, err := ops.sut.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
@@ -1178,10 +1176,9 @@ func TestMigrationReconciler_PermissionGate_ReceivesDerivedTag(t *testing.T) {
 	)
 	expectAgentOnlyIndividual(ops)
 	// The covered castai-live release is present for MarkReadonly's mode
-	// derivation (presentComponents lists the absorbable set twice per
-	// reconcile: the tag-covered and kent-covered halves).
+	// derivation (one absorbable listing per reconcile).
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
-		Return([]*release.Release{migRelease(components.ComponentNameLive)}, nil).Times(2)
+		Return([]*release.Release{migRelease(components.ComponentNameLive)}, nil).Times(1)
 	// Capture the permission-gate request (expectPermissionGatePass's capturing
 	// variant): the derived tag must be folded into its component_params.
 	var gateReq *castai.ValidateComponentInstallRequest
@@ -1248,7 +1245,7 @@ func TestMigrationReconciler_SnapshotNormalizesYAMLTypedConfig(t *testing.T) {
 			"nested": map[any]any{"k": "v"},
 		}
 		ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
-			Return([]*release.Release{kvisor}, nil).Times(2)
+			Return([]*release.Release{kvisor}, nil).Times(1)
 		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
 			Namespace: migNamespace, ReleaseName: components.ComponentNameKvisor, Wait: true, IgnoreNotFound: true,
 		}).Return(nil, nil)
@@ -1280,7 +1277,7 @@ func TestMigrationReconciler_SnapshotNormalizesYAMLTypedConfig(t *testing.T) {
 			"bad": make(chan int),
 		}
 		ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
-			Return([]*release.Release{kvisor}, nil).Times(2)
+			Return([]*release.Release{kvisor}, nil).Times(1)
 		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
 			Namespace: migNamespace, ReleaseName: components.ComponentNameKvisor, Wait: true, IgnoreNotFound: true,
 		}).Return(nil, nil)
@@ -1319,14 +1316,13 @@ func TestMigrationReconciler_SnapshotResume_DoesNotRecapture(t *testing.T) {
 	// castai-evictor standalone that appeared after the snapshot was taken.
 	// The second listing is the install-phase drift guard: the evictor is
 	// still there, so the migration must block on it.
-	// Each absorbable probe lists twice (tag-covered + kent-covered halves):
-	// UninstallIndividuals sees both releases, the install-phase drift guard
-	// sees only the late-arriving evictor.
+	// UninstallIndividuals' single absorbable list sees both releases; the
+	// install-phase drift guard sees only the late-arriving evictor.
 	gomock.InOrder(
 		ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
-			Return([]*release.Release{migRelease(components.ComponentNameKvisor), migRelease(components.ComponentNameEvictor)}, nil).Times(2),
+			Return([]*release.Release{migRelease(components.ComponentNameKvisor), migRelease(components.ComponentNameEvictor)}, nil),
 		ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
-			Return([]*release.Release{migRelease(components.ComponentNameEvictor)}, nil).Times(2),
+			Return([]*release.Release{migRelease(components.ComponentNameEvictor)}, nil),
 	)
 	// Only the snapshotted kvisor is uninstalled — by snapshot membership.
 	// There is deliberately NO Uninstall expectation for castai-evictor.
@@ -2034,14 +2030,14 @@ func TestMigrationReconciler_KentShapedSet_DerivesKentProfile(t *testing.T) {
 	expectPermissionGatePass(ops)
 	expectAgentOnlyIndividual(ops)
 	// The three kent-only releases are present for MarkReadonly's derivation
-	// and UninstallIndividuals' snapshot (two listings per probe); gone for
+	// and UninstallIndividuals' snapshot (one listing per probe); gone for
 	// the install-phase drift guard.
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
 		Return([]*release.Release{
 			migRelease(components.ComponentNameChartUpgrader),
 			kentroller,
 			migRelease(components.ComponentNameMetricsServer),
-		}, nil).Times(4)
+		}, nil).Times(2)
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
 		Return(nil, nil).AnyTimes()
 	// All three kent-only releases are uninstalled, in the absorbable
@@ -2163,7 +2159,7 @@ func TestMigrationReconciler_PermissionGate_ReceivesDerivedKentProfile(t *testin
 	expectAgentOnlyIndividual(ops)
 	// The kentroller release is present for MarkReadonly's derivation.
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
-		Return([]*release.Release{migRelease(components.ComponentNameKentroller)}, nil).Times(2)
+		Return([]*release.Release{migRelease(components.ComponentNameKentroller)}, nil).Times(1)
 	var gateReq *castai.ValidateComponentInstallRequest
 	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, req *castai.ValidateComponentInstallRequest) (*castai.ValidateComponentInstallResponse, error) {
@@ -2203,7 +2199,7 @@ func TestMigrationReconciler_KentDriftGuard_BlocksLateArrivals(t *testing.T) {
 		Return(nil, errors.New("no release found"))
 	// A late-arriving kentroller is present for the drift-guard probe.
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
-		Return([]*release.Release{migRelease(components.ComponentNameKentroller)}, nil).Times(2)
+		Return([]*release.Release{migRelease(components.ComponentNameKentroller)}, nil).Times(1)
 
 	_, err := ops.sut.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
