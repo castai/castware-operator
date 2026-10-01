@@ -340,6 +340,17 @@ func (h *PodHelper) VerifyPodsReady(g Gomega, labelKey, labelValue string) {
 	g.Expect(foundReady).To(BeTrue(), fmt.Sprintf("No %s pods are in Ready state", labelValue))
 }
 
+// GetPodIdentities returns "<name>|<creationTimestamp>" lines for the pods
+// with the given label, capturing the pod identity for before/after
+// comparisons (e.g. asserting the agent is never restarted by a migration).
+func (h *PodHelper) GetPodIdentities(labelKey, labelValue string) (string, error) {
+	cmd := exec.Command("kubectl", "get", "pods",
+		"-l", fmt.Sprintf("%s=%s", labelKey, labelValue),
+		"-n", h.namespace,
+		"-o", "jsonpath={range .items[*]}{.metadata.name}{'|'}{.metadata.creationTimestamp}{'\\n'}{end}")
+	return utils.Run(cmd)
+}
+
 // DeploymentHelper provides helper methods for deployment operations
 type DeploymentHelper struct {
 	namespace string
@@ -585,6 +596,17 @@ func (h *HelmHelper) UninstallRelease(releaseName string) error {
 	return err
 }
 
+// InstallStandaloneChart installs a standalone chart by hand with flattened
+// --set values (map iteration order is irrelevant; the values are
+// independent).
+func (h *HelmHelper) InstallStandaloneChart(releaseName, chartRef string, values map[string]string) error {
+	flags := make([]string, 0, 2*len(values))
+	for key, value := range values {
+		flags = append(flags, "--set", key+"="+value)
+	}
+	return h.InstallChart(releaseName, chartRef, flags...)
+}
+
 // ListReleaseNames returns the names of all helm releases in the namespace
 func (h *HelmHelper) ListReleaseNames() ([]string, error) {
 	cmd := exec.Command("helm", "list", "-n", h.namespace, "-o", "json")
@@ -620,6 +642,34 @@ func NewAPIHelper(apiKey, apiURL string) *APIHelper {
 
 // FetchFromAPI makes an HTTP request to the Cast AI API
 func (h *APIHelper) FetchFromAPI(url string, method string, requestBody interface{}, responseBody interface{}) error {
+	return h.fetchFromAPI(url, method, requestBody, responseBody)
+}
+
+// FetchFromAPIWithRetry fetches an API resource with a bounded retry for
+// transient edge failures: the dev API's nginx front has been observed to
+// return intermittent 401s mid-run while the same request succeeded minutes
+// earlier with the same key. Used for the onboarding script fetches, which
+// the legacy-script specs execute against the dev environment.
+func (h *APIHelper) FetchFromAPIWithRetry(
+	url string, method string, requestBody interface{}, responseBody interface{},
+) error {
+	const maxAttempts = 3
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		err = h.fetchFromAPI(url, method, requestBody, responseBody)
+		if err == nil {
+			return nil
+		}
+		if attempt < maxAttempts {
+			time.Sleep(5 * time.Second)
+		}
+	}
+	return err
+}
+
+// fetchFromAPI performs the HTTP request shared by FetchFromAPI and
+// FetchFromAPIWithRetry.
+func (h *APIHelper) fetchFromAPI(url string, method string, requestBody interface{}, responseBody interface{}) error {
 	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create HTTP request for URL %s: %w", url, err)
@@ -820,4 +870,14 @@ func crdExists(name string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// stringSliceContains reports whether the slice contains the value.
+func stringSliceContains(items []string, value string) bool {
+	for _, item := range items {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
