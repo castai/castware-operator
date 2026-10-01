@@ -39,7 +39,7 @@ func TestCarryOverIndividualValues_AgentOnly(t *testing.T) {
 		}`),
 	}
 
-	out := CarryOverIndividualValues(individuals, "eks")
+	out := CarryOverIndividualValues(individuals, "eks", "")
 
 	r.NotNil(out)
 	as, ok := out["autoscaler"].(map[string]any)
@@ -59,7 +59,7 @@ func TestCarryOverIndividualValues_MultipleSubcomponents(t *testing.T) {
 		components.ComponentNameClusterController: component(components.ComponentNameClusterController, `{"resources": {"limits": {"cpu": "1"}}}`),
 	}
 
-	out := CarryOverIndividualValues(individuals, "gke")
+	out := CarryOverIndividualValues(individuals, "gke", "")
 
 	r.NotNil(out)
 	as := out["autoscaler"].(map[string]any)
@@ -86,7 +86,7 @@ func TestCarryOverIndividualValues_StripsUmbrellaManagedKeys(t *testing.T) {
 		}`),
 	}
 
-	out := CarryOverIndividualValues(individuals, "eks")
+	out := CarryOverIndividualValues(individuals, "eks", "")
 	as := out["autoscaler"].(map[string]any)
 	agent := as["castai-agent"].(map[string]any)
 
@@ -108,7 +108,7 @@ func TestCarryOverIndividualValues_StripsNestedManagedKeys(t *testing.T) {
 		}`),
 	}
 
-	out := CarryOverIndividualValues(individuals, "eks")
+	out := CarryOverIndividualValues(individuals, "eks", "")
 	as := out["autoscaler"].(map[string]any)
 	agent := as["castai-agent"].(map[string]any)
 
@@ -127,7 +127,7 @@ func TestCarryOverIndividualValues_OnlyManagedKeys_SkipsSubchart(t *testing.T) {
 		components.ComponentNameSpotHandler: component(components.ComponentNameSpotHandler, `{"additionalEnv": {"A": "B"}}`),
 	}
 
-	out := CarryOverIndividualValues(individuals, "eks")
+	out := CarryOverIndividualValues(individuals, "eks", "")
 	as := out["autoscaler"].(map[string]any)
 	r.NotContains(as, "castai-agent", "agent with only managed keys is skipped")
 	r.Contains(as, "castai-spot-handler", "spot-handler with a real value is kept")
@@ -151,7 +151,7 @@ func TestCarryOverIndividualValues_EmptyAndNilValues(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out := CarryOverIndividualValues(tc.individuals, "eks")
+			out := CarryOverIndividualValues(tc.individuals, "eks", "")
 			r.Nil(out, "no user-relevant values → nil result (caller skips merging)")
 		})
 	}
@@ -165,7 +165,7 @@ func TestCarryOverIndividualValues_UnknownComponentSkipped(t *testing.T) {
 		components.ComponentNameAgent: component(components.ComponentNameAgent, `{"additionalEnv": {"X": "Y"}}`),
 	}
 
-	out := CarryOverIndividualValues(individuals, "eks")
+	out := CarryOverIndividualValues(individuals, "eks", "")
 	as := out["autoscaler"].(map[string]any)
 	r.NotContains(as, "some-other-component")
 	r.Contains(as, "castai-agent")
@@ -178,7 +178,7 @@ func TestCarryOverIndividualValues_AnywhereProviderParentKey(t *testing.T) {
 		components.ComponentNameAgent: component(components.ComponentNameAgent, `{"additionalEnv": {"ANYWHERE_CLUSTER_NAME": "c"}}`),
 	}
 
-	out := CarryOverIndividualValues(individuals, "anywhere")
+	out := CarryOverIndividualValues(individuals, "anywhere", "")
 
 	r.NotNil(out)
 	r.Contains(out, "autoscaler-anywhere", "parent key should be autoscaler-anywhere for anywhere provider")
@@ -195,7 +195,7 @@ func TestCarryOverIndividualValues_MalformedJSONSkipped(t *testing.T) {
 		components.ComponentNameSpotHandler: component(components.ComponentNameSpotHandler, `{"additionalEnv": {"A": "B"}}`),
 	}
 
-	out := CarryOverIndividualValues(individuals, "eks")
+	out := CarryOverIndividualValues(individuals, "eks", "")
 	as := out["autoscaler"].(map[string]any)
 	r.NotContains(as, "castai-agent", "malformed agent values skipped, not fatal")
 	r.Contains(as, "castai-spot-handler", "valid spot-handler values still carried")
@@ -344,7 +344,7 @@ func TestCarryOverCoveredReleaseValues(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out := CarryOverCoveredReleaseValues(tc.configs, tc.provider)
+			out := CarryOverCoveredReleaseValues(tc.configs, tc.provider, "")
 			tc.verify(t, out)
 		})
 	}
@@ -360,8 +360,8 @@ func TestCarryOver_ComposesIndividualAndReleaseBased(t *testing.T) {
 		"castai-kvisor": {"additionalEnv": map[string]any{"KVISOR_LOG_LEVEL": "debug"}},
 	}
 
-	individualOut := CarryOverIndividualValues(individuals, "eks")
-	releaseOut := CarryOverCoveredReleaseValues(releaseConfigs, "eks")
+	individualOut := CarryOverIndividualValues(individuals, "eks", "")
+	releaseOut := CarryOverCoveredReleaseValues(releaseConfigs, "eks", "")
 
 	// Both carry-over paths feed the same extraOverrides slot; the migration
 	// controller composes them with utils.MergeMaps before passing them to
@@ -375,4 +375,100 @@ func TestCarryOver_ComposesIndividualAndReleaseBased(t *testing.T) {
 	as := merged["autoscaler"].(map[string]any)
 	r.Contains(as, "castai-agent", "CR-based carry-over present")
 	r.Contains(as, "castai-kvisor", "release-based carry-over present")
+}
+
+func TestCarryOverIndividualValues_KentProfileParentKey(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	individuals := map[string]*castwarev1alpha1.Component{
+		components.ComponentNameAgent:             component(components.ComponentNameAgent, `{"additionalEnv": {"EKS_REGION": "us-east-1"}}`),
+		components.ComponentNameSpotHandler:       component(components.ComponentNameSpotHandler, `{"tolerations": [{"key": "spot"}]}`),
+		components.ComponentNameClusterController: component(components.ComponentNameClusterController, `{"resources": {"limits": {"cpu": "1"}}}`),
+	}
+
+	out := CarryOverIndividualValues(individuals, "eks", components.UmbrellaProfileKent)
+
+	r.NotNil(out)
+	kent, ok := out["kent"].(map[string]any)
+	r.True(ok, "parent key should be kent for a kent-profile migration")
+	r.NotContains(out, "autoscaler")
+	r.Contains(kent, "castai-agent")
+	r.Contains(kent, "castai-spot-handler", "spot-handler carried under its sub-chart alias")
+	r.Contains(kent, "castai-cluster-controller", "cluster-controller carried under its sub-chart alias")
+
+	// The same stripping applies under the kent parent: umbrella-managed
+	// keys are dropped, user values survive.
+	agent := kent["castai-agent"].(map[string]any)
+	r.Equal("us-east-1", agent["additionalEnv"].(map[string]any)["EKS_REGION"])
+}
+
+func TestCarryOverIndividualValues_KentProfileBeatsAnywhereProvider(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	individuals := map[string]*castwarev1alpha1.Component{
+		components.ComponentNameAgent: component(components.ComponentNameAgent, `{"additionalEnv": {"A": "B"}}`),
+	}
+
+	// The kent profile's values path is provider-independent: no kent-anywhere.
+	out := CarryOverIndividualValues(individuals, "anywhere", components.UmbrellaProfileKent)
+
+	r.NotNil(out)
+	r.Contains(out, "kent")
+	r.NotContains(out, "autoscaler-anywhere")
+	r.NotContains(out, "autoscaler")
+}
+
+func TestCarryOverCoveredReleaseValues_KentProfileParentKey(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	configs := map[string]map[string]any{
+		// A kent-only chart (the kent profile renders it; no tag mode does).
+		"castai-kentroller": {"replicaCount": 2, "castai": map[string]any{"apiKey": "secret"}},
+		// A shared chart the kent profile also renders.
+		"castai-kvisor": {"additionalEnv": map[string]any{"KVISOR_LOG_LEVEL": "debug"}},
+	}
+
+	out := CarryOverCoveredReleaseValues(configs, "eks", components.UmbrellaProfileKent)
+
+	r.NotNil(out)
+	kent, ok := out["kent"].(map[string]any)
+	r.True(ok, "parent key should be kent for a kent-profile migration")
+	r.NotContains(out, "autoscaler")
+
+	kentroller := kent["castai-kentroller"].(map[string]any)
+	r.Equal(2, kentroller["replicaCount"])
+	r.NotContains(kentroller, "castai", "umbrella-managed keys stripped under the kent parent too")
+
+	kvisor := kent["castai-kvisor"].(map[string]any)
+	r.Equal("debug", kvisor["additionalEnv"].(map[string]any)["KVISOR_LOG_LEVEL"])
+}
+
+func TestCarryOver_KentProfileComposesWithUmbrellaValues(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+
+	// End-to-end: the derived kent extraOverrides and the carry-over compose
+	// under the same kent.* path in UmbrellaValues.
+	umbrella := component("castai-umbrella", "")
+	extra := map[string]any{"kent": map[string]any{"enabled": true}}
+	individuals := map[string]*castwarev1alpha1.Component{
+		components.ComponentNameAgent: component(components.ComponentNameAgent, `{"additionalEnv": {"EKS_REGION": "us-east-1"}}`),
+	}
+	releaseConfigs := map[string]map[string]any{
+		"castai-kentroller": {"replicaCount": 2},
+	}
+	r.NoError(utils.MergeMaps(extra, CarryOverIndividualValues(individuals, "eks", components.UmbrellaProfileKent)))
+	r.NoError(utils.MergeMaps(extra, CarryOverCoveredReleaseValues(releaseConfigs, "eks", components.UmbrellaProfileKent)))
+
+	out, err := UmbrellaValues(umbrella, testCluster(), extra)
+	r.NoError(err)
+
+	kent, ok := out["kent"].(map[string]any)
+	r.True(ok)
+	r.Equal(true, kent["enabled"], "derived kent profile survives the merge")
+	r.Equal("us-east-1", kent["castai-agent"].(map[string]any)["additionalEnv"].(map[string]any)["EKS_REGION"])
+	r.Equal(2, kent["castai-kentroller"].(map[string]any)["replicaCount"])
+	// The operator-managed force-disable applies on top of the carry-over.
+	r.Equal(false, kent["castai-chart-upgrader"].(map[string]any)["enabled"])
+	r.NotContains(out, "autoscaler")
 }

@@ -2,9 +2,11 @@ package values
 
 // This file carries over user-supplied values from standalone component charts
 // into the umbrella chart's values layout during standalone→umbrella migration,
-// via two paths that both produce the same autoscaler.<name> layout and thus
+// via two paths that both produce the same <parent>.<name> layout and thus
 // compose with each other under the umbrella CR's own spec.values (see
-// UmbrellaValues' merge order):
+// UmbrellaValues' merge order). <parent> is the derived profile's values
+// path: "autoscaler" (or "autoscaler-anywhere" on anywhere clusters) for tag
+// modes, "kent" for kent-profile migrations.
 //
 //   - CR-based carry-over (CID-1047): CarryOverIndividualValues reads the
 //     operator-managed individuals (agent, spot-handler, cluster-controller)
@@ -91,16 +93,24 @@ func parentKeyForProvider(provider string) string {
 	return "autoscaler"
 }
 
+// parentKeyForProfile returns the umbrella values key for the migration's
+// derived profile: "kent" for kent-profile migrations (the kent profile is
+// provider-independent), else the provider-derived autoscaler parent.
+func parentKeyForProfile(provider, profile string) string {
+	if profile == components.UmbrellaProfileKent {
+		return components.UmbrellaProfileKent
+	}
+	return parentKeyForProvider(provider)
+}
+
 // CarryOverIndividualValues wraps each present individual component CR's
-// user-supplied spec.values into the umbrella chart's autoscaler.<alias> layout.
-// It returns nil when no individual carries any user-relevant value, so the
-// caller can skip merging an empty overrides entry (writing a nil subchart
-// value makes Helm's value coalescer panic — see castctl command.go:658).
-//
-// The returned map is intended to be merged into the extraOverrides passed to
-// UmbrellaValues, which merges it UNDER the umbrella CR's own spec.values so an
-// explicit umbrella value still wins over a carried-over individual value.
-func CarryOverIndividualValues(individuals map[string]*castwarev1alpha1.Component, provider string) map[string]any {
+// user-supplied spec.values under the derived profile's parent key
+// (autoscaler.*, autoscaler-anywhere.*, or kent.*). Returns nil when nothing
+// survives the umbrella-managed-keys strip, so the caller can skip merging an
+// empty entry (a nil subchart value makes Helm's value coalescer panic).
+// Intended for the extraOverrides slot of UmbrellaValues, which merges it
+// under the umbrella CR's own spec.values.
+func CarryOverIndividualValues(individuals map[string]*castwarev1alpha1.Component, provider, profile string) map[string]any {
 	if len(individuals) == 0 {
 		return nil
 	}
@@ -135,36 +145,19 @@ func CarryOverIndividualValues(individuals map[string]*castwarev1alpha1.Componen
 	}
 
 	return map[string]any{
-		parentKeyForProvider(provider): subcharts,
+		parentKeyForProfile(provider, profile): subcharts,
 	}
 }
 
 // CarryOverCoveredReleaseValues wraps each covered standalone release's
-// user-supplied values (the release's user config with umbrella-managed keys
-// stripped) under the umbrella chart's <parent>.<chart> layout, where <parent>
-// is "autoscaler-anywhere" for anywhere clusters and "autoscaler" otherwise.
-//
-// configs maps an umbrella-covered chart name (e.g. "castai-kvisor") to that
-// standalone release's user-supplied values (the helm release config). The
-// caller is responsible for passing only covered non-operator charts — the
-// migration controller derives this input from its absorbed-releases snapshot
-// — so no covered-chart filtering happens here. The map is keyed by chart
-// name, so there is at most one entry per chart; multiple releases of the
-// same chart are the caller's concern.
-//
-// For each chart, a nil or empty config is skipped, and the config is stripped
-// of umbrella-managed keys recursively (see umbrellaManagedKeys); a chart
-// whose config does not survive the strip is skipped rather than written as a
-// nil subchart entry (which would make Helm's value coalescer panic — same
-// rationale as CarryOverIndividualValues). Returns nil when nothing survives,
-// so the caller can skip merging an empty entry.
-//
-// The returned map is intended for the same extraOverrides slot as
-// CarryOverIndividualValues' output: merged under the umbrella CR's own
-// spec.values via UmbrellaValues' merge order, so an explicit umbrella value
-// still wins over a carried-over release value, and the two carry-over results
-// compose under the single parent key.
-func CarryOverCoveredReleaseValues(configs map[string]map[string]any, provider string) map[string]any {
+// user-supplied values (umbrella-managed keys stripped) under the derived
+// profile's <parent>.<chart> layout. configs maps a chart name to the
+// release's user config; the caller derives this from the absorbed-releases
+// snapshot, so no filtering happens here. Charts with a nil/empty or
+// fully-stripped config are skipped; returns nil when nothing survives.
+// Intended for the same extraOverrides slot as CarryOverIndividualValues', so
+// the two results compose under the single parent key.
+func CarryOverCoveredReleaseValues(configs map[string]map[string]any, provider, profile string) map[string]any {
 	if len(configs) == 0 {
 		return nil
 	}
@@ -187,7 +180,7 @@ func CarryOverCoveredReleaseValues(configs map[string]map[string]any, provider s
 	}
 
 	return map[string]any{
-		parentKeyForProvider(provider): subcharts,
+		parentKeyForProfile(provider, profile): subcharts,
 	}
 }
 

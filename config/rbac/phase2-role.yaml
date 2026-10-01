@@ -376,3 +376,19 @@ rules:
       - "roles"
     verbs:
       - "delete"
+  # For the kent profile's metrics-server: the operator is the helm identity
+  # managing the umbrella release, so it must manage the aggregated
+  # APIService metrics-server registers (disabled by default in the kent
+  # profile; part of the extended surface kent requires).
+  - apiGroups:
+      - "apiregistration.k8s.io"
+    resources:
+      - "apiservices"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"
+      - "create"
+      - "update"
+      - "patch"
+      - "delete"

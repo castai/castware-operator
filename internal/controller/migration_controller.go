@@ -40,9 +40,10 @@ package controller
 // is invisible to the mutual-exclusivity gate yet collides with the umbrella
 // install (TakeOwnership silently absorbs it, or a duplicate workload is
 // rendered). Instead of blocking, the migration absorbs such releases:
-// MarkReadonly derives the umbrella tag mode from the full present set
-// (operator individuals + covered standalones, status.migrationDerivedTag)
-// and the permission gate validates the resulting effective surface;
+// MarkReadonly derives the umbrella mode from the full present set and
+// persists it (the kent profile for kent-shaped sets or user-armed kent
+// values, else the minimal covering tag); the permission gate validates the
+// resulting effective surface;
 // UninstallIndividuals snapshots each covered release into
 // status.absorbedReleases (release name, chart, version, raw user config)
 // before uninstalling it; InstallUmbrella carries the snapshotted user config
@@ -120,6 +121,11 @@ type MigrationReconciler struct {
 // 10-minute progressing deadline so a stuck migration fails over to rollback on
 // the same timescale a stuck install would.
 const verifyTimeout = 10 * time.Minute
+
+// workloadDeletionTimeout bounds the per-workload wait in
+// deleteReleaseWorkloads: an object held by a foreign finalizer must fail
+// the reconcile (which backs off and retries) rather than block forever.
+const workloadDeletionTimeout = 2 * time.Minute
 
 // MigrationFinalizer blocks deletion of the umbrella CR while a migration is in
 // flight. It is armed in phaseMarkReadonly (before readonly is set — the
@@ -250,20 +256,27 @@ func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.
 		return ctrl.Result{}, r.degradeMigration(ctx, log, component, fmt.Errorf("resolve present standalone components: %w", err))
 	}
 
-	// Derive the umbrella tag mode from the full present set and persist it
-	// BEFORE any uninstall: post-uninstall probing cannot see the absorbed
-	// covered releases, so the InstallUmbrella phase must not re-derive — it
-	// reads this field back. Skipping the write when already set keeps a
-	// resume idempotent (a re-probe cannot narrow the tag behind the
-	// migration's back either).
-	if component.Status.MigrationDerivedTag == "" {
-		tag := components.MinimalCoveringTag(present)
-		if err := r.setMigrationDerivedTag(ctx, component, tag); err != nil {
-			return ctrl.Result{}, err
+	// Derive the umbrella mode and persist it BEFORE any uninstall:
+	// post-uninstall probing cannot see the absorbed releases, so
+	// InstallUmbrella reads these fields back. The kent branch goes to
+	// MigrationDerivedProfile, tag modes to MigrationDerivedTag — exactly one
+	// is ever set. Write-once keeps a resume idempotent; both setters keep
+	// the in-memory copy in sync for the permission gate below.
+	if component.Status.MigrationDerivedTag == "" && component.Status.MigrationDerivedProfile == "" {
+		mode := migrationModeFor(component, present)
+		if mode == components.UmbrellaProfileKent {
+			if err := r.setMigrationDerivedProfile(ctx, component, mode); err != nil {
+				return ctrl.Result{}, err
+			}
+			log.Infof("Derived umbrella kent profile from %d present standalone component(s) (%d absorbable standalone release(s))",
+				len(present), len(covered))
+		} else {
+			if err := r.setMigrationDerivedTag(ctx, component, mode); err != nil {
+				return ctrl.Result{}, err
+			}
+			log.Infof("Derived umbrella tag mode %q from %d present standalone component(s) (%d absorbable standalone release(s))",
+				mode, len(present), len(covered))
 		}
-		component.Status.MigrationDerivedTag = tag
-		log.Infof("Derived umbrella tag mode %q from %d present standalone component(s) (%d covered standalone release(s))",
-			tag, len(present), len(covered))
 	}
 
 	// Permission gate: the umbrella chart renders a broader RBAC surface than
@@ -355,10 +368,11 @@ func (r *MigrationReconciler) phaseMarkReadonly(ctx context.Context, log logrus.
 // is already beyond the point the gate protects.
 func (r *MigrationReconciler) validateMigrationPermissions(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster, castAiClient castai.CastAIClient) (bool, error) {
 	// The gate sends the umbrella's user-supplied install values (with the
-	// migration's derived tag merged under them) as component_params; see
+	// migration's derived mode merged under them) as component_params; see
 	// migrationgate.ValidateUmbrellaInstallPermissions for why the full values
-	// (not a tags-only whitelist) are required.
-	validation, err := migrationgate.ValidateUmbrellaInstallPermissions(ctx, castAiClient, cluster.Spec.Cluster.ClusterID, component.Spec.Version, component.Status.MigrationDerivedTag, component.Spec.Values)
+	// (not a tags-only whitelist) are required. The derived mode is the kent
+	// profile when the kent branch was taken, else the derived tag.
+	validation, err := migrationgate.ValidateUmbrellaInstallPermissions(ctx, castAiClient, cluster.Spec.Cluster.ClusterID, component.Spec.Version, derivedMigrationMode(component), component.Spec.Values)
 	if err != nil {
 		return false, fmt.Errorf("validate umbrella install permissions: %w", err)
 	}
@@ -397,17 +411,15 @@ func (r *MigrationReconciler) phaseUninstallIndividuals(ctx context.Context, log
 		return ctrl.Result{}, r.degradeMigration(ctx, log, component, fmt.Errorf("resolve present individuals: %w", err))
 	}
 
-	// Covered standalone releases are migration input, not a conflict: absorb
-	// them. The snapshot is written to status BEFORE any uninstall so it
-	// survives both the uninstalls themselves and an operator restart
-	// mid-phase. A resume with a non-empty snapshot must NOT recapture — some
-	// releases may already be gone, and the snapshot is the only record of how
-	// they were installed (these releases have no Component CRs); a resume
-	// with an empty snapshot recaptures whatever is still present. Fail-safe:
-	// a helm listing error degrades rather than proceeds on unknown state.
-	covered, err := migrationgate.InstalledCoveredStandaloneReleases(r.HelmClient, cluster.Namespace)
+	// Absorbable standalone releases (tag-covered and kent-only charts —
+	// the derived mode re-renders everything it absorbs) are migration input,
+	// not a conflict. The snapshot is written to status BEFORE any uninstall
+	// so it survives the uninstalls and an operator restart; a resume with a
+	// non-empty snapshot must not recapture (it is the only record of how
+	// these releases were installed — they have no Component CRs).
+	covered, err := migrationgate.InstalledAbsorbableStandaloneReleases(r.HelmClient, cluster.Namespace)
 	if err != nil {
-		return ctrl.Result{}, r.degradeMigration(ctx, log, component, fmt.Errorf("list covered standalone releases: %w", err))
+		return ctrl.Result{}, r.degradeMigration(ctx, log, component, fmt.Errorf("list absorbable standalone releases: %w", err))
 	}
 	if len(component.Status.AbsorbedReleases) == 0 && len(covered) > 0 {
 		snapshot := make([]castwarev1alpha1.AbsorbedRelease, 0, len(covered))
@@ -549,25 +561,19 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 		return ctrl.Result{}, fmt.Errorf("check umbrella release presence: %w", getErr)
 	}
 
-	// Drift-safety guard: the uninstall phase absorbed every covered
-	// standalone release present at that time, so a covered release present
-	// HERE means one appeared mid-migration — after the uninstall phase ran.
-	// The umbrella install would silently absorb or duplicate it
-	// (TakeOwnership on name-matching resources, duplicate workloads
-	// otherwise), so block until it is removed; the migration then proceeds
-	// from this recorded phase. The agent never trips this guard: its chart is
-	// not in the covered set. The already-present fast path above is skipped
-	// on purpose: once the umbrella is installed the adoption (if any)
-	// already happened, and blocking Finalize would not undo it. Fail-safe:
-	// a helm listing error degrades rather than proceeds on unknown state.
-	covered, err := migrationgate.InstalledCoveredStandaloneReleases(r.HelmClient, cluster.Namespace)
+	// Drift-safety guard: any absorbable release present HERE appeared
+	// mid-migration (after the uninstall phase), and the install would
+	// silently absorb or duplicate it — block until it is removed. The
+	// already-present fast path above skips this on purpose: the adoption
+	// already happened and blocking Finalize would not undo it.
+	absorbable, err := migrationgate.InstalledAbsorbableStandaloneReleases(r.HelmClient, cluster.Namespace)
 	if err != nil {
-		return ctrl.Result{}, r.degradeMigration(ctx, log, component, fmt.Errorf("check standalone umbrella-covered releases: %w", err))
+		return ctrl.Result{}, r.degradeMigration(ctx, log, component, fmt.Errorf("check absorbable standalone releases: %w", err))
 	}
-	if len(covered) > 0 {
-		charts := make([]string, 0, len(covered))
-		seen := make(map[string]bool, len(covered))
-		for _, rel := range covered {
+	if len(absorbable) > 0 {
+		charts := make([]string, 0, len(absorbable))
+		seen := make(map[string]bool, len(absorbable))
+		for _, rel := range absorbable {
 			if !seen[rel.ChartName] {
 				seen[rel.ChartName] = true
 				charts = append(charts, rel.ChartName)
@@ -578,40 +584,18 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 			strings.Join(charts, ", ")))
 	}
 
-	// Tag mode: MarkReadonly derived it from the full present set and
-	// persisted it, because post-uninstall probing cannot see the absorbed
-	// covered releases — re-deriving here would narrow the tag. The empty-tag
-	// fallback covers a legacy resume (migration started under an operator
-	// version without the field, which has no absorbed-release snapshot
-	// either): recompute from what is still visible and persist. When a
-	// snapshot IS present, the live probe cannot see those releases anymore
-	// (they were uninstalled), so their chart names are folded into the
-	// derivation — the re-derived tag can never be narrower than what was
-	// already absorbed. (The tag is written before anything is uninstalled,
-	// so tag-empty + snapshot-nonempty is an anomalous status — lost or
-	// edited externally — not a flow this migration produces; the
-	// reconstruction is best-effort and persisted like the legacy path.)
-	tag := component.Status.MigrationDerivedTag
-	if tag == "" {
-		present, _, err := r.presentComponents(ctx, castAiClient, cluster)
-		if err != nil {
-			// See phaseMarkReadonly: returned (not swallowed) so the failure is
-			// observable in reconcile-error metrics and the Migrating condition.
-			return ctrl.Result{}, r.degradeMigration(ctx, log, component, fmt.Errorf("resolve present components for tag derivation: %w", err))
-		}
-		for _, ar := range component.Status.AbsorbedReleases {
-			present = append(present, ar.ChartName)
-		}
-		tag = components.MinimalCoveringTag(present)
-		if err := r.setMigrationDerivedTag(ctx, component, tag); err != nil {
-			return ctrl.Result{}, err
-		}
-		component.Status.MigrationDerivedTag = tag
+	mode, err := r.resolveInstallMode(ctx, log, component, cluster, castAiClient)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
-	// Same shape deriveUmbrellaOverrides produces from a present set: the
-	// derived tag under "tags", merged UNDER the umbrella CR's own
-	// spec.values by UmbrellaValues so an explicit user tag choice still wins.
-	overrides := map[string]any{"tags": map[string]any{tag: true}}
+	// The derived mode, merged UNDER the umbrella CR's own spec.values by
+	// UmbrellaValues — an explicit user choice still wins.
+	var overrides map[string]any
+	if mode == components.UmbrellaProfileKent {
+		overrides = map[string]any{"kent": map[string]any{"enabled": true}}
+	} else {
+		overrides = map[string]any{"tags": map[string]any{mode: true}}
+	}
 
 	present, err := r.presentIndividuals(ctx, castAiClient, cluster)
 	if err != nil {
@@ -634,7 +618,7 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 		log.WithError(carryErr).Warn("Failed to read individual component values for carry-over; proceeding with defaults")
 		individuals = nil
 	}
-	if carry := values.CarryOverIndividualValues(individuals, cluster.Spec.Provider); carry != nil {
+	if carry := values.CarryOverIndividualValues(individuals, cluster.Spec.Provider, mode); carry != nil {
 		if err := utils.MergeMaps(overrides, carry); err != nil {
 			return ctrl.Result{}, fmt.Errorf("merge carried individual values: %w", err)
 		}
@@ -668,7 +652,7 @@ func (r *MigrationReconciler) phaseInstallUmbrella(ctx context.Context, log logr
 		}
 		configs[ar.ChartName] = cfg
 	}
-	if carry := values.CarryOverCoveredReleaseValues(configs, cluster.Spec.Provider); carry != nil {
+	if carry := values.CarryOverCoveredReleaseValues(configs, cluster.Spec.Provider, mode); carry != nil {
 		if err := utils.MergeMaps(overrides, carry); err != nil {
 			return ctrl.Result{}, fmt.Errorf("merge carried covered release values: %w", err)
 		}
@@ -1145,6 +1129,7 @@ func (r *MigrationReconciler) writeUmbrellaSuccessStatus(ctx context.Context, co
 		// tag. Clearing them keeps the terminal status clean.
 		latest.Status.AbsorbedReleases = nil
 		latest.Status.MigrationDerivedTag = ""
+		latest.Status.MigrationDerivedProfile = ""
 		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 			Type:    castwarev1alpha1.TypeMigrating,
 			Status:  metav1.ConditionFalse,
@@ -1209,6 +1194,7 @@ func (r *MigrationReconciler) writeUmbrellaFailureStatus(ctx context.Context, co
 		// terminal status clean (a later migration recaptures fresh state).
 		latest.Status.AbsorbedReleases = nil
 		latest.Status.MigrationDerivedTag = ""
+		latest.Status.MigrationDerivedProfile = ""
 		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 			Type:    castwarev1alpha1.TypeMigrating,
 			Status:  metav1.ConditionFalse,
@@ -1396,20 +1382,17 @@ func (r *MigrationReconciler) presentIndividuals(ctx context.Context, castAiClie
 }
 
 // presentComponents returns the full set of present standalone component
-// names: the Mothership-resolved operator individuals plus the chart-matched
-// covered standalone releases' chart names. Names may be in either form
-// (operator short names or umbrella sub-chart names) — MinimalCoveringTag
-// canonicalizes both. It is the tag-derivation input for the migration: the
-// umbrella tag mode must cover everything presently installed standalone,
-// including the covered releases the migration is about to absorb. Fail-safe:
-// an error from either probe (Mothership resolution or the helm listing)
-// aborts the derivation — the tag must not be narrowed on unknown state.
+// names: the operator individuals plus the absorbable standalone releases'
+// chart names. It is the mode-derivation input — the derived mode must cover
+// everything presently installed, including the releases about to be
+// absorbed. Fail-safe: any probe error aborts the derivation (the mode must
+// not be narrowed on unknown state).
 func (r *MigrationReconciler) presentComponents(ctx context.Context, castAiClient castai.CastAIClient, cluster *castwarev1alpha1.Cluster) ([]string, []migrationgate.CoveredStandaloneRelease, error) {
 	present, err := r.presentIndividuals(ctx, castAiClient, cluster)
 	if err != nil {
 		return nil, nil, err
 	}
-	covered, err := migrationgate.InstalledCoveredStandaloneReleases(r.HelmClient, cluster.Namespace)
+	covered, err := migrationgate.InstalledAbsorbableStandaloneReleases(r.HelmClient, cluster.Namespace)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1419,6 +1402,61 @@ func (r *MigrationReconciler) presentComponents(ctx context.Context, castAiClien
 		names = append(names, rel.ChartName)
 	}
 	return names, covered, nil
+}
+
+// derivedMigrationMode returns the persisted derived mode: the kent profile
+// (status.migrationDerivedProfile), else the derived tag
+// (status.migrationDerivedTag), else "" (not derived yet).
+func derivedMigrationMode(component *castwarev1alpha1.Component) string {
+	if component.Status.MigrationDerivedProfile != "" {
+		return component.Status.MigrationDerivedProfile
+	}
+	return component.Status.MigrationDerivedTag
+}
+
+// resolveInstallMode returns the umbrella mode the InstallUmbrella phase
+// installs under: the persisted derived mode, or — on a legacy resume with
+// no derived fields — a re-derivation from what is still visible with the
+// absorbed-release snapshot's chart names folded in (the live probe cannot
+// see the uninstalled releases), so the mode can never be narrower than what
+// was already absorbed.
+func (r *MigrationReconciler) resolveInstallMode(ctx context.Context, log logrus.FieldLogger, component *castwarev1alpha1.Component, cluster *castwarev1alpha1.Cluster, castAiClient castai.CastAIClient) (string, error) {
+	mode := derivedMigrationMode(component)
+	if mode != "" {
+		return mode, nil
+	}
+
+	present, _, err := r.presentComponents(ctx, castAiClient, cluster)
+	if err != nil {
+		// See phaseMarkReadonly: returned (not swallowed) so the failure is
+		// observable in reconcile-error metrics and the Migrating condition.
+		return "", r.degradeMigration(ctx, log, component, fmt.Errorf("resolve present components for mode derivation: %w", err))
+	}
+	for _, ar := range component.Status.AbsorbedReleases {
+		present = append(present, ar.ChartName)
+	}
+	mode = migrationModeFor(component, present)
+	if mode == components.UmbrellaProfileKent {
+		if err := r.setMigrationDerivedProfile(ctx, component, mode); err != nil {
+			return "", err
+		}
+	} else {
+		if err := r.setMigrationDerivedTag(ctx, component, mode); err != nil {
+			return "", err
+		}
+	}
+	return mode, nil
+}
+
+// migrationModeFor derives the umbrella mode for a migration. The user's
+// kent arming takes precedence: a tag derived from the present set folded
+// under kent user values would produce the chart-failing kent+tags mix. A
+// malformed values block falls through to the present-set derivation.
+func migrationModeFor(component *castwarev1alpha1.Component, present []string) string {
+	if userValues, err := utils.UnmarshalJSON(component.Spec.Values); err == nil && components.KentEnabled(userValues) {
+		return components.UmbrellaProfileKent
+	}
+	return components.MinimalCoveringProfile(present)
 }
 
 // setMigrationDerivedTag persists the derived umbrella tag mode into
@@ -1447,6 +1485,28 @@ func (r *MigrationReconciler) setMigrationDerivedTag(ctx context.Context, compon
 		return fmt.Errorf("set migration derived tag %s: %w", tag, err)
 	}
 	component.Status.MigrationDerivedTag = tag
+	return nil
+}
+
+// setMigrationDerivedProfile persists the derived kent profile into
+// status.migrationDerivedProfile — same durability and write-once semantics
+// as setMigrationDerivedTag (which also keeps the in-memory copy in sync).
+func (r *MigrationReconciler) setMigrationDerivedProfile(ctx context.Context, component *castwarev1alpha1.Component, profile string) error {
+	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		latest := &castwarev1alpha1.Component{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, latest); err != nil {
+			return err
+		}
+		if latest.Status.MigrationDerivedProfile != "" {
+			component.Status.MigrationDerivedProfile = latest.Status.MigrationDerivedProfile
+			return nil
+		}
+		latest.Status.MigrationDerivedProfile = profile
+		return r.Status().Update(ctx, latest)
+	}); err != nil {
+		return fmt.Errorf("set migration derived profile %s: %w", profile, err)
+	}
+	component.Status.MigrationDerivedProfile = profile
 	return nil
 }
 
@@ -1521,6 +1581,14 @@ const helmReleaseNameAnnotation = "meta.helm.sh/release-name"
 // labels cannot work. The release record itself is untouched; a failed or
 // interrupted migration restores the workloads by re-enabling the individual
 // CRs (the component reconciler re-creates them on its install/upgrade path).
+//
+// Scope: the migration calls this for the agent's release, which renders a
+// single Deployment (the daemonset/statefulset entries are defensive). Other
+// kinds need no handling — pods and replicasets cascade with their owning
+// workload, and no chart renders jobs or cronjobs in the release body (jobs
+// exist only as helm hooks, which helm removes per their
+// hook-delete-policy). If a future absorbed chart renders other
+// selector-bearing workloads, extend the kinds list below.
 func (r *MigrationReconciler) deleteReleaseWorkloads(ctx context.Context, log logrus.FieldLogger, namespace, releaseName string) error {
 	kinds := []struct {
 		name string
@@ -1550,8 +1618,11 @@ func (r *MigrationReconciler) deleteReleaseWorkloads(ctx context.Context, log lo
 			// A lingering object (e.g. held by a foreign finalizer, or still
 			// carrying a deletionTimestamp) would make the following umbrella
 			// install fail with AlreadyExists and trigger a spurious rollback.
-			// Wait for the object to actually vanish before proceeding.
-			if err := wait.PollUntilContextCancel(ctx, 2*time.Second, true,
+			// Wait for the object to actually vanish before proceeding, bounded
+			// by a deadline: an object that never disappears must fail the
+			// reconcile (which backs off and retries) rather than block the
+			// worker forever.
+			if err := wait.PollUntilContextTimeout(ctx, 2*time.Second, workloadDeletionTimeout, true,
 				func(ctx context.Context) (bool, error) {
 					if err := r.Get(ctx, client.ObjectKeyFromObject(workload), workload); err != nil {
 						if apierrors.IsNotFound(err) {
@@ -1561,7 +1632,8 @@ func (r *MigrationReconciler) deleteReleaseWorkloads(ctx context.Context, log lo
 					}
 					return false, nil
 				}); err != nil {
-				return fmt.Errorf("wait for %s %s deletion: %w", kind.name, workload.GetName(), err)
+				return fmt.Errorf("wait for %s %s deletion: %w (still present after %s — held by a foreign finalizer?)",
+					kind.name, workload.GetName(), err, workloadDeletionTimeout)
 			}
 			return nil
 		}); err != nil {

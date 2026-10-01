@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -164,8 +166,9 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 		return nil, fmt.Errorf("component '%s' is not supported", c.Spec.Component)
 	}
 
-	// Kent is not supported yet — reject install and migration arming at admission.
-	if err := validateUmbrellaKent(c); err != nil {
+	// Reject kent+tags mixes up front; the chart itself fails those at render
+	// time, so admission surfaces the conflict with an actionable message.
+	if err := validateUmbrellaKentTagsMix(c); err != nil {
 		return nil, err
 	}
 
@@ -242,8 +245,11 @@ func (v *ComponentCustomValidator) ValidateCreate(ctx context.Context, obj runti
 	return nil, nil
 }
 
-// validateUmbrellaKent rejects the kent profile - not supported yet.
-func validateUmbrellaKent(c *castwarev1alpha1.Component) error {
+// validateUmbrellaKentTagsMix rejects umbrella values that combine the kent
+// profile with autoscaler tags — the modes are mutually exclusive and the
+// chart fails the mix at render time. The extendedPermissions posture of
+// kent CRs is gated separately (RequiresExtendedPermissionsForValues).
+func validateUmbrellaKentTagsMix(c *castwarev1alpha1.Component) error {
 	if c.Spec.Component != components.ComponentNameUmbrella {
 		return nil
 	}
@@ -251,12 +257,22 @@ func validateUmbrellaKent(c *castwarev1alpha1.Component) error {
 	if err != nil {
 		return fmt.Errorf("failed to unmarshal component values: %w", err)
 	}
-	if kent, ok := values["kent"].(map[string]any); ok {
-		if enabled, _ := kent["enabled"].(bool); enabled {
-			return fmt.Errorf("component '%s' does not support the kent profile yet (kent.enabled)", c.Spec.Component)
+	if !components.KentEnabled(values) {
+		return nil
+	}
+	tags, _ := values["tags"].(map[string]any)
+	enabledTags := make([]string, 0, len(tags))
+	for name, v := range tags {
+		if enabled, _ := v.(bool); enabled {
+			enabledTags = append(enabledTags, name)
 		}
 	}
-	return nil
+	if len(enabledTags) == 0 {
+		return nil
+	}
+	sort.Strings(enabledTags)
+	return fmt.Errorf("component '%s' cannot combine the kent profile with autoscaler tags (%s): kent.enabled is mutually exclusive with tags.* — remove the tags block or disable kent",
+		c.Spec.Component, strings.Join(enabledTags, ", "))
 }
 
 // validateMutualExclusivity enforces the umbrella / individual charts mutual-
@@ -336,9 +352,26 @@ func (v *ComponentCustomValidator) ValidateUpdate(ctx context.Context, oldObj, n
 		return nil, fmt.Errorf("components can be migrated only during resource creation")
 	}
 
-	// Kent is not supported yet — reject install and migration arming at admission.
-	if err := validateUmbrellaKent(component); err != nil {
+	// Reject silent kent+tags mixes, mirroring the create path.
+	if err := validateUmbrellaKentTagsMix(component); err != nil {
 		return nil, err
+	}
+
+	// Extended-permissions gate, mirroring the create path. The
+	// readonly-transition fast paths above (which the migration controller's
+	// spec.readonly patches rely on) return before this.
+	if values, err := utils.UnmarshalJSON(component.Spec.Values); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal component values: %w", err)
+	} else if components.RequiresExtendedPermissionsForValues(component.Spec.Component, values) {
+		ok, err := rolebindings.CheckExtendedPermissionsExist(ctx, v.client, component.Namespace)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check extended permissions: %w", err)
+		}
+		if !ok {
+			return nil, fmt.Errorf("component '%s' requires extended permissions, please run "+
+				"`helm upgrade castware-operator -n castai-agent --set extendedPermissions=\"true\" --reuse-values castai-helm/castware-operator`",
+				component.Spec.Component)
+		}
 	}
 
 	cluster := &castwarev1alpha1.Cluster{}

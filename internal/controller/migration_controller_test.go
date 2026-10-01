@@ -192,6 +192,8 @@ func expectAgentOnlyIndividual(ops *migrationTestOps) {
 // snapshot + uninstall listing), then absent for the install-phase drift
 // guard.
 func expectCoveredReleasesAbsorbed(ops *migrationTestOps, rels ...*release.Release) {
+	// The absorbable probe (MarkReadonly's derivation, UninstallIndividuals'
+	// snapshot listing) is a single helm list matching both covered sets.
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
 		Return(rels, nil).Times(2)
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
@@ -807,8 +809,8 @@ func TestMigrationReconciler_UmbrellaOnlyStandalone_AbsorbedByMigration(t *testi
 	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameAgent}).
 		Return(migRelease(components.ComponentNameAgent), nil).AnyTimes()
 	// The standalone castai-kvisor release is present for the first two
-	// reconciles (MarkReadonly's tag derivation and UninstallIndividuals'
-	// snapshot + uninstall); gone afterwards (the install-phase drift guard
+	// reconciles (MarkReadonly's derivation and UninstallIndividuals' snapshot
+	// + uninstall, one listing per probe); gone afterwards (the drift guard
 	// must see an empty list).
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
 		Return([]*release.Release{kvisor}, nil).Times(2)
@@ -1086,9 +1088,9 @@ func TestMigrationReconciler_UmbrellaOnlyStandalone_DriftGuard_BlocksBeforeInsta
 	// Umbrella release not yet installed (fresh/resumed pre-install path).
 	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
 		Return(nil, errors.New("no release found"))
-	// Standalone kvisor present.
+	// Standalone kvisor present for the drift-guard's single absorbable list.
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
-		Return([]*release.Release{migRelease("castai-kvisor")}, nil)
+		Return([]*release.Release{migRelease("castai-kvisor")}, nil).Times(1)
 
 	_, err := ops.sut.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
@@ -1173,8 +1175,8 @@ func TestMigrationReconciler_PermissionGate_ReceivesDerivedTag(t *testing.T) {
 		migIndividual(components.ComponentNameAgent),
 	)
 	expectAgentOnlyIndividual(ops)
-	// The covered castai-live release is present for MarkReadonly's tag
-	// derivation (presentComponents lists covered releases once per reconcile).
+	// The covered castai-live release is present for MarkReadonly's mode
+	// derivation (one absorbable listing per reconcile).
 	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
 		Return([]*release.Release{migRelease(components.ComponentNameLive)}, nil).Times(1)
 	// Capture the permission-gate request (expectPermissionGatePass's capturing
@@ -1243,7 +1245,7 @@ func TestMigrationReconciler_SnapshotNormalizesYAMLTypedConfig(t *testing.T) {
 			"nested": map[any]any{"k": "v"},
 		}
 		ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
-			Return([]*release.Release{kvisor}, nil)
+			Return([]*release.Release{kvisor}, nil).Times(1)
 		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
 			Namespace: migNamespace, ReleaseName: components.ComponentNameKvisor, Wait: true, IgnoreNotFound: true,
 		}).Return(nil, nil)
@@ -1275,7 +1277,7 @@ func TestMigrationReconciler_SnapshotNormalizesYAMLTypedConfig(t *testing.T) {
 			"bad": make(chan int),
 		}
 		ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
-			Return([]*release.Release{kvisor}, nil)
+			Return([]*release.Release{kvisor}, nil).Times(1)
 		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
 			Namespace: migNamespace, ReleaseName: components.ComponentNameKvisor, Wait: true, IgnoreNotFound: true,
 		}).Return(nil, nil)
@@ -1314,6 +1316,8 @@ func TestMigrationReconciler_SnapshotResume_DoesNotRecapture(t *testing.T) {
 	// castai-evictor standalone that appeared after the snapshot was taken.
 	// The second listing is the install-phase drift guard: the evictor is
 	// still there, so the migration must block on it.
+	// UninstallIndividuals' single absorbable list sees both releases; the
+	// install-phase drift guard sees only the late-arriving evictor.
 	gomock.InOrder(
 		ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
 			Return([]*release.Release{migRelease(components.ComponentNameKvisor), migRelease(components.ComponentNameEvictor)}, nil),
@@ -2008,3 +2012,325 @@ func TestHandleInstall_BlocksUmbrellaWithoutMigrate(t *testing.T) {
 // keep unused imports referenced when build tags trim some paths
 var _ = time.Now
 var _ = corev1.SchemeGroupVersion
+
+// TestMigrationReconciler_KentShapedSet_DerivesKentProfile asserts the kent
+// branch end-to-end: kent-only standalones derive the kent profile (not a
+// tag), are absorbed, and the umbrella installs with kent.enabled=true and
+// the kentroller's config carried under kent.*.
+func TestMigrationReconciler_KentShapedSet_DerivesKentProfile(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	kentroller := migRelease(components.ComponentNameKentroller)
+	kentroller.Config = map[string]interface{}{"replicaCount": 2}
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		migUmbrella(""),
+		migIndividual(components.ComponentNameAgent),
+	)
+	expectPermissionGatePass(ops)
+	expectAgentOnlyIndividual(ops)
+	// The three kent-only releases are present for MarkReadonly's derivation
+	// and UninstallIndividuals' snapshot (one listing per probe); gone for
+	// the install-phase drift guard.
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return([]*release.Release{
+			migRelease(components.ComponentNameChartUpgrader),
+			kentroller,
+			migRelease(components.ComponentNameMetricsServer),
+		}, nil).Times(2)
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return(nil, nil).AnyTimes()
+	// All three kent-only releases are uninstalled, in the absorbable
+	// listing's release-name order (castai-chart-upgrader sorts before
+	// castai-kentroller, which sorts before metrics-server).
+	gomock.InOrder(
+		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+			Namespace: migNamespace, ReleaseName: components.ComponentNameChartUpgrader, Wait: true, IgnoreNotFound: true,
+		}).Return(nil, nil),
+		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+			Namespace: migNamespace, ReleaseName: components.ComponentNameKentroller, Wait: true, IgnoreNotFound: true,
+		}).Return(nil, nil),
+		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+			Namespace: migNamespace, ReleaseName: components.ComponentNameMetricsServer, Wait: true, IgnoreNotFound: true,
+		}).Return(nil, nil),
+	)
+	// Umbrella not yet installed; the install succeeds.
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(nil, errors.New("no release found"))
+	var captured helm.InstallOptions
+	ops.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, opts helm.InstallOptions) (*release.Release, error) {
+			captured = opts
+			return migRelease(components.ComponentNameUmbrella), nil
+		})
+
+	// MarkReadonly: the kent-only releases force the kent profile branch.
+	reconcileOnce(t, ops)
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase,
+		"migration proceeds with the kent-only standalone releases present")
+	r.Equal(components.UmbrellaProfileKent, u.Status.MigrationDerivedProfile,
+		"kent-only presence derives the kent profile branch")
+	r.Empty(u.Status.MigrationDerivedTag, "no tag derived for a kent-shaped set")
+
+	// UninstallIndividuals: all three kent-only releases snapshotted BEFORE
+	// being uninstalled.
+	reconcileOnce(t, ops)
+	u = getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseInstallUmbrella, u.Status.MigrationPhase)
+	r.Len(u.Status.AbsorbedReleases, 3, "all kent-only releases snapshotted")
+	r.Equal(components.ComponentNameChartUpgrader, u.Status.AbsorbedReleases[0].ChartName)
+	r.Equal(components.ComponentNameKentroller, u.Status.AbsorbedReleases[1].ChartName)
+	r.Equal(components.ComponentNameMetricsServer, u.Status.AbsorbedReleases[2].ChartName)
+	r.JSONEq(`{"replicaCount":2}`, string(u.Status.AbsorbedReleases[1].Values.Raw),
+		"kentroller config snapshotted raw")
+	r.Nil(u.Status.AbsorbedReleases[2].Values, "metrics-server had no user config")
+
+	// InstallUmbrella: proceeds under the derived kent profile with the
+	// kentroller's user config carried under kent.* and the chart-upgrader
+	// force-disabled.
+	reconcileOnce(t, ops)
+	u = getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseVerify, u.Status.MigrationPhase)
+	kent, ok := captured.ValuesOverrides["kent"].(map[string]any)
+	r.True(ok, "kent block present in install values")
+	r.Equal(true, kent["enabled"], "install arms the derived kent profile")
+	kr, ok := kent[components.ComponentNameKentroller].(map[string]any)
+	r.True(ok, "absorbed kentroller config carried under kent.castai-kentroller")
+	r.Equal(float64(2), kr["replicaCount"])
+	r.Equal(false, kent[components.ComponentNameChartUpgrader].(map[string]any)["enabled"],
+		"the operator-managed chart-upgrader force-disable rides along")
+	r.NotContains(captured.ValuesOverrides, "tags", "no tag folded into a kent install")
+	r.NotContains(captured.ValuesOverrides, "autoscaler", "no autoscaler path in a kent install")
+}
+
+// TestMigrationReconciler_KentMigration_UserValuesArmKent asserts user
+// precedence: kent-armed CR values derive kent even over a present set that
+// alone would derive a tag (which folded under kent values would produce the
+// chart-failing mix).
+func TestMigrationReconciler_KentMigration_UserValuesArmKent(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	umbrella := migUmbrella("")
+	umbrella.Spec.Values = &apiextensionsv1.JSON{Raw: []byte(`{"kent":{"enabled":true}}`)}
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		umbrella,
+		migIndividual(components.ComponentNameAgent),
+	)
+	expectPermissionGatePass(ops)
+	expectAgentOnlyIndividual(ops)
+	expectNoCoveredStandaloneReleases(ops)
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(nil, errors.New("no release found"))
+	var captured helm.InstallOptions
+	ops.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, opts helm.InstallOptions) (*release.Release, error) {
+			captured = opts
+			return migRelease(components.ComponentNameUmbrella), nil
+		})
+
+	reconcileOnce(t, ops)
+	u := getUmbrella(t, ops)
+	r.Equal(components.UmbrellaProfileKent, u.Status.MigrationDerivedProfile,
+		"user-armed kent values derive the kent profile, not the readonly tag the present set alone would derive")
+	r.Empty(u.Status.MigrationDerivedTag)
+
+	reconcileOnce(t, ops) // UninstallIndividuals (nothing to absorb)
+	reconcileOnce(t, ops) // InstallUmbrella
+	u = getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseVerify, u.Status.MigrationPhase)
+	kent, ok := captured.ValuesOverrides["kent"].(map[string]any)
+	r.True(ok)
+	r.Equal(true, kent["enabled"], "install arms kent")
+	r.NotContains(captured.ValuesOverrides, "tags", "no tag folded under kent user values")
+}
+
+// TestMigrationReconciler_PermissionGate_ReceivesDerivedKentProfile asserts
+// the gate payload carries kent.enabled=true when the derived mode is kent.
+func TestMigrationReconciler_PermissionGate_ReceivesDerivedKentProfile(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		migUmbrella(""),
+		migIndividual(components.ComponentNameAgent),
+	)
+	expectAgentOnlyIndividual(ops)
+	// The kentroller release is present for MarkReadonly's derivation.
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return([]*release.Release{migRelease(components.ComponentNameKentroller)}, nil).Times(1)
+	var gateReq *castai.ValidateComponentInstallRequest
+	ops.mockCastAI.EXPECT().ValidateComponentInstall(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, req *castai.ValidateComponentInstallRequest) (*castai.ValidateComponentInstallResponse, error) {
+			gateReq = req
+			return &castai.ValidateComponentInstallResponse{Allowed: true}, nil
+		}).Times(1)
+
+	reconcileOnce(t, ops)
+
+	r.NotNil(gateReq, "permission gate was called")
+	r.Equal(components.ComponentNameUmbrella, gateReq.ComponentName)
+	kent, ok := gateReq.ComponentParams["kent"].(map[string]any)
+	r.True(ok, "component_params.kent should be an object, got %T", gateReq.ComponentParams["kent"])
+	r.Equal(true, kent["enabled"], "the derived kent profile folded into the gate payload")
+	r.NotContains(gateReq.ComponentParams, "tags", "no tag folded for a kent-shaped set")
+
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseUninstallIndividuals, u.Status.MigrationPhase,
+		"migration proceeds when the gate allows")
+	r.Equal(components.UmbrellaProfileKent, u.Status.MigrationDerivedProfile)
+}
+
+// TestMigrationReconciler_KentDriftGuard_BlocksLateArrivals asserts the
+// drift guard blocks a late-arriving kent-only standalone, like a
+// tag-covered one. No Install mock is wired — an attempted install fails the
+// test.
+func TestMigrationReconciler_KentDriftGuard_BlocksLateArrivals(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		migUmbrella(castwarev1alpha1.MigrationPhaseInstallUmbrella),
+	)
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).AnyTimes()
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(nil, errors.New("no release found"))
+	// A late-arriving kentroller is present for the drift-guard probe.
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return([]*release.Release{migRelease(components.ComponentNameKentroller)}, nil).Times(1)
+
+	_, err := ops.sut.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: migNamespace, Name: components.ComponentNameUmbrella},
+	})
+	r.Error(err)
+	r.ErrorContains(err, components.ComponentNameKentroller)
+	r.ErrorContains(err, "mid-migration drift")
+
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseInstallUmbrella, u.Status.MigrationPhase,
+		"phase unchanged while blocked")
+	cond := meta.FindStatusCondition(u.Status.Conditions, castwarev1alpha1.TypeMigrating)
+	r.NotNil(cond, "Migrating condition present while blocked")
+	r.Equal(castwarev1alpha1.ReasonMigrationBlocked, cond.Reason)
+}
+
+// TestMigrationReconciler_Rollback_RestoresKentReleases asserts the
+// rollback reinstalls absorbed kent releases from the snapshot and clears
+// the derived kent profile.
+func TestMigrationReconciler_Rollback_RestoresKentReleases(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseVerify)
+	umbrella.Status.MigrationPhaseStartedAt = metav1.NewTime(time.Now().Add(-2 * verifyTimeout))
+	umbrella.Status.MigrationDerivedProfile = components.UmbrellaProfileKent
+	umbrella.Status.AbsorbedReleases = []castwarev1alpha1.AbsorbedRelease{
+		{
+			ReleaseName:  "kent-prod",
+			ChartName:    components.ComponentNameKentroller,
+			ChartVersion: "0.19.0",
+			ChartRepoURL: "https://mirror.example.com/charts",
+			Values:       &apiextensionsv1.JSON{Raw: []byte(`{"replicaCount":2}`)},
+		},
+		{
+			ReleaseName:  "metrics",
+			ChartName:    components.ComponentNameMetricsServer,
+			ChartVersion: "3.13.0",
+			// no Values, no ChartRepoURL: defaults + cluster-repo fallback.
+		},
+	}
+	umbrella.Spec.Readonly = true
+	controllerutil.AddFinalizer(umbrella, MigrationFinalizer)
+	agent := migIndividual(components.ComponentNameAgent)
+	agent.Spec.Readonly = true
+
+	ops := newMigrationTestOps(t, migCluster(), umbrella, agent)
+	failedRelease := migRelease(components.ComponentNameUmbrella)
+	failedRelease.Info.Status = release.StatusFailed
+	ops.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), components.ComponentNameUmbrella).
+		Return(&castai.Component{Name: components.ComponentNameUmbrella, ReleaseName: components.ComponentNameUmbrella}, nil).AnyTimes()
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(failedRelease, nil)
+
+	gomock.InOrder(
+		ops.mockHelm.EXPECT().Uninstall(helm.UninstallOptions{
+			Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella, Wait: true, IgnoreNotFound: true,
+		}).Return(nil, nil),
+		ops.mockHelm.EXPECT().Install(gomock.Any(), helm.InstallOptions{
+			ChartSource: &helm.ChartSource{
+				RepoURL: "https://mirror.example.com/charts",
+				Name:    components.ComponentNameKentroller,
+				Version: "0.19.0",
+			},
+			Namespace:       migNamespace,
+			CreateNamespace: false,
+			ReleaseName:     "kent-prod",
+			ValuesOverrides: map[string]any{"replicaCount": float64(2)},
+		}).Return(migRelease("kent-prod"), nil),
+		ops.mockHelm.EXPECT().Install(gomock.Any(), helm.InstallOptions{
+			ChartSource: &helm.ChartSource{
+				RepoURL: "https://castai.github.io/helm-charts",
+				Name:    components.ComponentNameMetricsServer,
+				Version: "3.13.0",
+			},
+			Namespace:       migNamespace,
+			CreateNamespace: false,
+			ReleaseName:     "metrics",
+			ValuesOverrides: nil,
+		}).Return(migRelease("metrics"), nil),
+	)
+	ops.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), migClusterID, gomock.Any()).
+		Return(nil)
+
+	reconcileOnce(t, ops)
+
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseRolledBack, u.Status.MigrationPhase)
+	r.Empty(u.Status.AbsorbedReleases, "absorbed-release snapshot cleared after the rollback reinstalled them")
+	r.Empty(u.Status.MigrationDerivedProfile, "derived kent profile cleared after rollback")
+	r.Empty(u.Status.MigrationDerivedTag)
+}
+
+// TestMigrationReconciler_LostDerivedProfile_DerivesFromSnapshot asserts
+// the empty-mode fallback re-derives the kent profile when the snapshot holds
+// a kent-only chart (anomalous lost status), not narrowed to readonly.
+func TestMigrationReconciler_LostDerivedProfile_DerivesFromSnapshot(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+	umbrella := migUmbrella(castwarev1alpha1.MigrationPhaseInstallUmbrella)
+	umbrella.Status.MigrationDerivedProfile = ""
+	umbrella.Status.MigrationDerivedTag = ""
+	umbrella.Status.AbsorbedReleases = []castwarev1alpha1.AbsorbedRelease{{
+		ReleaseName:  components.ComponentNameKentroller,
+		ChartName:    components.ComponentNameKentroller,
+		ChartVersion: "0.19.0",
+		ChartRepoURL: "https://castai.github.io/helm-charts",
+	}}
+	ops := newMigrationTestOps(t,
+		migCluster(),
+		umbrella,
+		migIndividual(components.ComponentNameAgent),
+	)
+	expectAgentOnlyIndividual(ops)
+	ops.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{Namespace: migNamespace, ReleaseName: components.ComponentNameUmbrella}).
+		Return(nil, errors.New("no release found"))
+	ops.mockHelm.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: migNamespace}).
+		Return(nil, nil).AnyTimes()
+	var captured helm.InstallOptions
+	ops.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, opts helm.InstallOptions) (*release.Release, error) {
+			captured = opts
+			return migRelease(components.ComponentNameUmbrella), nil
+		})
+
+	reconcileOnce(t, ops)
+
+	u := getUmbrella(t, ops)
+	r.Equal(castwarev1alpha1.MigrationPhaseVerify, u.Status.MigrationPhase)
+	r.Equal(components.UmbrellaProfileKent, u.Status.MigrationDerivedProfile,
+		"re-derived mode covers the absorbed kentroller, not narrowed to readonly")
+	kent, ok := captured.ValuesOverrides["kent"].(map[string]any)
+	r.True(ok, "kent block present in install values")
+	r.Equal(true, kent["enabled"], "install arms the snapshot-aware derived kent profile")
+}

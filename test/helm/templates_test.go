@@ -405,3 +405,91 @@ func TestHelmLint_IndividualPath(t *testing.T) {
 		t.Fatalf("helm lint reported failures:\n%s", res)
 	}
 }
+
+// renderChartErr runs `helm template` like renderChart but returns the
+// combined output and error, for tests asserting that a render fails.
+func renderChartErr(t *testing.T, sets ...string) (string, error) {
+	t.Helper()
+	abs, err := filepath.Abs(chartPath)
+	if err != nil {
+		t.Fatalf("resolve chart path: %v", err)
+	}
+	args := []string{"template", abs, "--set", "apiKeySecret.apiKey=test"} //nolint:prealloc
+	args = append(args, sets...)
+	cmd := exec.Command("helm", args...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func TestUmbrellaPath_KentMode(t *testing.T) {
+	// Kent mode renders kent.enabled=true, no tags (mutually exclusive), no
+	// autoscaler values path.
+	rendered := renderChart(t,
+		"--set", "defaultComponents.umbrella.enabled=true",
+		"--set", "defaultComponents.umbrella.kent.enabled=true",
+		"--set", "extendedPermissions=true",
+	)
+	components := extractComponentManifests(t, rendered)
+	if len(components) != 1 {
+		t.Fatalf("expected 1 Component CR, got %d", len(components))
+	}
+	comp := components[0]
+	if !strings.Contains(comp, "kent:\n      enabled: true") {
+		t.Errorf("expected kent.enabled=true in the umbrella CR values, got:\n%s", comp)
+	}
+	if strings.Contains(comp, "tags:") {
+		t.Errorf("kent mode must not render tags (mutually exclusive with kent), got:\n%s", comp)
+	}
+	if strings.Contains(comp, "autoscaler:") {
+		t.Errorf("kent mode must not render the autoscaler values path, got:\n%s", comp)
+	}
+}
+
+func TestUmbrellaPath_KentWithoutExtendedPermissionsFails(t *testing.T) {
+	// The template-mode guard: kent requires extendedPermissions.
+	out, err := renderChartErr(t,
+		"--set", "defaultComponents.umbrella.enabled=true",
+		"--set", "defaultComponents.umbrella.kent.enabled=true",
+	)
+	if err == nil {
+		t.Fatalf("expected the render to fail for kent without extendedPermissions, got:\n%s", out)
+	}
+	if !strings.Contains(out, "requires extendedPermissions") {
+		t.Errorf("expected the actionable extendedPermissions failure message, got:\n%s", out)
+	}
+}
+
+func TestUmbrellaPath_KentWithTagsFails(t *testing.T) {
+	// The template-mode guard: kent is mutually exclusive with an explicit
+	// tags block (the umbrella chart fails a kent+tags mix at render time).
+	out, err := renderChartErr(t,
+		"--set", "defaultComponents.umbrella.enabled=true",
+		"--set", "defaultComponents.umbrella.kent.enabled=true",
+		"--set", "extendedPermissions=true",
+		"--set", "defaultComponents.umbrella.tags.full=true",
+	)
+	if err == nil {
+		t.Fatalf("expected the render to fail for kent with an explicit tags block, got:\n%s", out)
+	}
+	if !strings.Contains(out, "mutually exclusive") {
+		t.Errorf("expected the kent+tags mutual-exclusivity failure message, got:\n%s", out)
+	}
+}
+
+func TestRbacExt_ApiServiceRuleGated(t *testing.T) {
+	// The APIService rule (the kent profile's metrics-server aggregated API)
+	// is part of the extended surface: only with extendedPermissions set.
+	base := renderChart(t,
+		"--set", "extendedPermissions=false",
+	)
+	if strings.Contains(base, "apiservices") {
+		t.Errorf("the APIService rule must not render without extendedPermissions")
+	}
+
+	ext := renderChart(t,
+		"--set", "extendedPermissions=true",
+	)
+	if !strings.Contains(ext, "apiregistration.k8s.io") || !strings.Contains(ext, "apiservices") {
+		t.Errorf("expected the APIService rule to render with extendedPermissions")
+	}
+}

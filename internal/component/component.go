@@ -54,10 +54,8 @@ func RequiresExtendedPermissionsForValues(name string, values map[string]any) bo
 	// it renders the kent stack (cluster-controller, kentroller, pod-mutator,
 	// live, workload-autoscaler, metrics-server, chart-upgrader) regardless of
 	// the readonly tag.
-	if kent, ok := values["kent"].(map[string]any); ok {
-		if enabled, _ := kent["enabled"].(bool); enabled {
-			return true
-		}
+	if KentEnabled(values) {
+		return true
 	}
 	// An explicitly enabled cluster-controller always requires extended
 	// permissions, regardless of the readonly tag.
