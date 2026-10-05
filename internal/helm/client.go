@@ -168,6 +168,14 @@ func (c *client) Uninstall(opts UninstallOptions) (*release.UninstallReleaseResp
 	uninstall := action.NewUninstall(cfg)
 	uninstall.IgnoreNotFound = opts.IgnoreNotFound
 	uninstall.Wait = opts.Wait
+	// helm's WaitForDelete builds its poll context from this timeout
+	// (context.WithTimeout(ctx, u.Timeout)); left zero, the context is
+	// ALREADY EXPIRED, so a wait-uninstall only succeeds when every
+	// resource happens to be gone from etcd at the first (immediate) poll
+	// — otherwise it fails instantly with "context deadline exceeded"
+	// ("uninstallation completed with 1 error(s)"). Mirror Install's
+	// timeout so waiting uninstalls actually wait.
+	uninstall.Timeout = 10 * time.Minute
 	res, err := uninstall.Run(opts.ReleaseName)
 	if err != nil {
 		return nil, fmt.Errorf("chart uninstall failed, name=%s, namespace=%s: %w", opts.ReleaseName, opts.Namespace, err)
