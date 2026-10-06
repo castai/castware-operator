@@ -414,6 +414,14 @@ spec:
                   LastReportedHelmRevision is the helm release revision number that was last reported to Mothership.
                   Used to detect helm upgrades (including parameter-only changes without version changes) and report updated parameters.
                 type: integer
+              migrationDerivedProfile:
+                description: |-
+                  MigrationDerivedProfile is set to "kent" when the migration derived the
+                  kent profile (kent-shaped present set or user-armed kent values); the
+                  install then arms kent.enabled=true. Tag-mode migrations use
+                  MigrationDerivedTag instead — exactly one of the two is ever set.
+                  Cleared when the migration finalizes or rolls back.
+                type: string
               migrationDerivedTag:
                 description: |-
                   MigrationDerivedTag is the umbrella tag mode derived from the full set of

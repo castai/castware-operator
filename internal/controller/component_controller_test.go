@@ -713,6 +713,153 @@ func TestComponentReconciler_ValueOverrides(t *testing.T) {
 	})
 }
 
+func TestComponentReconciler_ValueOverrides_KentMode(t *testing.T) {
+	t.Parallel()
+	log := logrus.New()
+
+	t.Run("when umbrella user values arm kent then overrides nest under kent.* and the chart-upgrader is force-disabled", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "castai-umbrella")
+		testComponent.Spec.Values = &v1.JSON{Raw: []byte(`{"kent":{"enabled":true}}`)}
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
+		r.NoError(err)
+
+		r.NotContains(overrides, "autoscaler")
+		kent, ok := overrides["kent"].(map[string]any)
+		r.True(ok)
+		r.Equal(true, kent["enabled"])
+
+		// The kvisor ref neutralization is nested under kent.castai-kvisor.castai.
+		kvisor := kent["castai-kvisor"].(map[string]any)["castai"].(map[string]any)
+		r.Equal("", kvisor["clusterIdConfigMapKeyRef"].(map[string]any)["name"])
+		r.Equal("", kvisor["clusterIdSecretKeyRef"].(map[string]any)["name"])
+
+		// The chart-upgrader cronjob is hard force-disabled.
+		r.Equal(false, kent["castai-chart-upgrader"].(map[string]any)["enabled"])
+
+		// global.castai.* is profile-independent.
+		castai := overrides["global"].(map[string]any)["castai"].(map[string]any)
+		r.Equal(testCluster.Spec.API.APIURL, castai["apiURL"])
+		r.Equal(testCluster.Spec.Cluster.ClusterID, castai["clusterID"])
+	})
+
+	t.Run("when kent user values tune sub-components then they win over builder defaults", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "castai-umbrella")
+		testComponent.Spec.Values = &v1.JSON{Raw: []byte(`{"kent":{"enabled":true,"castai-live":{"controller":{"replicaCount":2}},"metrics-server":{"enabled":true}}}`)}
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
+		r.NoError(err)
+
+		kent := overrides["kent"].(map[string]any)
+		r.Equal(float64(2), kent["castai-live"].(map[string]any)["controller"].(map[string]any)["replicaCount"])
+		r.Equal(true, kent["metrics-server"].(map[string]any)["enabled"])
+	})
+
+	t.Run("when kent user values explicitly enable the chart-upgrader then the force-disable still wins", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		r := require.New(t)
+
+		testCluster := newTestCluster(t, uuid.NewString(), true)
+		testComponent := newTestComponent(t, testCluster.Name, "castai-umbrella")
+		testComponent.Spec.Values = &v1.JSON{Raw: []byte(`{"kent":{"enabled":true,"castai-chart-upgrader":{"enabled":true}}}`)}
+		testOps := newComponentTestOps(t, testCluster, testComponent)
+
+		overrides, err := testOps.sut.valueOverrides(ctx, log, testComponent, testCluster)
+		r.NoError(err)
+
+		kent := overrides["kent"].(map[string]any)
+		r.Equal(false, kent["castai-chart-upgrader"].(map[string]any)["enabled"],
+			"the operator-managed force-disable must beat the user's explicit enable")
+	})
+}
+
+// TestReconcileKentUmbrellaInstall drives a full Reconcile of a fresh
+// kent-mode umbrella CR through the mutual-exclusivity gate into the helm
+// install, proving the valueOverrides seam composes with the kent builder.
+func TestReconcileKentUmbrellaInstall(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	r := require.New(t)
+
+	testCluster := newTestCluster(t, uuid.NewString(), true)
+	umbrella := newTestComponent(t, testCluster.Name, components.ComponentNameUmbrella)
+	umbrella.Spec.Component = components.ComponentNameUmbrella
+	umbrella.Spec.ReleaseName = components.ComponentNameUmbrella
+	umbrella.Spec.Migrate = false
+	// Fresh install: no current version, not progressing.
+	umbrella.Status.CurrentVersion = ""
+	umbrella.Spec.Values = &v1.JSON{Raw: []byte(`{"kent":{"enabled":true,"castai-kentroller":{"replicaCount":2}}}`)}
+
+	testOps := newComponentTestOpsWithCastAIClient(t, testCluster, umbrella)
+
+	// refuseUmbrellaIfIndividualsPresent resolves the umbrella + all
+	// sub-component release names from Mothership, then probes helm. None of
+	// the individual releases exist, so the gate passes.
+	for _, name := range []string{components.ComponentNameUmbrella, components.ComponentNameAgent, components.ComponentNameSpotHandler, components.ComponentNameClusterController} {
+		testOps.mockCastAI.EXPECT().GetComponentByName(gomock.Any(), name).
+			Return(&castai.Component{Name: name, ReleaseName: name}, nil)
+	}
+	for _, name := range []string{components.ComponentNameAgent, components.ComponentNameSpotHandler, components.ComponentNameClusterController} {
+		testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+			Namespace: umbrella.Namespace, ReleaseName: name,
+		}).Return(nil, driver.ErrReleaseNotFound)
+	}
+
+	// installComponent: the single non-dry-run install runs with the kent
+	// values (the recorded action is PROGRESSING, so no parameter-extraction
+	// GetRelease follows).
+	testOps.mockHelm.EXPECT().GetRelease(helm.GetReleaseOptions{
+		Namespace: umbrella.Namespace, ReleaseName: components.ComponentNameUmbrella,
+	}).Return(nil, driver.ErrReleaseNotFound)
+
+	helmRelease := &release.Release{
+		Name:  components.ComponentNameUmbrella,
+		Info:  &release.Info{Status: release.StatusDeployed},
+		Chart: &chart.Chart{Metadata: &chart.Metadata{Version: "v0.1.1"}},
+	}
+	var capturedOverrides map[string]interface{}
+	testOps.mockHelm.EXPECT().Install(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, options helm.InstallOptions) (*release.Release, error) {
+		r.False(options.DryRun, "a fresh install reconciles with a single non-dry-run install")
+		capturedOverrides = options.ValuesOverrides
+		return helmRelease, nil
+	})
+	testOps.mockCastAI.EXPECT().RecordActionResult(gomock.Any(), testCluster.Spec.Cluster.ClusterID, gomock.Any()).Return(nil).AnyTimes()
+
+	req := reconcile.Request{NamespacedName: client.ObjectKey{Name: umbrella.Name, Namespace: umbrella.Namespace}}
+	_, err := testOps.sut.Reconcile(ctx, req)
+	r.NoError(err)
+
+	// The install received the kent-mode values: kent.* path, user tuning
+	// preserved, chart-upgrader force-disabled, no autoscaler path.
+	r.NotNil(capturedOverrides)
+	r.NotContains(capturedOverrides, "autoscaler")
+	kent, ok := capturedOverrides["kent"].(map[string]interface{})
+	r.True(ok, "kent block must flow into the helm install")
+	r.Equal(true, kent["enabled"])
+	r.Equal(float64(2), kent["castai-kentroller"].(map[string]interface{})["replicaCount"])
+	r.Equal(false, kent["castai-chart-upgrader"].(map[string]interface{})["enabled"])
+
+	var actual castwarev1alpha1.Component
+	r.NoError(testOps.sut.Get(ctx, client.ObjectKey{Name: umbrella.Name, Namespace: umbrella.Namespace}, &actual))
+	progressing := meta.FindStatusCondition(actual.Status.Conditions, typeProgressingComponent)
+	r.NotNil(progressing, "the kent umbrella install must reach the progressing state")
+	r.Equal(metav1.ConditionTrue, progressing.Status)
+	r.Equal(progressingReasonInstalling, progressing.Reason)
+}
+
 // nolint: unparam
 func newTestComponent(t *testing.T, clusterName, name string) *castwarev1alpha1.Component {
 	t.Helper()

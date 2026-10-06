@@ -487,6 +487,48 @@ func TestValidateUmbrellaInstallPermissions(t *testing.T) {
 		r.True(resp.Allowed)
 	})
 
+	t.Run("derived kent profile is folded as kent.enabled=true", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mc := mock_castai.NewMockCastAIClient(ctrl)
+		// Kent is a profile, not a tag: the derived kent branch folds as
+		// kent.enabled=true — the exact key the install's overrides carry.
+		mc.EXPECT().ValidateComponentInstall(ctx, &castai.ValidateComponentInstallRequest{
+			ClusterID:     "cluster-id",
+			ComponentName: components.ComponentNameUmbrella,
+			TargetVersion: "1.2.3",
+			ComponentParams: map[string]any{
+				"kent": map[string]any{"enabled": true},
+			},
+		}).Return(&castai.ValidateComponentInstallResponse{Allowed: true}, nil)
+
+		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", components.UmbrellaProfileKent, nil)
+		r.NoError(err)
+		r.True(resp.Allowed)
+	})
+
+	t.Run("derived kent profile merges under the user kent values without clobbering", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		mc := mock_castai.NewMockCastAIClient(ctrl)
+		mc.EXPECT().ValidateComponentInstall(ctx, &castai.ValidateComponentInstallRequest{
+			ClusterID:     "cluster-id",
+			ComponentName: components.ComponentNameUmbrella,
+			TargetVersion: "1.2.3",
+			ComponentParams: map[string]any{
+				"kent": map[string]any{
+					"enabled":           true,
+					"castai-kentroller": map[string]any{"replicaCount": float64(2)},
+				},
+			},
+		}).Return(&castai.ValidateComponentInstallResponse{Allowed: true}, nil)
+
+		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", components.UmbrellaProfileKent,
+			&apiextensionsv1.JSON{Raw: []byte(`{"kent":{"castai-kentroller":{"replicaCount":2}}}`)})
+		r.NoError(err)
+		r.True(resp.Allowed)
+	})
+
 	t.Run("nil values are sent as no params", func(t *testing.T) {
 		r := require.New(t)
 		ctrl := gomock.NewController(t)
@@ -554,5 +596,190 @@ func TestValidateUmbrellaInstallPermissions(t *testing.T) {
 		resp, err := ValidateUmbrellaInstallPermissions(ctx, mc, "cluster-id", "1.2.3", "", nil)
 		r.EqualError(err, "connection refused")
 		r.Nil(resp)
+	})
+}
+
+func TestKentCoveredCharts(t *testing.T) {
+	t.Parallel()
+	r := require.New(t)
+
+	kent := map[string]bool{}
+	for _, chart := range KentCoveredCharts {
+		r.False(kent[chart], "duplicate chart %q", chart)
+		kent[chart] = true
+	}
+	r.Len(kent, 3, "expected the 3 kent-only non-operator charts")
+
+	// Every entry is a chart only the kent profile renders.
+	for _, chart := range KentCoveredCharts {
+		r.True(components.IsKentOnlyComponent(chart), "%s must be kent-only", chart)
+	}
+
+	// The kent-covered set is disjoint from the tag-covered set and from the
+	// operator components (those are detected via Mothership-resolved release
+	// names instead).
+	covered := map[string]bool{}
+	for _, chart := range UmbrellaCoveredCharts {
+		covered[chart] = true
+	}
+	for _, chart := range KentCoveredCharts {
+		r.False(covered[chart], "%s must not be in both covered sets", chart)
+	}
+	for _, op := range []string{components.ComponentNameAgent, components.ComponentNameSpotHandler, components.ComponentNameClusterController} {
+		r.False(kent[op], "%s must not be in KentCoveredCharts", op)
+	}
+}
+
+func TestInstalledKentStandaloneReleases(t *testing.T) {
+	t.Parallel()
+	ns := "castai-agent"
+
+	t.Run("returns full details for matching releases under arbitrary names", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		hc := mock_helm.NewMockClient(ctrl)
+
+		kentrollerConfig := map[string]any{"replicaCount": 2}
+		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return([]*release.Release{
+			relWithChartDetails("zulu-upgrader", components.ComponentNameChartUpgrader, "0.1.1", nil),
+			relWithChartDetails("alpha-kentroller", components.ComponentNameKentroller, "0.19.0", kentrollerConfig),
+			// Non-matching: a tag-covered chart, an operator chart and an
+			// unknown chart.
+			relWithChart(components.ComponentNameKvisor),
+			relWithChart(components.ComponentNameAgent),
+			relWithChart("some-other-chart"),
+		}, nil)
+
+		releases, err := InstalledKentStandaloneReleases(hc, ns)
+		r.NoError(err)
+		r.Len(releases, 2)
+		// Deterministic: sorted by release name.
+		r.Equal("alpha-kentroller", releases[0].ReleaseName)
+		r.Equal(components.ComponentNameKentroller, releases[0].ChartName)
+		r.Equal("0.19.0", releases[0].ChartVersion)
+		r.Equal(kentrollerConfig, releases[0].Config)
+		r.Equal("zulu-upgrader", releases[1].ReleaseName)
+		r.Equal(components.ComponentNameChartUpgrader, releases[1].ChartName)
+	})
+
+	t.Run("metrics-server matches on chart identity", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		hc := mock_helm.NewMockClient(ctrl)
+
+		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return([]*release.Release{
+			relWithChartDetails("metrics", components.ComponentNameMetricsServer, "3.13.0", nil),
+		}, nil)
+
+		releases, err := InstalledKentStandaloneReleases(hc, ns)
+		r.NoError(err)
+		r.Len(releases, 1)
+		r.Equal(components.ComponentNameMetricsServer, releases[0].ChartName)
+	})
+
+	t.Run("no matching releases returns an empty slice", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		hc := mock_helm.NewMockClient(ctrl)
+
+		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return([]*release.Release{
+			relWithChart(components.ComponentNameEvictor),
+		}, nil)
+
+		releases, err := InstalledKentStandaloneReleases(hc, ns)
+		r.NoError(err)
+		r.Empty(releases)
+	})
+
+	t.Run("listing error is returned so callers block", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		hc := mock_helm.NewMockClient(ctrl)
+
+		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return(nil, errors.New("helm unreachable"))
+
+		releases, err := InstalledKentStandaloneReleases(hc, ns)
+		r.Error(err)
+		r.Nil(releases)
+	})
+}
+
+func TestUmbrellaReleaseKentMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		rel  *release.Release
+		want bool
+	}{
+		{
+			name: "kent enabled in config",
+			rel:  relWithChartDetails("castai", "castai", "0.43.266", map[string]any{"kent": map[string]any{"enabled": true}}),
+			want: true,
+		},
+		{
+			name: "kent disabled in config",
+			rel:  relWithChartDetails("castai", "castai", "0.43.266", map[string]any{"kent": map[string]any{"enabled": false}}),
+			want: false,
+		},
+		{
+			name: "tag-mode config",
+			rel:  relWithChartDetails("castai", "castai", "0.43.266", map[string]any{"tags": map[string]any{"full": true}}),
+			want: false,
+		},
+		{name: "nil config", rel: relWithChartDetails("castai", "castai", "0.43.266", nil), want: false},
+		{name: "nil release", rel: nil, want: false},
+		{
+			name: "malformed kent block",
+			rel:  relWithChartDetails("castai", "castai", "0.43.266", map[string]any{"kent": "yes"}),
+			want: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, UmbrellaReleaseKentMode(tc.rel))
+		})
+	}
+}
+
+func TestInstalledAbsorbableStandaloneReleases(t *testing.T) {
+	t.Parallel()
+	ns := "castai-agent"
+
+	t.Run("single listing matches both covered sets", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		hc := mock_helm.NewMockClient(ctrl)
+
+		// One listing returns tag-covered, kent-covered and non-matching
+		// charts alike: the union matcher must partition by chart identity.
+		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return([]*release.Release{
+			relWithChartDetails("zulu-upgrader", components.ComponentNameChartUpgrader, "0.1.1", nil),
+			relWithChartDetails("alpha-kentroller", components.ComponentNameKentroller, "0.19.0", nil),
+			relWithChartDetails("mid-kvisor", components.ComponentNameKvisor, "1.2.3", nil),
+			relWithChart(components.ComponentNameAgent),
+			relWithChart("some-other-chart"),
+		}, nil)
+
+		releases, err := InstalledAbsorbableStandaloneReleases(hc, ns)
+		r.NoError(err)
+		r.Len(releases, 3, "tag-covered and kent-covered releases both matched")
+		// Deterministic: sorted by release name across both sets.
+		r.Equal("alpha-kentroller", releases[0].ReleaseName)
+		r.Equal("mid-kvisor", releases[1].ReleaseName)
+		r.Equal("zulu-upgrader", releases[2].ReleaseName)
+	})
+
+	t.Run("listing error is returned so callers block", func(t *testing.T) {
+		r := require.New(t)
+		ctrl := gomock.NewController(t)
+		hc := mock_helm.NewMockClient(ctrl)
+
+		hc.EXPECT().ListReleases(helm.ListReleasesOptions{Namespace: ns}).Return(nil, errors.New("helm unreachable"))
+
+		releases, err := InstalledAbsorbableStandaloneReleases(hc, ns)
+		r.Error(err)
+		r.Nil(releases)
 	})
 }

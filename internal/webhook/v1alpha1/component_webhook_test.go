@@ -360,14 +360,34 @@ var _ = Describe("Component Webhook", func() {
 			Expect(err).Error().To(MatchError("component 'castai-umbrella' requires extended permissions, please run `helm upgrade castware-operator -n castai-agent --set extendedPermissions=\"true\" --reuse-values castai-helm/castware-operator`"))
 		})
 
-		It("Should deny umbrella creation when kent is enabled — not supported yet", func() {
-			By("kent is rejected regardless of the readonly tag")
+		It("Should deny umbrella creation mixing the kent profile with tags", func() {
+			By("kent.enabled and tags.readonly are mutually exclusive")
 			obj.Spec.Component = components.ComponentNameUmbrella
 			obj.Spec.Cluster = clusterName
 			obj.SetNamespace("default")
 			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"tags":{"readonly":true},"kent":{"enabled":true}}`)}
 			_, err := validator.ValidateCreate(ctx, obj)
-			Expect(err).Error().To(MatchError("component 'castai-umbrella' does not support the kent profile yet (kent.enabled)"))
+			Expect(err).Error().To(MatchError("component 'castai-umbrella' cannot combine the kent profile with autoscaler tags (readonly): kent.enabled is mutually exclusive with tags.* — remove the tags block or disable kent"))
+		})
+
+		It("Should deny umbrella creation mixing the kent profile with a non-readonly tag", func() {
+			By("any tags.* mode mixed with kent.enabled is rejected")
+			obj.Spec.Component = components.ComponentNameUmbrella
+			obj.Spec.Cluster = clusterName
+			obj.SetNamespace("default")
+			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"kent":{"enabled":true},"tags":{"full":true}}`)}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).Error().To(MatchError("component 'castai-umbrella' cannot combine the kent profile with autoscaler tags (full): kent.enabled is mutually exclusive with tags.* — remove the tags block or disable kent"))
+		})
+
+		It("Should deny umbrella creation with kent enabled when extended permissions are missing", func() {
+			By("the kent profile always requires extended permissions")
+			obj.Spec.Component = components.ComponentNameUmbrella
+			obj.Spec.Cluster = clusterName
+			obj.SetNamespace("default")
+			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"kent":{"enabled":true}}`)}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).Error().To(MatchError("component 'castai-umbrella' requires extended permissions, please run `helm upgrade castware-operator -n castai-agent --set extendedPermissions=\"true\" --reuse-values castai-helm/castware-operator`"))
 		})
 
 		It("Should admit umbrella creation with kent explicitly disabled", func() {
@@ -567,6 +587,10 @@ var _ = Describe("Component Webhook", func() {
 			}
 			Expect(k8sClient.Create(ctx, extendedRoleBinding)).To(Succeed())
 			Expect(k8sClient.Create(ctx, extendedClusterRoleBinding)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, extendedRoleBinding)
+				_ = k8sClient.Delete(ctx, extendedClusterRoleBinding)
+			})
 
 			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
 				RepoURL: "",
@@ -605,6 +629,125 @@ var _ = Describe("Component Webhook", func() {
 			extendedClusterRoleBinding := &rbacv1.ClusterRoleBinding{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "umbrella-extended-permissions-clusterrolebinding",
+					Labels: map[string]string{
+						"castware.cast.ai/extended-permissions": "true",
+					},
+				},
+				Subjects: []rbacv1.Subject{{
+					Kind:      "ServiceAccount",
+					Name:      "test-service-account",
+					Namespace: obj.Namespace,
+				}},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: "rbac.authorization.k8s.io",
+					Kind:     "ClusterRole",
+					Name:     "test-cluster-role",
+				},
+			}
+			Expect(k8sClient.Create(ctx, extendedRoleBinding)).To(Succeed())
+			Expect(k8sClient.Create(ctx, extendedClusterRoleBinding)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, extendedRoleBinding)
+				_ = k8sClient.Delete(ctx, extendedClusterRoleBinding)
+			})
+
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: "",
+			})
+			Expect(validator.ValidateCreate(ctx, obj)).To(BeNil())
+		})
+
+		It("Should admit umbrella creation with kent enabled when extended permissions are present", func() {
+			By("the kent profile is admitted with extended permissions")
+			obj.Spec.Component = components.ComponentNameUmbrella
+			obj.Spec.Cluster = clusterName
+			obj.SetNamespace("default")
+			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"kent":{"enabled":true}}`)}
+
+			extendedRoleBinding := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kent-extended-permissions-rolebinding",
+					Namespace: obj.Namespace,
+					Labels: map[string]string{
+						"castware.cast.ai/extended-permissions": "true",
+					},
+				},
+				Subjects: []rbacv1.Subject{{
+					Kind:      "ServiceAccount",
+					Name:      "test-service-account",
+					Namespace: obj.Namespace,
+				}},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: "rbac.authorization.k8s.io",
+					Kind:     "Role",
+					Name:     "test-role",
+				},
+			}
+			extendedClusterRoleBinding := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "kent-extended-permissions-clusterrolebinding",
+					Labels: map[string]string{
+						"castware.cast.ai/extended-permissions": "true",
+					},
+				},
+				Subjects: []rbacv1.Subject{{
+					Kind:      "ServiceAccount",
+					Name:      "test-service-account",
+					Namespace: obj.Namespace,
+				}},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: "rbac.authorization.k8s.io",
+					Kind:     "ClusterRole",
+					Name:     "test-cluster-role",
+				},
+			}
+			Expect(k8sClient.Create(ctx, extendedRoleBinding)).To(Succeed())
+			Expect(k8sClient.Create(ctx, extendedClusterRoleBinding)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, extendedRoleBinding)
+				_ = k8sClient.Delete(ctx, extendedClusterRoleBinding)
+			})
+
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: "",
+			})
+			Expect(validator.ValidateCreate(ctx, obj)).To(BeNil())
+		})
+
+		It("Should admit arming a kent migration when extended permissions are present", func() {
+			By("an umbrella CR with spec.migrate and kent values is admitted with extended permissions")
+			obj.Spec.Component = components.ComponentNameUmbrella
+			obj.Spec.Cluster = clusterName
+			obj.SetNamespace("default")
+			obj.Spec.Migrate = true
+			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"kent":{"enabled":true}}`)}
+
+			extendedRoleBinding := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kent-migrate-extended-permissions-rolebinding",
+					Namespace: obj.Namespace,
+					Labels: map[string]string{
+						"castware.cast.ai/extended-permissions": "true",
+					},
+				},
+				Subjects: []rbacv1.Subject{{
+					Kind:      "ServiceAccount",
+					Name:      "test-service-account",
+					Namespace: obj.Namespace,
+				}},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: "rbac.authorization.k8s.io",
+					Kind:     "Role",
+					Name:     "test-role",
+				},
+			}
+			extendedClusterRoleBinding := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "kent-migrate-extended-permissions-clusterrolebinding",
 					Labels: map[string]string{
 						"castware.cast.ai/extended-permissions": "true",
 					},
@@ -678,15 +821,94 @@ var _ = Describe("Component Webhook", func() {
 			Expect(err).Error().To(MatchError("components can be migrated only during resource creation"))
 		})
 
-		It("Should deny update to the kent profile — not supported yet", func() {
-			By("arming a kent migration or install via update is rejected")
+		It("Should deny update to the kent profile when extended permissions are missing", func() {
+			By("arming a kent migration or install via update requires extended permissions")
 			oldObj.Spec.Component = components.ComponentNameUmbrella
 			oldObj.Spec.Cluster = clusterName
+			oldObj.SetNamespace("default")
 			obj.Spec.Component = components.ComponentNameUmbrella
 			obj.Spec.Cluster = clusterName
+			obj.SetNamespace("default")
 			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"kent":{"enabled":true}}`)}
 			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
-			Expect(err).Error().To(MatchError("component 'castai-umbrella' does not support the kent profile yet (kent.enabled)"))
+			Expect(err).Error().To(MatchError("component 'castai-umbrella' requires extended permissions, please run `helm upgrade castware-operator -n castai-agent --set extendedPermissions=\"true\" --reuse-values castai-helm/castware-operator`"))
+		})
+
+		It("Should deny update mixing the kent profile with tags", func() {
+			By("kent.enabled and tags.full are mutually exclusive on update")
+			oldObj.Spec.Component = components.ComponentNameUmbrella
+			oldObj.Spec.Cluster = clusterName
+			oldObj.SetNamespace("default")
+			obj.Spec.Component = components.ComponentNameUmbrella
+			obj.Spec.Cluster = clusterName
+			obj.SetNamespace("default")
+			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"kent":{"enabled":true},"tags":{"full":true}}`)}
+			_, err := validator.ValidateUpdate(ctx, oldObj, obj)
+			Expect(err).Error().To(MatchError("component 'castai-umbrella' cannot combine the kent profile with autoscaler tags (full): kent.enabled is mutually exclusive with tags.* — remove the tags block or disable kent"))
+		})
+
+		It("Should admit update to the kent profile when extended permissions are present", func() {
+			By("kent values are admitted on update with extended permissions")
+			oldObj.Spec.Component = components.ComponentNameUmbrella
+			oldObj.Spec.Cluster = clusterName
+			oldObj.SetNamespace("default")
+			oldObj.Spec.Version = "0.0.1"
+			obj.Spec.Component = components.ComponentNameUmbrella
+			obj.Spec.Cluster = clusterName
+			obj.SetNamespace("default")
+			obj.Spec.Version = "0.0.1"
+			obj.Spec.Values = &v1.JSON{Raw: []byte(`{"kent":{"enabled":true}}`)}
+
+			extendedRoleBinding := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kent-update-extended-permissions-rolebinding",
+					Namespace: obj.Namespace,
+					Labels: map[string]string{
+						"castware.cast.ai/extended-permissions": "true",
+					},
+				},
+				Subjects: []rbacv1.Subject{{
+					Kind:      "ServiceAccount",
+					Name:      "test-service-account",
+					Namespace: obj.Namespace,
+				}},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: "rbac.authorization.k8s.io",
+					Kind:     "Role",
+					Name:     "test-role",
+				},
+			}
+			extendedClusterRoleBinding := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "kent-update-extended-permissions-clusterrolebinding",
+					Labels: map[string]string{
+						"castware.cast.ai/extended-permissions": "true",
+					},
+				},
+				Subjects: []rbacv1.Subject{{
+					Kind:      "ServiceAccount",
+					Name:      "test-service-account",
+					Namespace: obj.Namespace,
+				}},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: "rbac.authorization.k8s.io",
+					Kind:     "ClusterRole",
+					Name:     "test-cluster-role",
+				},
+			}
+			Expect(k8sClient.Create(ctx, extendedRoleBinding)).To(Succeed())
+			Expect(k8sClient.Create(ctx, extendedClusterRoleBinding)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, extendedRoleBinding)
+				_ = k8sClient.Delete(ctx, extendedClusterRoleBinding)
+			})
+
+			chartLoader.EXPECT().Load(gomock.Any(), &helm.ChartSource{
+				RepoURL: "",
+				Name:    "test-helm-chart",
+				Version: "0.0.1",
+			})
+			Expect(validator.ValidateUpdate(ctx, oldObj, obj)).To(BeNil())
 		})
 
 		It("Should admit update", func() {

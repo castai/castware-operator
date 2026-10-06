@@ -155,6 +155,14 @@ type ComponentStatus struct {
 	// +optional
 	MigrationDerivedTag string `json:"migrationDerivedTag,omitempty"`
 
+	// MigrationDerivedProfile is set to "kent" when the migration derived the
+	// kent profile (kent-shaped present set or user-armed kent values); the
+	// install then arms kent.enabled=true. Tag-mode migrations use
+	// MigrationDerivedTag instead — exactly one of the two is ever set.
+	// Cleared when the migration finalizes or rolls back.
+	// +optional
+	MigrationDerivedProfile string `json:"migrationDerivedProfile,omitempty"`
+
 	// AbsorbedReleases is the durable snapshot of the umbrella-covered
 	// standalone releases the migration uninstalled (absorbed) during the
 	// UninstallIndividuals phase. Written before the uninstalls so the data

@@ -198,18 +198,18 @@ func extractUmbrellaParams(ctx context.Context, log logrus.FieldLogger, helmRele
 	// Per-sub-component inventory from the release's dependency tree.
 	params["inventory"] = umbrellaInventory(helmRelease.Chart, coalesced, live)
 
-	// Flat flags for existing consumers, read from the coalesced (nested)
-	// sub-chart values.
-	if v, ok := lookupBool(coalesced, "autoscaler.castai-live.enabled"); ok && v {
+	// Flat flags for existing consumers, read from the coalesced sub-chart
+	// values under the active profile's path (see lookupBoolProfile).
+	if v, ok := lookupBoolProfile(coalesced, "castai-live.enabled"); ok && v {
 		params["live"] = v
 	}
-	if v, ok := lookupBool(coalesced, "autoscaler.castai-spot-handler.phase2Permissions"); ok {
+	if v, ok := lookupBoolProfile(coalesced, "castai-spot-handler.phase2Permissions"); ok {
 		params["phase2Permissions"] = v
 	}
-	if v, ok := lookupBool(coalesced, "autoscaler.castai-cluster-controller.autoscaling.enabled"); ok {
+	if v, ok := lookupBoolProfile(coalesced, "castai-cluster-controller.autoscaling.enabled"); ok {
 		params["autoscaling"] = map[string]interface{}{"enabled": v}
 	}
-	if v, ok := lookupBool(coalesced, "autoscaler.castai-cluster-controller.workloadAutoscaling.enabled"); ok {
+	if v, ok := lookupBoolProfile(coalesced, "castai-cluster-controller.workloadAutoscaling.enabled"); ok {
 		params["workloadAutoscaling"] = map[string]interface{}{"enabled": v}
 	}
 	// Same derivation the admission webhook uses, so the reported flag cannot
@@ -217,6 +217,22 @@ func extractUmbrellaParams(ctx context.Context, log logrus.FieldLogger, helmRele
 	params["extendedPermissions"] = components.RequiresExtendedPermissionsForValues(components.ComponentNameUmbrella, coalesced)
 
 	return params
+}
+
+// lookupBoolProfile resolves a boolean value under the active profile's
+// path: kent.* for kent releases (the autoscaler wrapper's defaults still
+// coalesce into the release values, so they must not shadow the kent path),
+// autoscaler.* otherwise. suffix is the dotted path below the profile parent.
+func lookupBoolProfile(values map[string]interface{}, suffix string) (bool, bool) {
+	if components.KentEnabled(values) {
+		if v, ok := lookupBool(values, "kent."+suffix); ok {
+			return v, true
+		}
+	}
+	if v, ok := lookupBool(values, "autoscaler."+suffix); ok {
+		return v, true
+	}
+	return false, false
 }
 
 // Active tag modes, sanitized to bools only: Mothership flattens tags
