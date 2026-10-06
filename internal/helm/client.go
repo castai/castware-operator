@@ -159,6 +159,12 @@ func (c *client) Install(ctx context.Context, opts InstallOptions) (*release.Rel
 	return res, err
 }
 
+// uninstallRun is the seam used to invoke action.Uninstall. Tests override it
+// to capture the configured *action.Uninstall without needing a live cluster.
+var uninstallRun = func(u *action.Uninstall, name string) (*release.UninstallReleaseResponse, error) {
+	return u.Run(name)
+}
+
 func (c *client) Uninstall(opts UninstallOptions) (*release.UninstallReleaseResponse, error) {
 	cfg, err := c.configurationGetter.Get(opts.Namespace)
 	if err != nil {
@@ -169,7 +175,7 @@ func (c *client) Uninstall(opts UninstallOptions) (*release.UninstallReleaseResp
 	uninstall.IgnoreNotFound = opts.IgnoreNotFound
 	uninstall.Wait = opts.Wait
 	uninstall.Timeout = 10 * time.Minute
-	res, err := uninstall.Run(opts.ReleaseName)
+	res, err := uninstallRun(uninstall, opts.ReleaseName)
 	if err != nil {
 		return nil, fmt.Errorf("chart uninstall failed, name=%s, namespace=%s: %w", opts.ReleaseName, opts.Namespace, err)
 	}
