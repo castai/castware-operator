@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
@@ -163,4 +164,57 @@ func (d *errorDriver) Name() string { return "error" }
 
 func (d *errorDriver) List(_ func(*release.Release) bool) ([]*release.Release, error) {
 	return nil, d.listErr
+}
+
+// Guards the regression fixed in 68b6d09: a wait-uninstall with Timeout=0
+// fails instantly with "context deadline exceeded". Uses the uninstallRun
+// seam to inspect the configured *action.Uninstall without a live cluster.
+func TestClient_Uninstall_SetsNonZeroTimeoutWhenWait(t *testing.T) {
+	orig := uninstallRun
+	t.Cleanup(func() { uninstallRun = orig })
+
+	var captured *action.Uninstall
+	uninstallRun = func(u *action.Uninstall, name string) (*release.UninstallReleaseResponse, error) {
+		captured = u
+		return &release.UninstallReleaseResponse{}, nil
+	}
+
+	c := newTestClient(t)
+	_, err := c.Uninstall(UninstallOptions{
+		Namespace:   "castai-agent",
+		ReleaseName: "castai-agent",
+		Wait:        true,
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, captured, "uninstallRun should have been invoked")
+	require.True(t, captured.Wait, "Uninstall must propagate Wait=true to action.Uninstall")
+	require.Greater(t, captured.Timeout, time.Duration(0),
+		"uninstall.Timeout must be non-zero (zero = already-expired WaitForDelete context)")
+}
+
+// Asserts uninstall's timeout mirrors Install's, so a wait-uninstall has at
+// least as much patience as the install that provisioned the resources.
+func TestClient_Uninstall_TimeoutMatchesInstall(t *testing.T) {
+	const expected = 10 * time.Minute
+
+	orig := uninstallRun
+	t.Cleanup(func() { uninstallRun = orig })
+
+	var captured *action.Uninstall
+	uninstallRun = func(u *action.Uninstall, name string) (*release.UninstallReleaseResponse, error) {
+		captured = u
+		return &release.UninstallReleaseResponse{}, nil
+	}
+
+	c := newTestClient(t)
+	_, err := c.Uninstall(UninstallOptions{
+		Namespace:   "castai-agent",
+		ReleaseName: "castai-agent",
+		Wait:        true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, captured)
+	require.Equal(t, expected, captured.Timeout,
+		"uninstall timeout should mirror Install's %s so wait-uninstalls have at least as much patience as the install", expected)
 }
