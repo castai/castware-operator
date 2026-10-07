@@ -264,17 +264,17 @@ var _ = Describe("Manager", Ordered, func() {
 		// namespace deletion below from hanging when the operator teardown
 		// wins the race (the finalizer would never resolve). The operator's
 		// pre-delete cleanup job may also delete the components CRD outright —
-		// a missing CRD equally means no lingering CRs, so treat it as success
-		// instead of a failed attempt.
+		// including between a CRD existence check and the list call, so a
+		// "no resource type" list error equally means no lingering CRs instead
+		// of a failed attempt.
 		Eventually(func(g Gomega) {
-			crdStillThere, err := crdExists("components.castware.cast.ai")
-			g.Expect(err).NotTo(HaveOccurred(), "Failed to check components CRD")
-			if !crdStillThere {
-				return
-			}
 			cmd = exec.Command("kubectl", "get", "components", "-n", namespace, "-o", "name")
 			output, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred(), "Failed to list components")
+			if err != nil {
+				g.Expect(output).To(ContainSubstring(`the server doesn't have a resource type`),
+					fmt.Sprintf("unexpected error listing component CRs: %v", err))
+				return
+			}
 			g.Expect(strings.TrimSpace(output)).To(BeEmpty(), "component CRs should be finalized")
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
@@ -2686,6 +2686,8 @@ var _ = Describe("Manager", Ordered, func() {
 			migrationReset()
 			installBareOperator()
 			waitForOnboardedCluster()
+			waitOperatorReported()
+
 			umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -2870,6 +2872,8 @@ var _ = Describe("Manager", Ordered, func() {
 			migrationReset()
 			installBareOperator()
 			waitForOnboardedCluster()
+			waitOperatorReported()
+
 			umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
 			Expect(err).NotTo(HaveOccurred())
 
