@@ -232,20 +232,25 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 		}
 
+		// Delete CRs without waiting: the cleanup-helm finalizer resolves while
+		// the operator is still up, and the bounded wait lives in the "waiting
+		// for component CRs to be finalized" poll below. A blocking delete can
+		// hang until the node timeout when the operator is mid-uninstall (helm
+		// uninstall waits for resource removal) or already gone.
 		By("deleting agent CR")
 		if agentInstalled {
-			cmd = exec.Command("kubectl", "delete", "component", "castai-agent", "-n", namespace)
+			cmd = exec.Command("kubectl", "delete", "component", "castai-agent", "-n", namespace, "--wait=false")
 			_, _ = utils.Run(cmd)
 		}
 
 		By("deleting spot handler CR")
 		if spotHandlerInstalled {
-			cmd = exec.Command("kubectl", "delete", "component", "spot-handler", "-n", namespace)
+			cmd = exec.Command("kubectl", "delete", "component", "spot-handler", "-n", namespace, "--wait=false")
 			_, _ = utils.Run(cmd)
 		}
 		By("deleting cluster controller CR")
 		if spotHandlerInstalled {
-			cmd = exec.Command("kubectl", "delete", "component", "cluster-controller", "-n", namespace)
+			cmd = exec.Command("kubectl", "delete", "component", "cluster-controller", "-n", namespace, "--wait=false")
 			_, _ = utils.Run(cmd)
 		}
 
@@ -2320,6 +2325,17 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "Failed to list component CRs")
 			Expect(names).To(Equal([]string{components.ComponentNameAgent}),
 				"the hybrid config must not adopt the umbrella, got %v", names)
+
+			By("nudging the agent CR to reconcile against the hand-installed umbrella")
+			// The umbrella-vs-individual conflict gate only runs on a reconcile of
+			// the agent CR, and steady-state reconciles requeue every 15 minutes —
+			// well beyond the poll below. Annotating the CR forces an immediate
+			// reconcile so the gate observes the umbrella release deterministically
+			// instead of racing the requeue.
+			nudgeCmd := exec.Command("kubectl", "annotate", "component", components.ComponentNameAgent,
+				"-n", namespace, "castware.cast.ai/e2e-nudge="+time.Now().Format(time.RFC3339), "--overwrite")
+			_, err = utils.Run(nudgeCmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to annotate agent CR")
 
 			By("verifying the agent CR is forced read-only with an UmbrellaConflict condition")
 			Eventually(func(g Gomega) {
