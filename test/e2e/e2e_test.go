@@ -2574,10 +2574,18 @@ var _ = Describe("Manager", Ordered, func() {
 		}
 
 		// installBareOperator installs the operator without default components
-		// and with base permissions (no extendedPermissions).
+		// and with base permissions (no extendedPermissions). Each spec onboards
+		// its own Mothership cluster (unique provider name): records are keyed by
+		// provider name and persist (DeleteCluster only archives), so sharing the
+		// fixed castware-operator-e2e name lets an earlier spec-or-run's reported
+		// umbrella install make this spec's permission gate refuse the migration
+		// with "already installed" before any phase is stamped.
 		installBareOperator := func() {
+			clusterName := fmt.Sprintf("castware-operator-e2e-%d", time.Now().UnixNano())
+			By(fmt.Sprintf("onboarding a fresh Mothership cluster %q for this spec", clusterName))
 			installOperatorWithRetry(func() error {
-				return helmHelper.InstallOperator(imageParts[0], imageParts[1], apiKey, apiURL, operatorChartPath, "")
+				return helmHelper.InstallOperator(imageParts[0], imageParts[1], apiKey, apiURL, operatorChartPath, "",
+					"--set", "webhook.env.GKE_CLUSTER_NAME="+clusterName)
 			})
 		}
 
