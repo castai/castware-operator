@@ -612,11 +612,10 @@ var _ = Describe("Manager", Ordered, func() {
 				WithArguments(components.ComponentNameAgent, "Available").
 				Should(Succeed())
 
-			componentList, err := apiHelper.GetClusterComponents(organizationID, clusterID)
-			Expect(err).ToNot(HaveOccurred())
-			agentComponent, ok := FindComponentByName(componentList, components.ComponentNameAgent)
-			Expect(ok).To(BeTrue(), "Failed to find castai-agent component")
-			Expect(agentComponent.UsedVersion).To(Equal(downgradeVersion))
+			By("verifying the API reports the downgraded version")
+			Eventually(apiHelper.VerifyComponentUsedVersion, 5*time.Minute, 5*time.Second).
+				WithArguments(organizationID, clusterID, components.ComponentNameAgent, downgradeVersion).
+				Should(Succeed())
 		})
 
 		It("should upgrade castai-agent", func() {
@@ -661,7 +660,11 @@ var _ = Describe("Manager", Ordered, func() {
 			agentComponent, ok := FindComponentByName(componentList, componentName)
 			Expect(ok).To(BeTrue(), "Failed to find castai-agent component")
 			Expect(agentComponent.LatestVersion).ToNot(BeEmpty(), "Failed to get latest version of castai-agent")
-			Expect(agentComponent.UsedVersion).To(Equal(versionBeforeDowngrade))
+
+			By("verifying the API reports the upgraded version")
+			Eventually(apiHelper.VerifyComponentUsedVersion, 5*time.Minute, 5*time.Second).
+				WithArguments(organizationID, clusterID, componentName, versionBeforeDowngrade).
+				Should(Succeed())
 		})
 
 		It("should install spot-handler", func() {
@@ -743,11 +746,10 @@ var _ = Describe("Manager", Ordered, func() {
 				WithArguments(components.ComponentNameSpotHandler, "Available").
 				Should(Succeed())
 
-			componentList, err := apiHelper.GetClusterComponents(organizationID, clusterID)
-			Expect(err).ToNot(HaveOccurred())
-			spotHandlerComponent, ok := FindComponentByName(componentList, components.ComponentNameSpotHandler)
-			Expect(ok).To(BeTrue(), "Failed to find spot-handler component")
-			Expect(spotHandlerComponent.UsedVersion).To(Equal(downgradeVersion))
+			By("verifying the API reports the downgraded version")
+			Eventually(apiHelper.VerifyComponentUsedVersion, 5*time.Minute, 5*time.Second).
+				WithArguments(organizationID, clusterID, components.ComponentNameSpotHandler, downgradeVersion).
+				Should(Succeed())
 		})
 
 		It("should upgrade spot-handler", func() {
@@ -796,7 +798,11 @@ var _ = Describe("Manager", Ordered, func() {
 			spotHandlerComponent, ok := FindComponentByName(componentList, components.ComponentNameSpotHandler)
 			Expect(ok).To(BeTrue(), "Failed to find spot-handler component")
 			Expect(spotHandlerComponent.LatestVersion).ToNot(BeEmpty(), "Failed to get latest version of spot-handler")
-			Expect(spotHandlerComponent.UsedVersion).To(Equal(versionBeforeDowngrade))
+
+			By("verifying the API reports the upgraded version")
+			Eventually(apiHelper.VerifyComponentUsedVersion, 5*time.Minute, 5*time.Second).
+				WithArguments(organizationID, clusterID, components.ComponentNameSpotHandler, versionBeforeDowngrade).
+				Should(Succeed())
 		})
 
 		It("should onboard phase2", func() {
