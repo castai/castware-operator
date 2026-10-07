@@ -254,19 +254,23 @@ var _ = Describe("Manager", Ordered, func() {
 			_, _ = utils.Run(cmd)
 		}
 
-		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
+		// Umbrella CRs left behind by a failed umbrella spec are not covered by
+		// the gating flags above; without this they linger into the finalization
+		// poll and keep it non-empty until it times out.
+		By("deleting any remaining component CRs")
+		cmd = exec.Command("kubectl", "delete", "components", "--all", "-n", namespace,
+			"--wait=false", "--ignore-not-found")
 		_, _ = utils.Run(cmd)
 
 		By("waiting for component CRs to be finalized")
-		// The CR deletions above are asynchronous: their cleanup-helm finalizers
-		// are resolved by the still-running operator. Waiting here prevents the
-		// namespace deletion below from hanging when the operator teardown
-		// wins the race (the finalizer would never resolve). The operator's
-		// pre-delete cleanup job may also delete the components CRD outright —
-		// including between a CRD existence check and the list call, so a
-		// "no resource type" list error equally means no lingering CRs instead
-		// of a failed attempt.
+		// The CR deletions above are asynchronous: their cleanup-helm (and, for
+		// a mid-flight umbrella CR, migration-abort) finalizers must resolve
+		// while the operator is still running, so this poll has to happen BEFORE
+		// make undeploy. Waiting here also prevents the namespace deletion below
+		// from hanging when the operator teardown wins the race (the finalizer
+		// would never resolve). The operator's pre-delete cleanup job may delete
+		// the components CRD outright — a "no resource type" list error equally
+		// means no lingering CRs instead of a failed attempt.
 		Eventually(func(g Gomega) {
 			cmd = exec.Command("kubectl", "get", "components", "-n", namespace, "-o", "name")
 			output, err := utils.Run(cmd)
@@ -276,7 +280,11 @@ var _ = Describe("Manager", Ordered, func() {
 				return
 			}
 			g.Expect(strings.TrimSpace(output)).To(BeEmpty(), "component CRs should be finalized")
-		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("undeploying the controller-manager")
+		cmd = exec.Command("make", "undeploy")
+		_, _ = utils.Run(cmd)
 
 		By("uninstalling helm release")
 		_ = helmHelper.UninstallOperator()
@@ -324,11 +332,17 @@ var _ = Describe("Manager", Ordered, func() {
 			// In a focused run the first Manager spec may be skipped, leaving
 			// controllerPodName unset; fall back to the label selector which
 			// covers any operator pod (including the Umbrella specs).
+			// controllerPodName can be stale: umbrella specs reinstall the
+			// operator, replacing the pod after the name was captured. Fall back
+			// to the label selector whenever the named fetch fails, so a failure
+			// dump never loses the controller logs.
 			if controllerPodName != "" {
 				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
 				controllerLogs, err := utils.Run(cmd)
 				if err == nil {
 					_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
+				} else if operatorLogs, selErr := getOperatorLogs(namespace); selErr == nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs (by label selector):\n %s", operatorLogs)
 				} else {
 					_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
 				}
@@ -2658,13 +2672,17 @@ var _ = Describe("Manager", Ordered, func() {
 
 		waitMigrationRolledBack := func() {
 			By("waiting for the migration to fail and roll back")
+			// The condition check runs first because its failure message embeds
+			// the CR's full condition list: when the migration stalls before the
+			// first phase is stamped, the dump shows which state (blocked,
+			// degraded, ...) wedged instead of just an empty migrationPhase.
 			Eventually(func(g Gomega) {
+				err := componentHelper.VerifyStatusConditionReason(
+					components.ComponentNameUmbrella, "Migrating", "MigrationFailed")
+				g.Expect(err).NotTo(HaveOccurred())
 				phase, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.status.migrationPhase}")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(phase).To(Equal("RolledBack"), "migrationPhase should be RolledBack")
-				err = componentHelper.VerifyStatusConditionReason(
-					components.ComponentNameUmbrella, "Migrating", "MigrationFailed")
-				g.Expect(err).NotTo(HaveOccurred())
 			}, 10*time.Minute, 5*time.Second).Should(Succeed())
 		}
 
