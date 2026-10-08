@@ -232,46 +232,59 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 		}
 
+		// Delete CRs without waiting: the cleanup-helm finalizer resolves while
+		// the operator is still up, and the bounded wait lives in the "waiting
+		// for component CRs to be finalized" poll below. A blocking delete can
+		// hang until the node timeout when the operator is mid-uninstall (helm
+		// uninstall waits for resource removal) or already gone.
 		By("deleting agent CR")
 		if agentInstalled {
-			cmd = exec.Command("kubectl", "delete", "component", "castai-agent", "-n", namespace)
+			cmd = exec.Command("kubectl", "delete", "component", "castai-agent", "-n", namespace, "--wait=false")
 			_, _ = utils.Run(cmd)
 		}
 
 		By("deleting spot handler CR")
 		if spotHandlerInstalled {
-			cmd = exec.Command("kubectl", "delete", "component", "spot-handler", "-n", namespace)
+			cmd = exec.Command("kubectl", "delete", "component", "spot-handler", "-n", namespace, "--wait=false")
 			_, _ = utils.Run(cmd)
 		}
 		By("deleting cluster controller CR")
 		if spotHandlerInstalled {
-			cmd = exec.Command("kubectl", "delete", "component", "cluster-controller", "-n", namespace)
+			cmd = exec.Command("kubectl", "delete", "component", "cluster-controller", "-n", namespace, "--wait=false")
 			_, _ = utils.Run(cmd)
 		}
+
+		// Umbrella CRs left behind by a failed umbrella spec are not covered by
+		// the gating flags above; without this they linger into the finalization
+		// poll and keep it non-empty until it times out.
+		By("deleting any remaining component CRs")
+		cmd = exec.Command("kubectl", "delete", "components", "--all", "-n", namespace,
+			"--wait=false", "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("waiting for component CRs to be finalized")
+		// The CR deletions above are asynchronous: their cleanup-helm (and, for
+		// a mid-flight umbrella CR, migration-abort) finalizers must resolve
+		// while the operator is still running, so this poll has to happen BEFORE
+		// make undeploy. Waiting here also prevents the namespace deletion below
+		// from hanging when the operator teardown wins the race (the finalizer
+		// would never resolve). The operator's pre-delete cleanup job may delete
+		// the components CRD outright — a "no resource type" list error equally
+		// means no lingering CRs instead of a failed attempt.
+		Eventually(func(g Gomega) {
+			cmd = exec.Command("kubectl", "get", "components", "-n", namespace, "-o", "name")
+			output, err := utils.Run(cmd)
+			if err != nil {
+				g.Expect(output).To(ContainSubstring(`the server doesn't have a resource type`),
+					fmt.Sprintf("unexpected error listing component CRs: %v", err))
+				return
+			}
+			g.Expect(strings.TrimSpace(output)).To(BeEmpty(), "component CRs should be finalized")
+		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
 		_, _ = utils.Run(cmd)
-
-		By("waiting for component CRs to be finalized")
-		// The CR deletions above are asynchronous: their cleanup-helm finalizers
-		// are resolved by the still-running operator. Waiting here prevents the
-		// namespace deletion below from hanging when the operator teardown
-		// wins the race (the finalizer would never resolve). The operator's
-		// pre-delete cleanup job may also delete the components CRD outright —
-		// a missing CRD equally means no lingering CRs, so treat it as success
-		// instead of a failed attempt.
-		Eventually(func(g Gomega) {
-			crdStillThere, err := crdExists("components.castware.cast.ai")
-			g.Expect(err).NotTo(HaveOccurred(), "Failed to check components CRD")
-			if !crdStillThere {
-				return
-			}
-			cmd = exec.Command("kubectl", "get", "components", "-n", namespace, "-o", "name")
-			output, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred(), "Failed to list components")
-			g.Expect(strings.TrimSpace(output)).To(BeEmpty(), "component CRs should be finalized")
-		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("uninstalling helm release")
 		_ = helmHelper.UninstallOperator()
@@ -319,11 +332,17 @@ var _ = Describe("Manager", Ordered, func() {
 			// In a focused run the first Manager spec may be skipped, leaving
 			// controllerPodName unset; fall back to the label selector which
 			// covers any operator pod (including the Umbrella specs).
+			// controllerPodName can be stale: umbrella specs reinstall the
+			// operator, replacing the pod after the name was captured. Fall back
+			// to the label selector whenever the named fetch fails, so a failure
+			// dump never loses the controller logs.
 			if controllerPodName != "" {
 				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
 				controllerLogs, err := utils.Run(cmd)
 				if err == nil {
 					_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
+				} else if operatorLogs, selErr := getOperatorLogs(namespace); selErr == nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs (by label selector):\n %s", operatorLogs)
 				} else {
 					_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
 				}
@@ -568,8 +587,9 @@ var _ = Describe("Manager", Ordered, func() {
 				Should(Succeed())
 
 			By("verifying component status conditions")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameAgent, "Available")
-			Expect(err).NotTo(HaveOccurred(), "Component should be in Available status")
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameAgent, "Available").
+				Should(Succeed())
 
 			clusterResp, err := apiHelper.GetCluster(clusterID)
 			Expect(err).ToNot(HaveOccurred())
@@ -607,14 +627,14 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent deployment")
 
 			By("verifying component status is Available after downgrade")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameAgent, "Available")
-			Expect(err).NotTo(HaveOccurred(), "Component should be in Available status after downgrade")
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameAgent, "Available").
+				Should(Succeed())
 
-			componentList, err := apiHelper.GetClusterComponents(organizationID, clusterID)
-			Expect(err).ToNot(HaveOccurred())
-			agentComponent, ok := FindComponentByName(componentList, components.ComponentNameAgent)
-			Expect(ok).To(BeTrue(), "Failed to find castai-agent component")
-			Expect(agentComponent.UsedVersion).To(Equal(downgradeVersion))
+			By("verifying the API reports the downgraded version")
+			Eventually(apiHelper.VerifyComponentUsedVersion, 5*time.Minute, 5*time.Second).
+				WithArguments(organizationID, clusterID, components.ComponentNameAgent, downgradeVersion).
+				Should(Succeed())
 		})
 
 		It("should upgrade castai-agent", func() {
@@ -650,15 +670,20 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "Failed to get castai-agent deployment")
 
 			By("verifying component status is Available after upgrade")
-			err = componentHelper.VerifyStatusCondition(componentName, "Available")
-			Expect(err).NotTo(HaveOccurred(), "Component should be in Available status after upgrade")
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(componentName, "Available").
+				Should(Succeed())
 
 			componentList, err := apiHelper.GetClusterComponents(organizationID, clusterID)
 			Expect(err).ToNot(HaveOccurred())
 			agentComponent, ok := FindComponentByName(componentList, componentName)
 			Expect(ok).To(BeTrue(), "Failed to find castai-agent component")
 			Expect(agentComponent.LatestVersion).ToNot(BeEmpty(), "Failed to get latest version of castai-agent")
-			Expect(agentComponent.UsedVersion).To(Equal(versionBeforeDowngrade))
+
+			By("verifying the API reports the upgraded version")
+			Eventually(apiHelper.VerifyComponentUsedVersion, 5*time.Minute, 5*time.Second).
+				WithArguments(organizationID, clusterID, componentName, versionBeforeDowngrade).
+				Should(Succeed())
 		})
 
 		It("should install spot-handler", func() {
@@ -691,8 +716,12 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyPodReady, 5*time.Minute).Should(Succeed())
 
 			By("verifying component status conditions")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameSpotHandler, "Available")
-			Expect(err).NotTo(HaveOccurred(), "Component should be in Available status")
+			// The install can still be reconciling after the daemonset shows up —
+			// poll instead of a single-shot check so the spec does not race the
+			// Available condition being set.
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameSpotHandler, "Available").
+				Should(Succeed())
 		})
 
 		It("should downgrade spot-handler", func() {
@@ -732,14 +761,14 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyPodReady, 5*time.Minute).Should(Succeed())
 
 			By("verifying component status is Available after downgrade")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameSpotHandler, "Available")
-			Expect(err).NotTo(HaveOccurred(), "Component should be in Available status after downgrade")
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameSpotHandler, "Available").
+				Should(Succeed())
 
-			componentList, err := apiHelper.GetClusterComponents(organizationID, clusterID)
-			Expect(err).ToNot(HaveOccurred())
-			spotHandlerComponent, ok := FindComponentByName(componentList, components.ComponentNameSpotHandler)
-			Expect(ok).To(BeTrue(), "Failed to find spot-handler component")
-			Expect(spotHandlerComponent.UsedVersion).To(Equal(downgradeVersion))
+			By("verifying the API reports the downgraded version")
+			Eventually(apiHelper.VerifyComponentUsedVersion, 5*time.Minute, 5*time.Second).
+				WithArguments(organizationID, clusterID, components.ComponentNameSpotHandler, downgradeVersion).
+				Should(Succeed())
 		})
 
 		It("should upgrade spot-handler", func() {
@@ -779,15 +808,20 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyPodReady, 5*time.Minute).Should(Succeed())
 
 			By("verifying component status is Available after upgrade")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameSpotHandler, "Available")
-			Expect(err).NotTo(HaveOccurred(), "Component should be in Available status after upgrade")
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameSpotHandler, "Available").
+				Should(Succeed())
 
 			componentList, err := apiHelper.GetClusterComponents(organizationID, clusterID)
 			Expect(err).ToNot(HaveOccurred())
 			spotHandlerComponent, ok := FindComponentByName(componentList, components.ComponentNameSpotHandler)
 			Expect(ok).To(BeTrue(), "Failed to find spot-handler component")
 			Expect(spotHandlerComponent.LatestVersion).ToNot(BeEmpty(), "Failed to get latest version of spot-handler")
-			Expect(spotHandlerComponent.UsedVersion).To(Equal(versionBeforeDowngrade))
+
+			By("verifying the API reports the upgraded version")
+			Eventually(apiHelper.VerifyComponentUsedVersion, 5*time.Minute, 5*time.Second).
+				WithArguments(organizationID, clusterID, components.ComponentNameSpotHandler, versionBeforeDowngrade).
+				Should(Succeed())
 		})
 
 		It("should onboard phase2", func() {
@@ -920,8 +954,9 @@ var _ = Describe("Manager", Ordered, func() {
 				Should(Succeed())
 
 			By("verifying castai-agent component status is Available")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameAgent, "Available")
-			Expect(err).NotTo(HaveOccurred(), "castai-agent component should be Available")
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameAgent, "Available").
+				Should(Succeed())
 
 			By("waiting for spot-handler component to be ready")
 			Eventually(componentHelper.VerifyVersionIsSet, 5*time.Minute).
@@ -929,8 +964,9 @@ var _ = Describe("Manager", Ordered, func() {
 				Should(Succeed())
 
 			By("verifying spot-handler component status is Available")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameSpotHandler, "Available")
-			Expect(err).NotTo(HaveOccurred(), "spot-handler component should be Available")
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameSpotHandler, "Available").
+				Should(Succeed())
 		})
 
 		It("should not delete namespace when migrating from legacy agent installation", func() {
@@ -1055,8 +1091,9 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyAgentComponentUpgraded, 5*time.Minute).Should(Succeed())
 
 			By("verifying castai-agent component is Available")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameAgent, "Available")
-			Expect(err).NotTo(HaveOccurred(), "Component should be Available after upgrade")
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameAgent, "Available").
+				Should(Succeed())
 
 			By("verifying castai-agent pods are ready after upgrade")
 			Eventually(podHelper.VerifyPodsReady, 5*time.Minute).
@@ -1110,8 +1147,9 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("No castai-agent deployment found with version %s", downgradeVersion))
 
 			By("verifying castai-agent component is Available after downgrade")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameAgent, "Available")
-			Expect(err).NotTo(HaveOccurred(), "Component should be Available after downgrade")
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameAgent, "Available").
+				Should(Succeed())
 
 			By("verifying at least one castai-agent pod is ready after cleanup")
 			Eventually(podHelper.VerifyPodsReady, 5*time.Minute).
@@ -1119,8 +1157,9 @@ var _ = Describe("Manager", Ordered, func() {
 				Should(Succeed())
 
 			By("verifying component status conditions after downgrade")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameAgent, "Available")
-			Expect(err).NotTo(HaveOccurred(), "Component should be in Available status")
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameAgent, "Available").
+				Should(Succeed())
 
 			By("verifying namespace still has no helm labels after downgrade")
 			cmd = exec.Command("kubectl", "get", "namespace", namespace,
@@ -1172,8 +1211,9 @@ var _ = Describe("Manager", Ordered, func() {
 				Should(Succeed())
 
 			By("verifying spot-handler component status is Available")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameSpotHandler, "Available")
-			Expect(err).NotTo(HaveOccurred(), "spot-handler component should be Available")
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameSpotHandler, "Available").
+				Should(Succeed())
 
 			By("verifying cluster-controller component CR exists and is ready")
 			Eventually(componentHelper.VerifyVersionIsSet, 5*time.Minute).
@@ -1181,8 +1221,9 @@ var _ = Describe("Manager", Ordered, func() {
 				Should(Succeed())
 
 			By("verifying cluster-controller component status is Available")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameClusterController, "Available")
-			Expect(err).NotTo(HaveOccurred(), "cluster-controller component should be Available")
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameClusterController, "Available").
+				Should(Succeed())
 
 			By("verifying spot-handler has phase2Permissions=true from helm values")
 			verifyPhase2Permissions := func(g Gomega) {
@@ -1348,8 +1389,9 @@ var _ = Describe("Manager", Ordered, func() {
 				Should(Succeed())
 
 			By("verifying castai-agent component status is Available")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameAgent, "Available")
-			Expect(err).NotTo(HaveOccurred(), "castai-agent component should be Available")
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameAgent, "Available").
+				Should(Succeed())
 
 			By("waiting for spot-handler component CR to be created")
 			Eventually(componentHelper.VerifyVersionIsSet, 1*time.Minute).
@@ -1357,8 +1399,9 @@ var _ = Describe("Manager", Ordered, func() {
 				Should(Succeed())
 
 			By("verifying spot-handler component status is Available")
-			err = componentHelper.VerifyStatusCondition(components.ComponentNameSpotHandler, "Available")
-			Expect(err).NotTo(HaveOccurred(), "spot-handler component should be Available")
+			Eventually(componentHelper.VerifyStatusCondition, 5*time.Minute).
+				WithArguments(components.ComponentNameSpotHandler, "Available").
+				Should(Succeed())
 		})
 
 		It("should offboard the operator and all phase2 components", func() {
@@ -2297,6 +2340,17 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(names).To(Equal([]string{components.ComponentNameAgent}),
 				"the hybrid config must not adopt the umbrella, got %v", names)
 
+			By("nudging the agent CR to reconcile against the hand-installed umbrella")
+			// The umbrella-vs-individual conflict gate only runs on a reconcile of
+			// the agent CR, and steady-state reconciles requeue every 15 minutes —
+			// well beyond the poll below. Annotating the CR forces an immediate
+			// reconcile so the gate observes the umbrella release deterministically
+			// instead of racing the requeue.
+			nudgeCmd := exec.Command("kubectl", "annotate", "component", components.ComponentNameAgent,
+				"-n", namespace, "castware.cast.ai/e2e-nudge="+time.Now().Format(time.RFC3339), "--overwrite")
+			_, err = utils.Run(nudgeCmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to annotate agent CR")
+
 			By("verifying the agent CR is forced read-only with an UmbrellaConflict condition")
 			Eventually(func(g Gomega) {
 				componentHelper.VerifySpecReadonly(g, components.ComponentNameAgent, true)
@@ -2520,10 +2574,18 @@ var _ = Describe("Manager", Ordered, func() {
 		}
 
 		// installBareOperator installs the operator without default components
-		// and with base permissions (no extendedPermissions).
+		// and with base permissions (no extendedPermissions). Each spec onboards
+		// its own Mothership cluster (unique provider name): records are keyed by
+		// provider name and persist (DeleteCluster only archives), so sharing the
+		// fixed castware-operator-e2e name lets an earlier spec-or-run's reported
+		// umbrella install make this spec's permission gate refuse the migration
+		// with "already installed" before any phase is stamped.
 		installBareOperator := func() {
+			clusterName := fmt.Sprintf("castware-operator-e2e-%d", time.Now().UnixNano())
+			By(fmt.Sprintf("onboarding a fresh Mothership cluster %q for this spec", clusterName))
 			installOperatorWithRetry(func() error {
-				return helmHelper.InstallOperator(imageParts[0], imageParts[1], apiKey, apiURL, operatorChartPath, "")
+				return helmHelper.InstallOperator(imageParts[0], imageParts[1], apiKey, apiURL, operatorChartPath, "",
+					"--set", "webhook.env.GKE_CLUSTER_NAME="+clusterName)
 			})
 		}
 
@@ -2618,13 +2680,17 @@ var _ = Describe("Manager", Ordered, func() {
 
 		waitMigrationRolledBack := func() {
 			By("waiting for the migration to fail and roll back")
+			// The condition check runs first because its failure message embeds
+			// the CR's full condition list: when the migration stalls before the
+			// first phase is stamped, the dump shows which state (blocked,
+			// degraded, ...) wedged instead of just an empty migrationPhase.
 			Eventually(func(g Gomega) {
+				err := componentHelper.VerifyStatusConditionReason(
+					components.ComponentNameUmbrella, "Migrating", "MigrationFailed")
+				g.Expect(err).NotTo(HaveOccurred())
 				phase, err := componentHelper.GetField(components.ComponentNameUmbrella, "{.status.migrationPhase}")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(phase).To(Equal("RolledBack"), "migrationPhase should be RolledBack")
-				err = componentHelper.VerifyStatusConditionReason(
-					components.ComponentNameUmbrella, "Migrating", "MigrationFailed")
-				g.Expect(err).NotTo(HaveOccurred())
 			}, 10*time.Minute, 5*time.Second).Should(Succeed())
 		}
 
@@ -2646,6 +2712,8 @@ var _ = Describe("Manager", Ordered, func() {
 			migrationReset()
 			installBareOperator()
 			waitForOnboardedCluster()
+			waitOperatorReported()
+
 			umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -2830,6 +2898,8 @@ var _ = Describe("Manager", Ordered, func() {
 			migrationReset()
 			installBareOperator()
 			waitForOnboardedCluster()
+			waitOperatorReported()
+
 			umbrellaReleaseName, err := apiHelper.GetUmbrellaReleaseName()
 			Expect(err).NotTo(HaveOccurred())
 

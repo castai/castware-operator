@@ -742,6 +742,26 @@ func (h *APIHelper) GetClusterComponents(organizationID, clusterID string) ([]co
 	return resp.Components, err
 }
 
+// VerifyComponentUsedVersion checks that the API view of a cluster component
+// reports the expected usedVersion. The API value lags the in-cluster
+// Component CR while the operator reports the change, so callers should poll
+// this with Eventually rather than asserting it once.
+func (h *APIHelper) VerifyComponentUsedVersion(organizationID, clusterID, componentName, expectedVersion string) error {
+	componentList, err := h.GetClusterComponents(organizationID, clusterID)
+	if err != nil {
+		return err
+	}
+	c, ok := FindComponentByName(componentList, componentName)
+	if !ok {
+		return fmt.Errorf("component %s not found in cluster components", componentName)
+	}
+	if c.UsedVersion != expectedVersion {
+		return fmt.Errorf("component %s usedVersion should be %s, got %s",
+			componentName, expectedVersion, c.UsedVersion)
+	}
+	return nil
+}
+
 // GetComponentByName retrieves component registry information by component name
 func (h *APIHelper) GetComponentByName(name string) (*castAIComponentInfo, error) {
 	query := url.Values{"name": []string{name}}
