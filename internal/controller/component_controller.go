@@ -180,9 +180,24 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if component.Status.CurrentVersion != helmRelease.Chart.Metadata.Version ||
 			component.GenerationChanged() {
 			log.Info("Component version changed, updating current version in component status")
-			component.Status.CurrentVersion = helmRelease.Chart.Metadata.Version
-			component.Status.ObservedGeneration = component.Generation
-			if err := r.updateStatus(ctx, component); err != nil {
+			// Patch only the fields this path owns. updateStatus copies the whole
+			// in-memory status over the latest server state, and this reconcile's
+			// cached copy may predate a concurrent gate write — the umbrella
+			// mutual-exclusivity gate patches spec.readonly (which triggers this
+			// very reconcile) and then writes the UmbrellaConflict condition.
+			// Overwriting the full status here could silently drop that
+			// condition, and since the gate is skipped while spec.readonly is
+			// set, it would never be rewritten.
+			err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+				var latest castwarev1alpha1.Component
+				if err := r.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, &latest); err != nil {
+					return err
+				}
+				latest.Status.CurrentVersion = helmRelease.Chart.Metadata.Version
+				latest.Status.ObservedGeneration = component.Generation
+				return r.Status().Update(ctx, &latest)
+			})
+			if err != nil {
 				log.WithError(err).Error("Failed to update component status")
 				return ctrl.Result{}, err
 			}
